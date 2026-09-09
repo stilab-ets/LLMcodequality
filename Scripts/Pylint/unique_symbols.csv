@@ -1,0 +1,152 @@
+symbol,occurrences,n_instances,n_models,example_message
+abstract-method,10,6,5,Method 'get_work_reading_log' is abstract in class 'DataProvider' but is not overridden
+access-member-before-definition,96,19,8,Access to member '_undo_changeset' before its definition line 908
+anomalous-backslash-in-string,2,1,1,Anomalous backslash in string: '\d'. String constant might be missing an r prefix.
+arguments-differ,32,8,8,Variadics removed in overridden 'aspects.GET' method
+arguments-renamed,4,2,2,Parameter 'o' has been renamed to 'obj' in overridden 'InfogamiThingEncoder.default' method
+attribute-defined-outside-init,212,15,7,Attribute '_psrp_pass' defined outside __init__
+bad-indentation,1,1,1,"Bad indentation. Found 17 spaces, expected 16"
+bad-option-value,2,1,1,Bad option value 'ansible-deprecated-no-version'
+bare-except,3,3,3,No exception type(s) specified
+broad-except,198,84,8,Catching too general exception Exception
+c-extension-no-member,89,14,8,"Module 'lxml.etree' has no '_Element' member, but source is unavailable. Consider adding this module to extension-pkg-allow-list if you want to perform analysis based on run-time introspection of living objects."
+cell-var-from-loop,2,1,1,Cell variable lang defined in loop
+chained-comparison,15,14,8,Simplify chained comparison between the operands
+compare-to-empty-string,3,2,1,Avoid comparisons to empty string
+comparison-with-callable,1,1,1,"Comparing against a callable, did you omit the parenthesis?"
+consider-iterating-dictionary,2,1,1,Consider iterating the dictionary directly instead of calling .keys()
+consider-merging-isinstance,12,5,5,"Consider merging these isinstance calls to isinstance(val, (luqum.tree.Phrase, luqum.tree.Word))"
+consider-using-dict-comprehension,12,5,5,Consider using a dictionary comprehension
+consider-using-enumerate,16,8,8,Consider using enumerate instead of iterating with range and len
+consider-using-f-string,941,248,8,Formatting a regular string which could be a f-string
+consider-using-get,1,1,1,Consider using dict.get for getting values from a dict if a key is present or a default if not
+consider-using-in,5,4,4,"Consider merging these comparisons with ""in"" to ""name in ('s.n.', 's.n.]')"""
+consider-using-sys-exit,2,1,1,Consider using sys.exit()
+consider-using-ternary,2,1,1,"Consider using ternary (isinstance(finder, FileFinder) if FileFinder is not None else finder.__class__.__name__ == 'FileFinder')"
+consider-using-with,16,8,7,Consider using 'with' for resource-allocating operations
+cyclic-import,31,21,8,Cyclic import (ansible.playbook.block -> ansible.playbook.role)
+dangerous-default-value,6,6,6,Dangerous default value FACET_FIELDS (builtins.list) as argument
+deprecated-class,5,5,5,Using deprecated class ImpImporter of module pkgutil
+deprecated-module,7,6,6,Uses of a deprecated module 'imp'
+duplicate-code,331,76,8,"Similar lines in 2 files
+==ansible.module_utils.basic:[7:34]
+==ansible.module_utils.common.file:[29:54]
+FILE_ATTRIBUTES = {
+    'A': 'noatime',
+    'a': 'append',
+    'c': 'compressed',
+    'C': 'nocow',
+    'd': 'nodump',
+    'D': 'dirsync',
+    'e': 'extents',
+    'E': 'encrypted',
+    'h': 'blocksize',
+    'i': 'immutable',
+    'I': 'indexed',
+    'j': 'journalled',
+    'N': 'inline',
+    's': 'zero',
+    'S': 'synchronous',
+    't': 'notail',
+    'T': 'blockroot',
+    'u': 'undelete',
+    'X': 'compressedraw',
+    'Z': 'compresseddirty',
+}
+
+# Ansible modules can be written in any language.
+# The functions available here can be used to do many common tasks,
+# to simplify development of Python modules."
+duplicate-key,5,5,5,Duplicate key 'QProcess.WriteError' in dictionary
+expression-not-assigned,6,3,3,"Expression ""t_delete.rollback() if _test else t_delete.commit()"" is assigned to nothing"
+f-string-without-interpolation,2,2,2,Using an f-string that does not have any interpolated variables
+fatal,143,67,8,No module named lib/ansible/modules/net_tools/nios/nios_fixed_address.py
+fixme,165,85,8,"FIXME: generalize _loop_entries to allow for files also, most of this code is dupe"
+function-redefined,83,15,6,class already defined line 221
+global-statement,60,12,8,Using the global statement
+global-variable-not-assigned,16,12,7,Using global for 'client' but no assignment is done
+global-variable-undefined,1,1,1,Global variable 'ia_database' undefined at the module level
+import-error,260,69,8,Unable to import 'ansible.module_utils.six.moves.collections_abc'
+import-outside-toplevel,191,89,8,Import outside toplevel (ansible.playbook.block.Block)
+inconsistent-return-statements,156,71,8,"Either all return statements in a function should return an expression, or none of them should."
+invalid-name,1702,322,8,"Variable name ""c"" doesn't conform to snake_case naming style"
+invalid-overridden-method,4,4,4,"Method 'update_key' was expected to be 'async', found it instead as 'non-async'"
+invalid-sequence-index,25,5,5,"Sequence index is not an int, slice, or instance with __index__"
+keyword-arg-before-vararg,2,1,1,Keyword argument before variable positional arguments list in the definition of __init__ function
+line-too-long,2240,431,8,Line too long (138/100)
+logging-fstring-interpolation,257,46,8,Use lazy % formatting in logging functions
+misplaced-bare-raise,8,8,8,The raise statement is not inside an except clause
+missing-class-docstring,206,95,8,Missing class docstring
+missing-final-newline,9,7,2,Final newline missing
+missing-function-docstring,795,229,8,Missing function or method docstring
+missing-module-docstring,97,58,8,Missing module docstring
+no-else-continue,10,6,5,"Unnecessary ""else"" after ""continue"""
+no-else-raise,21,20,8,"Unnecessary ""elif"" after ""raise"""
+no-else-return,297,125,8,"Unnecessary ""else"" after ""return"""
+no-member,253,47,7,Instance of 'CallbackModule' has no 'display_failed_stderr' member
+no-name-in-module,172,31,8,No name 'collections_abc' in module '_MovedItems'
+no-self-argument,10,4,3,"Method should have ""self"" as first argument"
+no-self-use,145,77,8,Method could be a function
+no-value-for-parameter,17,2,2,No value for argument 'upgrade' in function call
+overlapping-except,1,1,1,Overlapping exceptions (OSError is an ancestor class of PermissionError)
+pointless-statement,3,2,1,Statement seems to have no effect
+pointless-string-statement,29,8,7,String statement has no effect
+protected-access,574,75,8,Access to a protected member _host of a client class
+raise-missing-from,117,59,8,Consider explicitly re-raising using the 'from' keyword
+redefined-argument-from-local,11,9,7,Redefining argument with the local name 'f'
+redefined-builtin,40,30,8,Redefining built-in 'ConnectionError'
+redefined-outer-name,895,162,8,Redefining name 'e' from outer scope (line 32)
+redundant-u-string-prefix,52,14,5,The u prefix for strings is no longer necessary in Python >=3.0
+reimported,72,39,8,Reimport 're' (imported line 10)
+simplifiable-condition,2,1,1,Boolean condition 'rec.get('isbn_10') or []' may be simplified to 'rec.get('isbn_10')'
+simplifiable-if-expression,4,2,2,The if expression can be replaced with 'test'
+subprocess-run-check,1,1,1,Using subprocess.run without explicitly set `check` is not recommended.
+super-init-not-called,3,2,2,__init__ method from base class 'Exception' is not called
+super-with-arguments,66,21,7,Consider using Python 3 style super() without arguments
+superfluous-parens,11,6,4,Unnecessary parens after 'elif' keyword
+syntax-error,13,7,4,"invalid syntax (<unknown>, line 26)"
+too-few-public-methods,25,20,7,Too few public methods (1/2)
+too-many-arguments,480,72,8,Too many arguments (7/5)
+too-many-boolean-expressions,34,21,8,Too many boolean expressions in if statement (6/5)
+too-many-branches,516,184,8,Too many branches (16/12)
+too-many-function-args,3,2,2,Too many positional arguments for function call
+too-many-instance-attributes,122,42,8,Too many instance attributes (35/7)
+too-many-lines,903,231,8,Too many lines in module (1378/1000)
+too-many-locals,721,178,8,Too many local variables (20/15)
+too-many-nested-blocks,35,19,6,Too many nested blocks (6/5)
+too-many-public-methods,87,33,7,Too many public methods (52/20)
+too-many-return-statements,72,53,8,Too many return statements (8/6)
+too-many-statements,543,132,8,Too many statements (64/50)
+too-many-try-statements,1,1,1,"try clause contains 11 statements, expected at most 7"
+trailing-newlines,19,18,6,Trailing newlines
+trailing-whitespace,2075,248,8,Trailing whitespace
+try-except-raise,2,2,2,The except handler raises immediately
+unbalanced-tuple-unpacking,6,2,2,"Possible unbalanced tuple unpacking with sequence defined at line 236 of ansible.plugins.lookup.password: left side has 2 label(s), right side has 3 value(s)"
+undefined-loop-variable,10,3,3,Using possibly undefined loop variable 'lang'
+undefined-variable,22,10,5,Undefined variable 'IteratingStates'
+unexpected-keyword-arg,16,12,8,Unexpected keyword argument 'override_validation' in function call
+unexpected-line-ending-format,2,2,2,Unexpected line ending format. There is 'CRLF' while it should be 'LF'.
+ungrouped-imports,16,16,7,Imports from package openlibrary are not grouped
+unidiomatic-typecheck,8,8,8,Use isinstance() rather than type() for a typecheck.
+unnecessary-comprehension,3,3,3,"Unnecessary use of a comprehension, use dict(zip(default_args, defaults_tuple)) instead."
+unnecessary-lambda,8,8,8,Lambda may not be necessary
+unnecessary-pass,39,21,7,Unnecessary pass statement
+unreachable,7,7,7,Unreachable code
+unspecified-encoding,71,10,7,Using open without explicitly specifying an encoding
+unsubscriptable-object,9,4,3,Value 'config.cache' is unsubscriptable
+unsupported-membership-test,1,1,1,Value 'solr_result' doesn't support membership test
+unused-argument,86,48,8,Unused argument 'self'
+unused-import,409,159,8,Unused import ast
+unused-variable,92,65,8,Unused variable 'idx'
+use-dict-literal,31,16,8,Consider using {} instead of dict()
+use-implicit-booleaness-not-len,9,9,8,Do not use `len(SEQUENCE)` without comparison to determine if a sequence is empty
+use-list-literal,19,15,6,Consider using [] instead of list()
+use-maxsplit-arg,1,1,1,"Use str(entry).rsplit('/', maxsplit=1)[-1] instead"
+useless-import-alias,1,1,1,Import alias does not rename original package
+useless-object-inheritance,35,17,8,"Class 'PlayIterator' inherits from object, can be safely removed from bases in python3"
+useless-return,1,1,1,Useless return at end of function or method
+useless-super-delegation,5,5,5,Useless super delegation in method '__init__'
+useless-suppression,3,1,1,Useless suppression of 'protected-access'
+using-constant-test,4,3,2,Using a conditional statement with a constant value
+wrong-import-order,264,112,8,"third party import ""from ansible.module_utils.common._collections_compat import KeysView, Mapping, MutableMapping, Sequence, MutableSequence, Set, MutableSet"" should be placed before ""from ._text import to_native, to_bytes, to_text"""
+wrong-import-position,282,76,8,"Import ""from ansible.module_utils.basic import AnsibleModule"" should be placed at the top of the module"

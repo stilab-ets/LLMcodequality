@@ -1,0 +1,74 @@
+# =============================================================================
+# Replication package .gitignore
+#
+# Tracked (the replication package):
+#   - Scripts/                 analysis pipelines + cross-pipeline RQ scripts
+#   - results/RQ1|RQ2|RQ3/      result tables, stats CSVs, box/heatmap PDFs,
+#                              aggregated metrics, organized by research question
+#   - results/combined/        the 3-pipeline significance sweep
+#   - python_data/succeeded/   the input patches (agent + gold) per model
+#   - README.md
+#
+# The pipelines still write their raw output under Scripts/**/ (dpy_results/,
+# pylint_results/, understand_results/, results/); those trees are ignored --
+# the curated, RQ-organized copy under results/ is what ships. See results/README.md.
+# =============================================================================
+
+# --- internal dev notes (not part of the package) ---
+CLAUDE.md
+
+# --- manuscript + qualitative example bundles (kept out of the code package) ---
+Paper/
+rq3_examples/
+instance_*/
+
+# --- raw upstream evaluation data (get from the SWE-Bench Pro release) ---
+data/
+python_data/failed/
+
+# --- checked-out repositories / environments ---
+repos/
+.venv/
+venv/
+env/
+node_modules/
+
+# --- deprecated / backup trees ---
+old/
+dpy_results_old/
+Results/
+/pylint_results/
+
+# --- Python cruft ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+.pytest_cache/
+.mypy_cache/
+.DS_Store
+
+# --- SciTools Understand databases (large, regenerated) ---
+*.und
+*.udb
+Scripts/**/understand_dbs/
+
+# --- raw pipeline output (regenerated; curated copy lives in results/) ---
+Scripts/DPY/dpy_results/
+Scripts/Pylint/pylint_results/
+Scripts/Understand/understand_results/
+Scripts/results/
+
+# --- LaTeX ---
+*.tex
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.out
+*.toc
+*.lof
+*.lot
+*.synctex.gz
+*.log

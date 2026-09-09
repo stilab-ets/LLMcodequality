@@ -1,0 +1,281 @@
+source,category,metric,model,model_label,n,gold_med,llm_med,p,cd,mag,sig
+DPY,Arch Smell,God Component,claude-45haiku-10222025,Haiku,134,0.0,0.0,1.0,0.0,N,False
+DPY,Arch Smell,Unstable Dependency,claude-45haiku-10222025,Haiku,134,0.0,0.0,1.0,0.0,N,False
+DPY,Design Smell,Broken Hierarchy,claude-45haiku-10222025,Haiku,134,0.0,0.0,0.31549809593780087,0.007406994876364446,N,False
+DPY,Design Smell,Broken Modularization,claude-45haiku-10222025,Haiku,134,0.0,0.0,1.0,0.0,N,False
+DPY,Design Smell,Deficient Encapsulation,claude-45haiku-10222025,Haiku,134,0.0,0.0,0.21848159978337778,0.0284584539986634,N,False
+DPY,Design Smell,Feature Envy,claude-45haiku-10222025,Haiku,134,0.0,0.0,0.3198495233101657,-0.014591222989529962,N,False
+DPY,Design Smell,Insuf. Modularization,claude-45haiku-10222025,Haiku,134,0.0,0.0,0.025347318677468252,0.02946090443305859,N,True
+DPY,Design Smell,Wide Hierarchy,claude-45haiku-10222025,Haiku,134,0.0,0.0,1.0,0.0,N,False
+DPY,Impl Smell,Complex Method,claude-45haiku-10222025,Haiku,134,0.0,0.0,0.00039706618250842044,0.11522610826464691,N,True
+DPY,Impl Smell,Long Method,claude-45haiku-10222025,Haiku,134,0.0,0.0,0.47448689004145184,0.007852528402762307,N,False
+DPY,Impl Smell,Long Parameter List,claude-45haiku-10222025,Haiku,134,0.0,0.0,0.6620844358861948,0.0,N,False
+DPY,Impl Smell,Magic Number,claude-45haiku-10222025,Haiku,134,0.0,0.0,0.17493192919283074,0.04171307640899978,N,False
+DPY,Impl Smell,Long Statement,claude-45haiku-10222025,Haiku,134,0.0,1.0,2.159322894252105e-09,0.33565382044998887,M,True
+DPY,Impl Smell,Complex Conditional,claude-45haiku-10222025,Haiku,134,0.0,0.0,0.31368568345973036,-0.015036756515927823,N,False
+DPY,Arch Smell,God Component,claude-45sonnet-10132025,Sonnet,142,0.0,0.0,1.0,0.0,N,False
+DPY,Arch Smell,Unstable Dependency,claude-45sonnet-10132025,Sonnet,142,0.0,0.0,0.4142161782425252,0.013935727038286055,N,False
+DPY,Design Smell,Broken Hierarchy,claude-45sonnet-10132025,Sonnet,142,0.0,0.0,0.31731050786291415,0.006943066851815116,N,False
+DPY,Design Smell,Broken Modularization,claude-45sonnet-10132025,Sonnet,142,0.0,0.0,0.9960128359491904,-0.006943066851815116,N,False
+DPY,Design Smell,Deficient Encapsulation,claude-45sonnet-10132025,Sonnet,142,0.0,0.0,0.48751243838386316,0.013687760365006943,N,False
+DPY,Design Smell,Feature Envy,claude-45sonnet-10132025,Sonnet,142,0.0,0.0,0.09854772331998266,-0.035211267605633804,N,False
+DPY,Design Smell,Insuf. Modularization,claude-45sonnet-10132025,Sonnet,142,0.0,0.0,0.01431108735269847,0.034764927593731405,N,True
+DPY,Design Smell,Wide Hierarchy,claude-45sonnet-10132025,Sonnet,142,0.0,0.0,0.1573017985809675,-0.014084507042253521,N,False
+DPY,Impl Smell,Complex Method,claude-45sonnet-10132025,Sonnet,142,0.0,0.0,0.00088076155043289,0.09467367585796468,N,True
+DPY,Impl Smell,Long Method,claude-45sonnet-10132025,Sonnet,142,0.0,0.0,0.04550026389635839,0.04840309462408252,N,True
+DPY,Impl Smell,Long Parameter List,claude-45sonnet-10132025,Sonnet,142,0.0,0.0,0.6570409766188943,-0.006794286847847649,N,False
+DPY,Impl Smell,Magic Number,claude-45sonnet-10132025,Sonnet,142,0.0,0.0,0.06121760660852374,0.040071414401904384,N,False
+DPY,Impl Smell,Long Statement,claude-45sonnet-10132025,Sonnet,142,0.0,1.0,1.075329158599238e-09,0.3590557429081531,M,True
+DPY,Impl Smell,Complex Conditional,claude-45sonnet-10132025,Sonnet,142,0.0,0.0,0.9929954409692072,-0.00014878000396746679,N,False
+DPY,Arch Smell,God Component,codex,Codex,105,0.0,0.0,1.0,0.0,N,False
+DPY,Arch Smell,Unstable Dependency,codex,Codex,105,0.0,0.0,0.31731050786291415,-0.00943310657596372,N,False
+DPY,Design Smell,Broken Hierarchy,codex,Codex,105,0.0,0.0,0.9946011596134708,-9.070294784580499e-05,N,False
+DPY,Design Smell,Broken Modularization,codex,Codex,105,0.0,0.0,0.31731050786291415,0.00018140589569160998,N,False
+DPY,Design Smell,Deficient Encapsulation,codex,Codex,105,0.0,0.0,0.7564392211524515,0.01804988662131519,N,False
+DPY,Design Smell,Feature Envy,codex,Codex,105,0.0,0.0,0.014315527336522641,-0.05668934240362812,N,True
+DPY,Design Smell,Insuf. Modularization,codex,Codex,105,0.0,0.0,0.6641668153748762,0.00027210884353741496,N,False
+DPY,Design Smell,Wide Hierarchy,codex,Codex,105,0.0,0.0,1.0,0.0,N,False
+DPY,Impl Smell,Complex Method,codex,Codex,105,0.0,0.0,1.884051336346639e-05,0.20199546485260772,S,True
+DPY,Impl Smell,Long Method,codex,Codex,105,0.0,0.0,0.7677053256545361,-0.007619047619047619,N,False
+DPY,Impl Smell,Long Parameter List,codex,Codex,105,0.0,0.0,0.15730395860269486,-0.019138321995464853,N,False
+DPY,Impl Smell,Magic Number,codex,Codex,105,0.0,0.0,0.02575931794715405,0.07664399092970521,N,True
+DPY,Impl Smell,Long Statement,codex,Codex,105,0.0,0.0,0.3938593497922577,-0.0654875283446712,N,False
+DPY,Impl Smell,Complex Conditional,codex,Codex,105,0.0,0.0,0.1769425082083902,-0.028480725623582767,N,False
+DPY,Arch Smell,God Component,gemini-2-5-pro-nov17,Gemini,75,0.0,0.0,1.0,0.0,N,False
+DPY,Arch Smell,Unstable Dependency,gemini-2-5-pro-nov17,Gemini,75,0.0,0.0,0.31731050786291415,-0.013155555555555556,N,False
+DPY,Design Smell,Broken Hierarchy,gemini-2-5-pro-nov17,Gemini,75,0.0,0.0,1.0,0.0,N,False
+DPY,Design Smell,Broken Modularization,gemini-2-5-pro-nov17,Gemini,75,0.0,0.0,0.31731050786291415,0.00017777777777777779,N,False
+DPY,Design Smell,Deficient Encapsulation,gemini-2-5-pro-nov17,Gemini,75,0.0,0.0,0.4142161782425252,0.03857777777777778,N,False
+DPY,Design Smell,Feature Envy,gemini-2-5-pro-nov17,Gemini,75,0.0,0.0,0.31731050786291415,-0.013333333333333334,N,False
+DPY,Design Smell,Insuf. Modularization,gemini-2-5-pro-nov17,Gemini,75,0.0,0.0,1.0,0.0,N,False
+DPY,Design Smell,Wide Hierarchy,gemini-2-5-pro-nov17,Gemini,75,0.0,0.0,1.0,0.0,N,False
+DPY,Impl Smell,Complex Method,gemini-2-5-pro-nov17,Gemini,75,0.0,0.0,0.763024600552995,-0.023644444444444444,N,False
+DPY,Impl Smell,Long Method,gemini-2-5-pro-nov17,Gemini,75,0.0,0.0,0.31731050786291415,-0.02631111111111111,N,False
+DPY,Impl Smell,Long Parameter List,gemini-2-5-pro-nov17,Gemini,75,0.0,0.0,0.15730855579185,-0.02666666666666667,N,False
+DPY,Impl Smell,Magic Number,gemini-2-5-pro-nov17,Gemini,75,0.0,0.0,0.7273672228662441,-0.026133333333333335,N,False
+DPY,Impl Smell,Long Statement,gemini-2-5-pro-nov17,Gemini,75,0.0,0.0,0.964147736054145,0.00035555555555555557,N,False
+DPY,Impl Smell,Complex Conditional,gemini-2-5-pro-nov17,Gemini,75,0.0,0.0,0.31081583820341785,-0.027022222222222222,N,False
+DPY,Arch Smell,God Component,glm-4p5-10222025,GLM,112,0.0,0.0,1.0,0.0,N,False
+DPY,Arch Smell,Unstable Dependency,glm-4p5-10222025,GLM,112,0.0,0.0,0.5637028616507731,0.008928571428571428,N,False
+DPY,Design Smell,Broken Hierarchy,glm-4p5-10222025,GLM,112,0.0,0.0,0.31731050786291415,-0.008848852040816327,N,False
+DPY,Design Smell,Broken Modularization,glm-4p5-10222025,GLM,112,0.0,0.0,0.31731050786291415,0.00015943877551020407,N,False
+DPY,Design Smell,Deficient Encapsulation,glm-4p5-10222025,GLM,112,0.0,0.0,0.7054873665714219,0.008450255102040817,N,False
+DPY,Design Smell,Feature Envy,glm-4p5-10222025,GLM,112,0.0,0.0,0.41639140880079717,-0.026068239795918366,N,False
+DPY,Design Smell,Insuf. Modularization,glm-4p5-10222025,GLM,112,0.0,0.0,0.10170651786368166,0.03515625,N,False
+DPY,Design Smell,Wide Hierarchy,glm-4p5-10222025,GLM,112,0.0,0.0,0.31731050786291415,-0.008928571428571428,N,False
+DPY,Impl Smell,Complex Method,glm-4p5-10222025,GLM,112,0.0,0.0,0.00044880404002780623,0.16988201530612246,S,True
+DPY,Impl Smell,Long Method,glm-4p5-10222025,GLM,112,0.0,0.0,0.030195543832002045,0.07047193877551021,N,True
+DPY,Impl Smell,Long Parameter List,glm-4p5-10222025,GLM,112,0.0,0.0,0.5672289566227322,-0.008848852040816327,N,False
+DPY,Impl Smell,Magic Number,glm-4p5-10222025,GLM,112,0.0,0.0,0.10585636777954793,0.051259566326530615,N,False
+DPY,Impl Smell,Long Statement,glm-4p5-10222025,GLM,112,0.0,1.0,2.5110773955402388e-08,0.32852359693877553,S,True
+DPY,Impl Smell,Complex Conditional,glm-4p5-10222025,GLM,112,0.0,0.0,0.41000521067469176,0.018016581632653062,N,False
+DPY,Arch Smell,God Component,gpt-5-codex-debug-oct22,GPT-5D,105,0.0,0.0,1.0,0.0,N,False
+DPY,Arch Smell,Unstable Dependency,gpt-5-codex-debug-oct22,GPT-5D,105,0.0,0.0,0.31731050786291415,-0.00943310657596372,N,False
+DPY,Design Smell,Broken Hierarchy,gpt-5-codex-debug-oct22,GPT-5D,105,0.0,0.0,0.9946011596134708,-9.070294784580499e-05,N,False
+DPY,Design Smell,Broken Modularization,gpt-5-codex-debug-oct22,GPT-5D,105,0.0,0.0,0.31731050786291415,0.00018140589569160998,N,False
+DPY,Design Smell,Deficient Encapsulation,gpt-5-codex-debug-oct22,GPT-5D,105,0.0,0.0,0.7564392211524515,0.01804988662131519,N,False
+DPY,Design Smell,Feature Envy,gpt-5-codex-debug-oct22,GPT-5D,105,0.0,0.0,0.014315527336522641,-0.05668934240362812,N,True
+DPY,Design Smell,Insuf. Modularization,gpt-5-codex-debug-oct22,GPT-5D,105,0.0,0.0,0.6641668153748762,0.00027210884353741496,N,False
+DPY,Design Smell,Wide Hierarchy,gpt-5-codex-debug-oct22,GPT-5D,105,0.0,0.0,1.0,0.0,N,False
+DPY,Impl Smell,Complex Method,gpt-5-codex-debug-oct22,GPT-5D,105,0.0,0.0,1.884051336346639e-05,0.20199546485260772,S,True
+DPY,Impl Smell,Long Method,gpt-5-codex-debug-oct22,GPT-5D,105,0.0,0.0,0.7677053256545361,-0.007619047619047619,N,False
+DPY,Impl Smell,Long Parameter List,gpt-5-codex-debug-oct22,GPT-5D,105,0.0,0.0,0.15730395860269486,-0.019138321995464853,N,False
+DPY,Impl Smell,Magic Number,gpt-5-codex-debug-oct22,GPT-5D,105,0.0,0.0,0.02575931794715405,0.07664399092970521,N,True
+DPY,Impl Smell,Long Statement,gpt-5-codex-debug-oct22,GPT-5D,105,0.0,0.0,0.3938593497922577,-0.0654875283446712,N,False
+DPY,Impl Smell,Complex Conditional,gpt-5-codex-debug-oct22,GPT-5D,105,0.0,0.0,0.1769425082083902,-0.028480725623582767,N,False
+DPY,Arch Smell,God Component,gpt-5-high-paper,GPT-5H,89,0.0,0.0,1.0,0.0,N,False
+DPY,Arch Smell,Unstable Dependency,gpt-5-high-paper,GPT-5H,89,0.0,0.0,0.31731050786291415,-0.011235955056179775,N,False
+DPY,Design Smell,Broken Hierarchy,gpt-5-high-paper,GPT-5H,89,0.0,0.0,0.08327447148855319,-0.02234566342633506,N,False
+DPY,Design Smell,Broken Modularization,gpt-5-high-paper,GPT-5H,89,0.0,0.0,1.0,0.0,N,False
+DPY,Design Smell,Deficient Encapsulation,gpt-5-high-paper,GPT-5H,89,0.0,0.0,0.6399807551541576,-0.011235955056179775,N,False
+DPY,Design Smell,Feature Envy,gpt-5-high-paper,GPT-5H,89,0.0,0.0,0.6547549663181245,-0.011235955056179775,N,False
+DPY,Design Smell,Insuf. Modularization,gpt-5-high-paper,GPT-5H,89,0.0,0.0,0.15729920705028516,0.022093170054286074,N,False
+DPY,Design Smell,Wide Hierarchy,gpt-5-high-paper,GPT-5H,89,0.0,0.0,1.0,0.0,N,False
+DPY,Impl Smell,Complex Method,gpt-5-high-paper,GPT-5H,89,0.0,0.0,6.506539122779814e-05,0.21840676682237092,S,True
+DPY,Impl Smell,Long Method,gpt-5-high-paper,GPT-5H,89,0.0,0.0,0.09551819207539075,0.06754197702310315,N,False
+DPY,Impl Smell,Long Parameter List,gpt-5-high-paper,GPT-5H,89,0.0,0.0,0.6584679229610944,-0.010099734881959348,N,False
+DPY,Impl Smell,Magic Number,gpt-5-high-paper,GPT-5H,89,0.0,0.0,0.055246491661007764,0.06994066405756849,N,False
+DPY,Impl Smell,Long Statement,gpt-5-high-paper,GPT-5H,89,0.0,1.0,2.458362172836661e-07,0.3522282540083323,M,True
+DPY,Impl Smell,Complex Conditional,gpt-5-high-paper,GPT-5H,89,0.0,0.0,0.15730583196944836,-0.02247191011235955,N,False
+DPY,Arch Smell,God Component,gptoss-paper,GPT-OSS,47,0.0,0.0,1.0,0.0,N,False
+DPY,Arch Smell,Unstable Dependency,gptoss-paper,GPT-OSS,47,0.0,0.0,0.31731050786291415,-0.02082390221819828,N,False
+DPY,Design Smell,Broken Hierarchy,gptoss-paper,GPT-OSS,47,0.0,0.0,0.31731050786291415,-0.02127659574468085,N,False
+DPY,Design Smell,Broken Modularization,gptoss-paper,GPT-OSS,47,0.0,0.0,1.0,0.0,N,False
+DPY,Design Smell,Deficient Encapsulation,gptoss-paper,GPT-OSS,47,0.0,0.0,0.6124236046703684,-0.0018107741059302852,N,False
+DPY,Design Smell,Feature Envy,gptoss-paper,GPT-OSS,47,0.0,0.0,0.04555895060791701,-0.08374830239927569,N,True
+DPY,Design Smell,Insuf. Modularization,gptoss-paper,GPT-OSS,47,0.0,0.0,1.0,0.0,N,False
+DPY,Design Smell,Wide Hierarchy,gptoss-paper,GPT-OSS,47,0.0,0.0,1.0,0.0,N,False
+DPY,Impl Smell,Complex Method,gptoss-paper,GPT-OSS,47,0.0,0.0,0.8066192885232171,0.02489814395654142,N,False
+DPY,Impl Smell,Long Method,gptoss-paper,GPT-OSS,47,0.0,0.0,1.0,0.0004526935264825713,N,False
+DPY,Impl Smell,Long Parameter List,gptoss-paper,GPT-OSS,47,0.0,0.0,0.1573232037839235,-0.0425531914893617,N,False
+DPY,Impl Smell,Magic Number,gptoss-paper,GPT-OSS,47,0.0,0.0,0.9703847358965793,-0.0022634676324128564,N,False
+DPY,Impl Smell,Long Statement,gptoss-paper,GPT-OSS,47,0.0,0.0,0.4089353648403845,0.07876867360796741,N,False
+DPY,Impl Smell,Complex Conditional,gptoss-paper,GPT-OSS,47,0.0,0.0,0.31731050786291415,-0.02127659574468085,N,False
+Understand,Complexity,CC,claude-45haiku-10222025,Haiku,134,0.036239495798319296,0.07896103896103895,4.476218680333158e-09,0.18957451548229004,S,True
+Understand,Complexity,WMC,claude-45haiku-10222025,Haiku,134,2.0,3.0,1.0563030805790058e-05,0.1516484740476721,S,True
+Understand,Complexity,MaxNest,claude-45haiku-10222025,Haiku,134,1.0,1.0,0.00011718626828374057,0.14273780351971485,N,True
+Understand,Complexity,NPATH,claude-45haiku-10222025,Haiku,134,0.0,0.0,0.00020140852789542915,0.17999554466473602,S,True
+Understand,Coupling,CBO,claude-45haiku-10222025,Haiku,134,0.0,0.0,0.14530418808052775,0.05591445756293161,N,False
+Understand,Coupling,RFC,claude-45haiku-10222025,Haiku,134,0.0,0.0,0.9910719464547588,0.005736244152372466,N,False
+Understand,Inheritance,DIT,claude-45haiku-10222025,Haiku,134,0.0,0.0,0.008153757811062692,-0.04254845177099577,N,True
+Understand,Inheritance,NOC,claude-45haiku-10222025,Haiku,134,0.0,0.0,0.15730211848151354,0.0007239919803965248,N,False
+Understand,Inheritance,IFANIN,claude-45haiku-10222025,Haiku,134,0.0,0.0,0.20331930777603446,0.001225217197594119,N,False
+Understand,Cohesion,LCOM,claude-45haiku-10222025,Haiku,134,0.0,0.0,1.0,0.0,N,False
+Understand,Size,LOC,claude-45haiku-10222025,Haiku,134,13.0,13.0,0.04141840618412249,0.045834261528179994,N,True
+Understand,Size,NL,claude-45haiku-10222025,Haiku,134,20.0,27.0,1.6853438081184328e-07,0.19280463354867453,S,True
+Understand,Size,CLOC,claude-45haiku-10222025,Haiku,134,2.0,9.5,5.9506205958908e-14,0.44692581866785475,M,True
+Understand,Size,NOM,claude-45haiku-10222025,Haiku,134,0.0,0.0,0.9895510991185651,-0.0061817776787703275,N,False
+Understand,Size,NIM,claude-45haiku-10222025,Haiku,134,0.0,0.0,0.9296560490412105,0.004121185119180218,N,False
+Understand,Size,NIV,claude-45haiku-10222025,Haiku,134,0.0,0.0,0.1487080405975254,-0.012140788594341725,N,False
+Pylint,Pylint,Issues (total),claude-45haiku-10222025,Haiku,134,1.0,3.0,9.916121740660126e-09,0.32457117398084206,S,True
+Pylint,Pylint,Convention,claude-45haiku-10222025,Haiku,134,0.0,2.0,6.285570157960149e-06,0.28079750501225215,S,True
+Pylint,Pylint,Refactor,claude-45haiku-10222025,Haiku,134,0.0,0.0,0.04029520251888897,0.09473156605034529,N,True
+Pylint,Pylint,Warning,claude-45haiku-10222025,Haiku,134,0.0,0.0,0.0011225152120925978,0.17236578302517264,S,True
+Pylint,Pylint,Error,claude-45haiku-10222025,Haiku,134,0.0,0.0,0.15978461300045577,0.03575406549342838,N,False
+Understand,Complexity,CC,claude-45sonnet-10132025,Sonnet,142,0.0347852389594676,0.10015750286368841,1.6533057233907998e-12,0.24176750644713352,S,True
+Understand,Complexity,WMC,claude-45sonnet-10132025,Sonnet,142,2.0,4.0,2.7664380209593643e-07,0.20898631223963499,S,True
+Understand,Complexity,MaxNest,claude-45sonnet-10132025,Sonnet,142,1.0,1.0,2.4406819739366424e-07,0.19619123189843285,S,True
+Understand,Complexity,NPATH,claude-45sonnet-10132025,Sonnet,142,0.0,0.0,4.253420291153591e-06,0.20581233882166236,S,True
+Understand,Coupling,CBO,claude-45sonnet-10132025,Sonnet,142,0.0,0.0,0.5840649992386235,0.0038682801031541363,N,False
+Understand,Coupling,RFC,claude-45sonnet-10132025,Sonnet,142,0.0,0.0,0.3331600497177172,0.013092640349137076,N,False
+Understand,Inheritance,DIT,claude-45sonnet-10132025,Sonnet,142,0.0,0.0,0.058074572392136814,-0.02960722078952589,N,False
+Understand,Inheritance,NOC,claude-45sonnet-10132025,Sonnet,142,0.0,0.0,0.17766657348944292,-0.013985320372941876,N,False
+Understand,Inheritance,IFANIN,claude-45sonnet-10132025,Sonnet,142,0.0,0.0,1.0,-0.0003471533425907558,N,False
+Understand,Cohesion,LCOM,claude-45sonnet-10132025,Sonnet,142,0.0,0.0,1.0,0.0,N,False
+Understand,Size,LOC,claude-45sonnet-10132025,Sonnet,142,13.0,17.0,0.0007640646551546196,0.11708986312239635,N,True
+Understand,Size,NL,claude-45sonnet-10132025,Sonnet,142,20.0,33.0,2.831003470326815e-10,0.2720690339218409,S,True
+Understand,Size,CLOC,claude-45sonnet-10132025,Sonnet,142,2.0,12.0,3.6436299494159537e-16,0.49677643324737153,L,True
+Understand,Size,NOM,claude-45sonnet-10132025,Sonnet,142,0.0,0.0,0.92724969109168,0.025838127355683395,N,False
+Understand,Size,NIM,claude-45sonnet-10132025,Sonnet,142,0.0,0.0,0.86686321140181,0.04141043443761158,N,False
+Understand,Size,NIV,claude-45sonnet-10132025,Sonnet,142,0.0,0.0,0.2506494445665942,-0.010265820273755208,N,False
+Pylint,Pylint,Issues (total),claude-45sonnet-10132025,Sonnet,142,1.0,6.0,2.5157862589148713e-13,0.4669708391192224,M,True
+Pylint,Pylint,Convention,claude-45sonnet-10132025,Sonnet,142,0.0,5.0,3.302832610894483e-13,0.44802618528069826,M,True
+Pylint,Pylint,Refactor,claude-45sonnet-10132025,Sonnet,142,0.0,0.0,0.004929143241913246,0.12155326324142035,N,True
+Pylint,Pylint,Warning,claude-45sonnet-10132025,Sonnet,142,0.0,0.0,0.0001970596884289304,0.18904979170799444,S,True
+Pylint,Pylint,Error,claude-45sonnet-10132025,Sonnet,142,0.0,0.0,0.346980392168029,0.039625074390001985,N,False
+Understand,Complexity,CC,codex,Codex,105,0.0434782608695652,0.2222222222222222,3.2034608797027874e-12,0.3723356009070295,M,True
+Understand,Complexity,WMC,codex,Codex,105,2.0,6.0,1.160722686143898e-09,0.3527437641723356,M,True
+Understand,Complexity,MaxNest,codex,Codex,105,1.0,1.0,2.1761550912182735e-06,0.28671201814058955,S,True
+Understand,Complexity,NPATH,codex,Codex,105,0.0,1.0,2.537458080396728e-08,0.3491156462585034,M,True
+Understand,Coupling,CBO,codex,Codex,105,0.0,0.0,0.02944931204556228,0.09922902494331065,N,True
+Understand,Coupling,RFC,codex,Codex,105,0.0,0.0,0.04998739941858432,0.0327437641723356,N,True
+Understand,Inheritance,DIT,codex,Codex,105,0.0,0.0,0.7110175598742254,-0.016054421768707482,N,False
+Understand,Inheritance,NOC,codex,Codex,105,0.0,0.0,0.5562372923189007,0.0007256235827664399,N,False
+Understand,Inheritance,IFANIN,codex,Codex,105,0.0,0.0,0.4666758392370949,0.010249433106575964,N,False
+Understand,Cohesion,LCOM,codex,Codex,105,0.0,0.0,1.0,0.0,N,False
+Understand,Size,LOC,codex,Codex,105,13.0,23.0,1.8622701439919228e-06,0.26684807256235826,S,True
+Understand,Size,NL,codex,Codex,105,20.0,29.0,4.9628173653299666e-05,0.2016326530612245,S,True
+Understand,Size,CLOC,codex,Codex,105,2.0,0.0,2.8931460062944383e-05,-0.3054875283446712,S,True
+Understand,Size,NOM,codex,Codex,105,0.0,0.0,0.026095708361738513,0.03918367346938775,N,True
+Understand,Size,NIM,codex,Codex,105,0.0,0.0,0.06184700636949123,0.028117913832199547,N,False
+Understand,Size,NIV,codex,Codex,105,0.0,0.0,0.5253596018835172,0.022857142857142857,N,False
+Pylint,Pylint,Issues (total),codex,Codex,105,0.0,1.0,0.15392100523247093,0.07192743764172335,N,False
+Pylint,Pylint,Convention,codex,Codex,105,0.0,0.0,0.7742634373113213,-0.012154195011337868,N,False
+Pylint,Pylint,Refactor,codex,Codex,105,0.0,0.0,0.9371221897259101,0.015600907029478459,N,False
+Pylint,Pylint,Warning,codex,Codex,105,0.0,0.0,0.05845626893634875,0.1199092970521542,N,False
+Pylint,Pylint,Error,codex,Codex,105,0.0,0.0,0.029886026909271207,0.05396825396825397,N,True
+Understand,Complexity,CC,gemini-2-5-pro-nov17,Gemini,75,0.0327868852459016,0.0285714285714285,0.051869628143198294,0.058666666666666666,N,False
+Understand,Complexity,WMC,gemini-2-5-pro-nov17,Gemini,75,2.0,2.0,0.30747484584521667,-0.05884444444444444,N,False
+Understand,Complexity,MaxNest,gemini-2-5-pro-nov17,Gemini,75,1.0,1.0,0.4781003672288584,-0.0368,N,False
+Understand,Complexity,NPATH,gemini-2-5-pro-nov17,Gemini,75,0.0,0.0,0.6175220636739245,-0.013155555555555556,N,False
+Understand,Coupling,CBO,gemini-2-5-pro-nov17,Gemini,75,0.0,0.0,0.3548691543877325,-0.06275555555555555,N,False
+Understand,Coupling,RFC,gemini-2-5-pro-nov17,Gemini,75,0.0,0.0,0.1703072075717047,-0.011377777777777778,N,False
+Understand,Inheritance,DIT,gemini-2-5-pro-nov17,Gemini,75,0.0,0.0,0.0832832870956459,-0.04088888888888889,N,False
+Understand,Inheritance,NOC,gemini-2-5-pro-nov17,Gemini,75,0.0,0.0,0.31731050786291415,-0.013155555555555556,N,False
+Understand,Inheritance,IFANIN,gemini-2-5-pro-nov17,Gemini,75,0.0,0.0,0.26808400397290166,-0.03804444444444444,N,False
+Understand,Cohesion,LCOM,gemini-2-5-pro-nov17,Gemini,75,0.0,0.0,1.0,0.0,N,False
+Understand,Size,LOC,gemini-2-5-pro-nov17,Gemini,75,12.0,8.0,0.02847208299574721,-0.12195555555555555,N,True
+Understand,Size,NL,gemini-2-5-pro-nov17,Gemini,75,17.0,12.0,0.022037088722128048,-0.10826666666666666,N,True
+Understand,Size,CLOC,gemini-2-5-pro-nov17,Gemini,75,1.0,1.0,0.3818661409202303,-0.06293333333333333,N,False
+Understand,Size,NOM,gemini-2-5-pro-nov17,Gemini,75,0.0,0.0,0.2660304876840488,-0.0007111111111111111,N,False
+Understand,Size,NIM,gemini-2-5-pro-nov17,Gemini,75,0.0,0.0,0.2834000955799001,0.0037333333333333333,N,False
+Understand,Size,NIV,gemini-2-5-pro-nov17,Gemini,75,0.0,0.0,0.7425151463616584,-0.0037333333333333333,N,False
+Pylint,Pylint,Issues (total),gemini-2-5-pro-nov17,Gemini,75,1.0,1.0,0.8920288281065877,0.032711111111111114,N,False
+Pylint,Pylint,Convention,gemini-2-5-pro-nov17,Gemini,75,1.0,0.0,0.2747528606983587,-0.06186666666666667,N,False
+Pylint,Pylint,Refactor,gemini-2-5-pro-nov17,Gemini,75,0.0,0.0,0.41084508689355215,-0.03164444444444445,N,False
+Pylint,Pylint,Warning,gemini-2-5-pro-nov17,Gemini,75,0.0,0.0,0.006196208146135771,0.1888,S,True
+Pylint,Pylint,Error,gemini-2-5-pro-nov17,Gemini,75,0.0,0.0,0.11451808081510158,0.09671111111111111,N,False
+Understand,Complexity,CC,glm-4p5-10222025,GLM,112,0.03540100250626565,0.0917508417508417,3.579293614889376e-08,0.2637914540816326,S,True
+Understand,Complexity,WMC,glm-4p5-10222025,GLM,112,3.0,4.0,6.082260731435266e-06,0.2110172193877551,S,True
+Understand,Complexity,MaxNest,glm-4p5-10222025,GLM,112,1.0,1.0,2.4279125095346896e-06,0.22576530612244897,S,True
+Understand,Complexity,NPATH,glm-4p5-10222025,GLM,112,0.0,1.0,3.2939626402100975e-08,0.2893813775510204,S,True
+Understand,Coupling,CBO,glm-4p5-10222025,GLM,112,0.0,0.0,0.4624405904147907,0.00390625,N,False
+Understand,Coupling,RFC,glm-4p5-10222025,GLM,112,0.0,0.0,0.9883566018099127,-0.002551020408163265,N,False
+Understand,Inheritance,DIT,glm-4p5-10222025,GLM,112,0.0,0.0,0.40999057016123797,-0.01132015306122449,N,False
+Understand,Inheritance,NOC,glm-4p5-10222025,GLM,112,0.0,0.0,1.0,7.971938775510203e-05,N,False
+Understand,Inheritance,IFANIN,glm-4p5-10222025,GLM,112,0.0,0.0,0.7505805282451934,-0.008131377551020409,N,False
+Understand,Cohesion,LCOM,glm-4p5-10222025,GLM,112,0.0,0.0,1.0,0.0,N,False
+Understand,Size,LOC,glm-4p5-10222025,GLM,112,12.5,14.0,0.034144831189735415,0.1014827806122449,N,True
+Understand,Size,NL,glm-4p5-10222025,GLM,112,19.0,27.5,4.044486892117497e-07,0.24250637755102042,S,True
+Understand,Size,CLOC,glm-4p5-10222025,GLM,112,2.0,8.5,1.0348318288543768e-10,0.42721619897959184,M,True
+Understand,Size,NOM,glm-4p5-10222025,GLM,112,0.0,0.0,0.7841742098181564,-0.011957908163265306,N,False
+Understand,Size,NIM,glm-4p5-10222025,GLM,112,0.0,0.0,0.7387871918027884,-0.0015943877551020409,N,False
+Understand,Size,NIV,glm-4p5-10222025,GLM,112,0.0,0.0,0.7955121344788207,-0.012356505102040817,N,False
+Pylint,Pylint,Issues (total),glm-4p5-10222025,GLM,112,0.0,6.0,4.5413756371069573e-13,0.5333227040816326,L,True
+Pylint,Pylint,Convention,glm-4p5-10222025,GLM,112,0.0,5.0,3.764805720946455e-12,0.5482302295918368,L,True
+Pylint,Pylint,Refactor,glm-4p5-10222025,GLM,112,0.0,0.0,0.013341221184208019,0.10730229591836735,N,True
+Pylint,Pylint,Warning,glm-4p5-10222025,GLM,112,0.0,0.0,0.002071553416660301,0.1836734693877551,S,True
+Pylint,Pylint,Error,glm-4p5-10222025,GLM,112,0.0,0.0,0.24730839962086304,0.05779655612244898,N,False
+Understand,Complexity,CC,gpt-5-codex-debug-oct22,GPT-5D,105,0.0377358490566037,0.2142857142857142,4.912961725038302e-12,0.3653514739229025,M,True
+Understand,Complexity,WMC,gpt-5-codex-debug-oct22,GPT-5D,105,2.0,6.0,1.8635967981074354e-09,0.345578231292517,M,True
+Understand,Complexity,MaxNest,gpt-5-codex-debug-oct22,GPT-5D,105,1.0,1.0,3.268281851825549e-06,0.28235827664399094,S,True
+Understand,Complexity,NPATH,gpt-5-codex-debug-oct22,GPT-5D,105,0.0,1.0,4.053767543340445e-08,0.3454875283446712,M,True
+Understand,Coupling,CBO,gpt-5-codex-debug-oct22,GPT-5D,105,0.0,0.0,0.042598852917112975,0.08834467120181407,N,True
+Understand,Coupling,RFC,gpt-5-codex-debug-oct22,GPT-5D,105,0.0,0.0,0.06929491667063144,0.031383219954648524,N,False
+Understand,Inheritance,DIT,gpt-5-codex-debug-oct22,GPT-5D,105,0.0,0.0,0.7110175598742254,-0.016054421768707482,N,False
+Understand,Inheritance,NOC,gpt-5-codex-debug-oct22,GPT-5D,105,0.0,0.0,0.5562372923189007,0.0007256235827664399,N,False
+Understand,Inheritance,IFANIN,gpt-5-codex-debug-oct22,GPT-5D,105,0.0,0.0,0.4666758392370949,0.010249433106575964,N,False
+Understand,Cohesion,LCOM,gpt-5-codex-debug-oct22,GPT-5D,105,0.0,0.0,1.0,0.0,N,False
+Understand,Size,LOC,gpt-5-codex-debug-oct22,GPT-5D,105,13.0,23.0,2.7352097716396992e-06,0.26104308390022674,S,True
+Understand,Size,NL,gpt-5-codex-debug-oct22,GPT-5D,105,20.0,28.0,6.0849738769685285e-05,0.2018140589569161,S,True
+Understand,Size,CLOC,gpt-5-codex-debug-oct22,GPT-5D,105,2.0,0.0,0.00013829568888028694,-0.2871655328798186,S,True
+Understand,Size,NOM,gpt-5-codex-debug-oct22,GPT-5D,105,0.0,0.0,0.0382769597756647,0.03709750566893424,N,True
+Understand,Size,NIM,gpt-5-codex-debug-oct22,GPT-5D,105,0.0,0.0,0.08958259933077993,0.025759637188208617,N,False
+Understand,Size,NIV,gpt-5-codex-debug-oct22,GPT-5D,105,0.0,0.0,0.5253596018835172,0.022857142857142857,N,False
+Pylint,Pylint,Issues (total),gpt-5-codex-debug-oct22,GPT-5D,105,0.0,1.0,0.1643798924840416,0.07129251700680272,N,False
+Pylint,Pylint,Convention,gpt-5-codex-debug-oct22,GPT-5D,105,0.0,0.0,0.6929902047925884,-0.01578231292517007,N,False
+Pylint,Pylint,Refactor,gpt-5-codex-debug-oct22,GPT-5D,105,0.0,0.0,0.9371221897259101,0.015600907029478459,N,False
+Pylint,Pylint,Warning,gpt-5-codex-debug-oct22,GPT-5D,105,0.0,0.0,0.05845626893634875,0.1199092970521542,N,False
+Pylint,Pylint,Error,gpt-5-codex-debug-oct22,GPT-5D,105,0.0,0.0,0.029886026909271207,0.05396825396825397,N,True
+Understand,Complexity,CC,gpt-5-high-paper,GPT-5H,89,0.0357142857142857,0.1428571428571428,1.2366783761859335e-12,0.35235450069435675,M,True
+Understand,Complexity,WMC,gpt-5-high-paper,GPT-5H,89,2.0,5.0,1.2117502801109325e-08,0.32647393005933595,S,True
+Understand,Complexity,MaxNest,gpt-5-high-paper,GPT-5H,89,1.0,1.0,3.5733469262340796e-06,0.24479232420148972,S,True
+Understand,Complexity,NPATH,gpt-5-high-paper,GPT-5H,89,0.0,1.0,1.9151320729134528e-07,0.3005933594243151,S,True
+Understand,Coupling,CBO,gpt-5-high-paper,GPT-5H,89,0.0,0.0,0.14629554626671756,0.06173462946597652,N,False
+Understand,Coupling,RFC,gpt-5-high-paper,GPT-5H,89,0.0,0.0,0.6687570765065292,-0.008711021335689939,N,False
+Understand,Inheritance,DIT,gpt-5-high-paper,GPT-5H,89,0.0,0.0,0.17481564053282883,-0.04443883348062114,N,False
+Understand,Inheritance,NOC,gpt-5-high-paper,GPT-5H,89,0.0,0.0,0.9936251460227049,-0.0108572149981063,N,False
+Understand,Inheritance,IFANIN,gpt-5-high-paper,GPT-5H,89,0.0,0.0,0.9887041530001881,-0.010730968312081807,N,False
+Understand,Cohesion,LCOM,gpt-5-high-paper,GPT-5H,89,0.0,0.0,1.0,0.0,N,False
+Understand,Size,LOC,gpt-5-high-paper,GPT-5H,89,12.0,16.0,0.0001698512266389887,0.19176871607120313,S,True
+Understand,Size,NL,gpt-5-high-paper,GPT-5H,89,19.0,32.0,2.460035488810468e-07,0.3086731473298826,S,True
+Understand,Size,CLOC,gpt-5-high-paper,GPT-5H,89,1.0,11.0,9.62904581695497e-10,0.5155914657240247,L,True
+Understand,Size,NOM,gpt-5-high-paper,GPT-5H,89,0.0,0.0,0.33156410249259394,0.020830703194041157,N,False
+Understand,Size,NIM,gpt-5-high-paper,GPT-5H,89,0.0,0.0,0.5451759504872833,0.00820603459159197,N,False
+Understand,Size,NIV,gpt-5-high-paper,GPT-5H,89,0.0,0.0,0.19045714706098005,0.041408913016033326,N,False
+Pylint,Pylint,Issues (total),gpt-5-high-paper,GPT-5H,89,0.0,3.0,4.68150271731671e-08,0.3446534528468628,M,True
+Pylint,Pylint,Convention,gpt-5-high-paper,GPT-5H,89,0.0,2.0,2.1549776797735022e-05,0.286453730589572,S,True
+Pylint,Pylint,Refactor,gpt-5-high-paper,GPT-5H,89,0.0,0.0,0.011656923196679825,0.15995455119303117,S,True
+Pylint,Pylint,Warning,gpt-5-high-paper,GPT-5H,89,0.0,0.0,9.972559433273178e-05,0.3201615957581114,S,True
+Pylint,Pylint,Error,gpt-5-high-paper,GPT-5H,89,0.0,0.0,0.7795559598726394,0.002524933720489837,N,False
+Understand,Complexity,CC,gptoss-paper,GPT-OSS,47,0.0285714285714285,0.0833333333333333,0.0016291269897948154,0.20280669986419195,S,True
+Understand,Complexity,WMC,gptoss-paper,GPT-OSS,47,1.0,3.0,0.021425806402479968,0.15663196016296968,S,True
+Understand,Complexity,MaxNest,gptoss-paper,GPT-OSS,47,0.0,1.0,0.04797565150479987,0.1516523313716614,S,True
+Understand,Complexity,NPATH,gptoss-paper,GPT-OSS,47,0.0,0.0,0.12335384657094262,0.11453146220009054,N,False
+Understand,Coupling,CBO,gptoss-paper,GPT-OSS,47,0.0,0.0,0.25792230509399294,-0.06292440018107741,N,False
+Understand,Coupling,RFC,gptoss-paper,GPT-OSS,47,0.0,0.0,0.4185495408901275,-0.009053870529651425,N,False
+Understand,Inheritance,DIT,gptoss-paper,GPT-OSS,47,0.0,0.0,0.1573232037839235,-0.04119511090991399,N,False
+Understand,Inheritance,NOC,gptoss-paper,GPT-OSS,47,0.0,0.0,1.0,0.0,N,False
+Understand,Inheritance,IFANIN,gptoss-paper,GPT-OSS,47,0.0,0.0,1.0,-0.0009053870529651426,N,False
+Understand,Cohesion,LCOM,gptoss-paper,GPT-OSS,47,0.0,0.0,1.0,0.0,N,False
+Understand,Size,LOC,gptoss-paper,GPT-OSS,47,12.0,9.0,0.8571565042162753,-0.05160706201901313,N,False
+Understand,Size,NL,gptoss-paper,GPT-OSS,47,19.0,22.0,0.6414374448100979,-0.004074241738343142,N,False
+Understand,Size,CLOC,gptoss-paper,GPT-OSS,47,2.0,5.0,0.01462656994775606,0.22363060208239022,S,True
+Understand,Size,NOM,gptoss-paper,GPT-OSS,47,0.0,0.0,0.5929699093548381,-0.01403349932095971,N,False
+Understand,Size,NIM,gptoss-paper,GPT-OSS,47,0.0,0.0,0.6241296879421493,-0.011770031688546853,N,False
+Understand,Size,NIV,gptoss-paper,GPT-OSS,47,0.0,0.0,0.6405840908254348,0.01765504753282028,N,False
+Pylint,Pylint,Issues (total),gptoss-paper,GPT-OSS,47,0.0,1.0,0.10297404138141833,0.1453146220009054,N,False
+Pylint,Pylint,Convention,gptoss-paper,GPT-OSS,47,0.0,1.0,0.9479640660930114,0.05432322317790855,N,False
+Pylint,Pylint,Refactor,gptoss-paper,GPT-OSS,47,0.0,0.0,0.6856647727006087,0.018560434585785424,N,False
+Pylint,Pylint,Warning,gptoss-paper,GPT-OSS,47,0.0,0.0,0.01770767352754975,0.25486645540968766,S,True
+Pylint,Pylint,Error,gptoss-paper,GPT-OSS,47,0.0,0.0,0.1577377199828095,0.11724762335898596,N,False

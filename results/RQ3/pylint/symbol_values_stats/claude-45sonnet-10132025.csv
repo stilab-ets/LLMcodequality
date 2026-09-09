@@ -1,0 +1,14 @@
+group,symbol,display_name,gold_central,model_central,p,cliffs_delta,delta_mag
+Size,line-too-long,Line Length,-1.0,2.0,0.21792427971385475,0.07260464193612379,N
+Size,too-many-lines,Module Lines,5.0,8.5,0.02923336233677099,0.040269787740527675,N
+Size,too-many-statements,Statements,1.5,3.5,0.8810080829178579,-0.02082920055544535,N
+Size,too-many-locals,Local Vars,1.0,1.0,0.1133645908534691,0.07181114858163062,N
+Complexity,too-many-branches,Branches,1.0,1.0,0.37150259712612177,0.0035707200952192026,N
+Complexity,too-many-nested-blocks,Nested Blocks,,,1.0,0.0,N
+Complexity,too-many-boolean-expressions,Bool Expressions,,,1.0,0.0,N
+Complexity,too-many-return-statements,Return Stmts,,3.0,0.31731050786291415,0.014084507042253521,N
+Complexity,too-many-try-statements,Try Stmts,,,1.0,0.0,N
+OOP Design,too-many-arguments,Arguments,1.0,1.0,0.31731050786291415,-0.029160880777623487,N
+OOP Design,too-many-instance-attributes,Instance Attrs,1.0,1.0,0.3138790046267603,-0.015274747073993256,N
+OOP Design,too-many-public-methods,Public Methods,1.0,1.0,0.5749162051459296,-0.0005951200158698671,N
+OOP Design,too-few-public-methods,Few Pub. Methods,,,1.0,0.0,N

